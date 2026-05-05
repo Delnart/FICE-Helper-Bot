@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --tg-bg: #ffffff;
+  --tg-text: #0e1013;
+}
+
+html,
+body {
+  background: var(--tg-bg);
+  color: var(--tg-text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+}
+
+/* Always reserve space for the vertical scrollbar so page width
+   stays constant whether the content scrolls or not. Prevents the
+   layout (incl. bottom bar) from "jumping" between pages. */
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-paper-50 border border-paper-300 shadow-card p-4;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-2xl font-medium transition-colors;
+    @apply px-4 h-11 text-[15px];
+    @apply active:scale-[0.99];
+  }
+  .btn-primary {
+    @apply btn bg-ink-900 text-paper-50 hover:bg-ink-700 disabled:opacity-40;
+  }
+  .btn-secondary {
+    @apply btn bg-paper-200 text-ink-900 hover:bg-paper-300 disabled:opacity-40;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-ink-900 hover:bg-paper-200;
+  }
+  .input {
+    @apply w-full rounded-2xl border border-paper-300 bg-paper-50 px-4 h-11 text-[15px];
+    @apply outline-none focus:border-accent focus:ring-4 focus:ring-accent-ring/40;
+  }
+  .label {
+    @apply text-[13px] font-medium text-ink-500 mb-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[12px] font-medium bg-paper-200 text-ink-700;
+  }
+  .section-title {
+    @apply text-[13px] font-semibold uppercase tracking-wide text-ink-500 px-1 mb-2;
+  }
+}
+
+.bottom-bar-safe {
+  padding-bottom: calc(var(--safe-bottom) + 16px);
+}
+
+.app-scroll {
+  padding-bottom: calc(var(--safe-bottom) + 96px);
+}
+
+/* Always-visible thin horizontal scrollbar (used by the journal table). */
+.scroll-x-visible {
+  overflow-x: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.paper.300') transparent;
+}
+.scroll-x-visible::-webkit-scrollbar {
+  height: 8px;
+  -webkit-appearance: none;
+}
+.scroll-x-visible::-webkit-scrollbar-track {
+  background: theme('colors.paper.100');
+  border-radius: 4px;
+}
+.scroll-x-visible::-webkit-scrollbar-thumb {
+  background: theme('colors.paper.300');
+  border-radius: 4px;
+}
+.scroll-x-visible::-webkit-scrollbar-thumb:hover {
+  background: theme('colors.ink.300');
+}

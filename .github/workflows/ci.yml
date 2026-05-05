@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - run: npm run build --workspace @fice/shared
+      - run: npx --workspace @fice/backend tsc --noEmit
+      - run: npx --workspace @fice/frontend tsc --noEmit
+      - run: npm --workspace @fice/frontend run build
+        env:
+          NEXT_PUBLIC_API_BASE: http://localhost:3000/api

@@ -1,0 +1,488 @@
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { QueueStatus, Role, ROLE_LEVEL } from '@fice/shared';
+import { Queue, QueueDocument } from './queue.schema';
+import { QueueSwapRequest, QueueSwapRequestDocument } from './swap-request.schema';
+import { Subject, SubjectDocument } from '../subjects/subject.schema';
+import { User, UserDocument } from '../users/user.schema';
+import { BotService } from '../bot/bot.service';
+import { RequestUser } from '../../common/types/request-user';
+import {
+  AdminEnrollDto,
+  CreateQueueDto,
+  EnrollDto,
+  QueueRulesDto,
+  RequestSwapDto,
+  UpdateEntryDto,
+  UpdateQueueDto,
+} from './dto/queue.dto';
+
+type QueueRulesInput = {
+  allowMultipleEntriesPerUser?: boolean;
+  allowGroupSubmission?: boolean;
+  isOpen?: boolean;
+  autoOpenAt?: string | Date;
+  autoCloseAt?: string | Date;
+};
+
+@Injectable()
+export class QueuesService {
+  private readonly logger = new Logger(QueuesService.name);
+
+  constructor(
+    @InjectModel(Queue.name) private readonly queues: Model<QueueDocument>,
+    @InjectModel(QueueSwapRequest.name) private readonly swaps: Model<QueueSwapRequestDocument>,
+    @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
+    @InjectModel(User.name) private readonly users: Model<UserDocument>,
+    private readonly bot: BotService,
+  ) {}
+
+  async list(groupId: string, subjectId?: string): Promise<QueueDocument[]> {
+    const filter: Record<string, unknown> = { groupId: new Types.ObjectId(groupId) };
+    if (subjectId && Types.ObjectId.isValid(subjectId)) {
+      filter.subjectId = new Types.ObjectId(subjectId);
+    } else if (subjectId) {
+      return [];
+    }
+    return this.queues.find(filter).sort({ createdAt: -1 }).exec();
+  }
+
+  async listOpen(groupId: string): Promise<QueueDocument[]> {
+    const now = new Date();
+    const all = await this.queues
+      .find({ groupId: new Types.ObjectId(groupId) })
+      .sort({ createdAt: -1 })
+      .exec();
+    return all.filter((q) => {
+      let open = q.rules.isOpen;
+      if (q.rules.autoOpenAt && q.rules.autoOpenAt <= now) open = true;
+      if (q.rules.autoCloseAt && q.rules.autoCloseAt <= now) open = false;
+      return open;
+    });
+  }
+
+  async findById(id: string): Promise<QueueDocument> {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Queue not found');
+    const q = await this.queues.findById(id).exec();
+    if (!q) throw new NotFoundException('Queue not found');
+    return q;
+  }
+
+  async findByIdForUser(user: RequestUser, id: string): Promise<unknown> {
+    const q = await this.findById(id);
+    // If the user isn't a group member, allow access only when they're a
+    // teacher on the queue's subject (so the read-only view loads).
+    const isMember = user.memberships.some((m) => m.groupId === String(q.groupId));
+    let isSubjectTeacher = false;
+    if (!isMember) {
+      const subject = await this.subjects.findById(q.subjectId).lean().exec();
+      isSubjectTeacher = !!subject?.teachers.some(
+        (t) => t.teacherUserId && String(t.teacherUserId) === user.userId,
+      );
+      if (!isSubjectTeacher) {
+        throw new ForbiddenException('You are not a member of this group');
+      }
+    }
+    return this.serializeForUser(q, user, isSubjectTeacher);
+  }
+
+  async findOrCreateForSubject(user: RequestUser, subjectId: string): Promise<unknown> {
+    if (!Types.ObjectId.isValid(subjectId)) throw new NotFoundException('Subject not found');
+    const subject = await this.subjects.findById(subjectId).exec();
+    if (!subject) throw new NotFoundException('Subject not found');
+
+    // Group members get full access; teachers listed on this specific subject
+    // get read-only viewing rights even if they aren't group members yet.
+    const isMember = user.memberships.some(
+      (m) => m.groupId === String(subject.groupId),
+    );
+    const isSubjectTeacher = subject.teachers.some(
+      (t) => t.teacherUserId && String(t.teacherUserId) === user.userId,
+    );
+    if (!isMember && !isSubjectTeacher) {
+      throw new ForbiddenException('You are not a member of this group');
+    }
+
+    let queue = await this.queues
+      .findOne({ subjectId: subject._id, groupId: subject.groupId })
+      .sort({ createdAt: 1 })
+      .exec();
+
+    if (!queue) {
+      // Don't auto-create on a teacher's first view — they shouldn't be the
+      // queue's creator. Show an empty placeholder until the head opens it.
+      if (!isMember) {
+        return this.serializeEmptyForTeacher(subject);
+      }
+      queue = await this.queues.create({
+        subjectId: subject._id,
+        groupId: subject.groupId,
+        title: subject.shortName ?? subject.name,
+        slotsCount: 25,
+        rules: this.normaliseRules(undefined),
+        createdBy: new Types.ObjectId(user.userId),
+      });
+      this.logger.log(`Auto-created queue for subject ${subjectId} by user ${user.userId}`);
+    }
+    return this.serializeForUser(queue, user, isSubjectTeacher);
+  }
+
+  /** Empty placeholder for subject-teachers when the head hasn't opened the queue yet. */
+  private serializeEmptyForTeacher(subject: SubjectDocument): unknown {
+    return {
+      _id: '',
+      title: subject.shortName ?? subject.name,
+      subjectId: String(subject._id),
+      slotsCount: 0,
+      status: 'closed',
+      rules: this.normaliseRules(undefined),
+      slots: [],
+      myRole: Role.Teacher,
+      myUserId: '',
+    };
+  }
+
+  async listIncomingSwaps(user: RequestUser, queueId: string): Promise<
+    Array<{ _id: string; fromUserId: string; fromFullName: string; fromSlotIndex: number; toSlotIndex: number }>
+  > {
+    if (!Types.ObjectId.isValid(queueId)) return [];
+    const swaps = await this.swaps
+      .find({
+        queueId: new Types.ObjectId(queueId),
+        toUserId: new Types.ObjectId(user.userId),
+        status: 'pending',
+      })
+      .lean()
+      .exec();
+    if (swaps.length === 0) return [];
+    const fromIds = swaps.map((s) => s.fromUserId);
+    const fromUsers = await this.users.find({ _id: { $in: fromIds } }).lean().exec();
+    const nameById = new Map(
+      fromUsers.map((u) => [
+        String(u._id),
+        u.fullName?.trim() || [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.username || 'Користувач',
+      ]),
+    );
+    return swaps.map((s) => ({
+      _id: String(s._id),
+      fromUserId: String(s.fromUserId),
+      fromFullName: nameById.get(String(s.fromUserId)) ?? 'Користувач',
+      fromSlotIndex: s.fromSlotIndex,
+      toSlotIndex: s.toSlotIndex,
+    }));
+  }
+
+  private async serializeForUser(
+    q: QueueDocument,
+    user: RequestUser,
+    isSubjectTeacher = false,
+  ): Promise<unknown> {
+    const membership = user.memberships.find((m) => m.groupId === String(q.groupId));
+    // If the user is on the subject's teachers list (without group membership),
+    // surface them as `teacher` so the UI renders read-only.
+    const myRole = membership?.role ?? (isSubjectTeacher ? Role.Teacher : Role.Student);
+    const userIds = q.entries.map((e) => e.userId).filter(Boolean);
+    const users = await this.users.find({ _id: { $in: userIds } }).lean().exec();
+    const userMap = new Map(
+      users.map((u) => [
+        String(u._id),
+        {
+          fullName:
+            u.fullName?.trim() ||
+            [u.firstName, u.lastName].filter(Boolean).join(' ').trim() ||
+            u.username ||
+            '',
+          avatarUrl: u.avatarUrl,
+          username: u.username,
+        },
+      ]),
+    );
+    const slots = Array.from({ length: q.slotsCount }, (_, i) => {
+      const idx = i + 1;
+      const entries = q.entries.filter((e) => e.slotIndex === idx);
+      const occupants = entries.map((entry) => {
+        const u = entry.userId ? userMap.get(String(entry.userId)) : undefined;
+        return {
+          userId: entry.userId ? String(entry.userId) : null,
+          fullName: u?.fullName ?? '',
+          avatarUrl: u?.avatarUrl,
+          username: u?.username,
+          labNumber: entry.labNumber,
+          status: entry.status ?? QueueStatus.Default,
+          enrolledAt: entry.enrolledAt,
+        };
+      });
+      return { slotIndex: idx, occupants };
+    });
+    return {
+      _id: String(q._id),
+      title: q.title,
+      subjectId: String(q.subjectId),
+      slotsCount: q.slotsCount,
+      status: this.liveStatus(q),
+      rules: q.rules,
+      slots,
+      myRole,
+      myUserId: user.userId,
+    };
+  }
+
+  private liveStatus(q: QueueDocument): 'draft' | 'open' | 'closed' {
+    const now = new Date();
+    let open = q.rules.isOpen;
+    if (q.rules.autoOpenAt && q.rules.autoOpenAt <= now) open = true;
+    if (q.rules.autoCloseAt && q.rules.autoCloseAt <= now) open = false;
+    return open ? 'open' : 'closed';
+  }
+
+  async create(user: RequestUser, dto: CreateQueueDto): Promise<QueueDocument> {
+    const subject = await this.subjects.findById(dto.subjectId).exec();
+    if (!subject) throw new NotFoundException('Subject not found');
+
+    this.assertCanManage(user, String(subject.groupId));
+
+    return this.queues.create({
+      subjectId: subject._id,
+      groupId: subject.groupId,
+      title: dto.title,
+      slotsCount: dto.slotsCount,
+      rules: this.normaliseRules(dto.rules),
+      createdBy: new Types.ObjectId(user.userId),
+    });
+  }
+
+  async update(user: RequestUser, id: string, dto: UpdateQueueDto): Promise<QueueDocument> {
+    const q = await this.findById(id);
+    this.assertCanManage(user, String(q.groupId));
+    if (dto.title !== undefined) q.title = dto.title;
+    if (dto.slotsCount !== undefined) {
+      if (q.entries.some((e) => e.slotIndex > dto.slotsCount!)) {
+        throw new BadRequestException('Cannot shrink below occupied slots');
+      }
+      q.slotsCount = dto.slotsCount;
+    }
+    if (dto.rules) q.rules = { ...q.rules, ...this.normaliseRules(dto.rules) };
+    await q.save();
+    return q;
+  }
+
+  async remove(user: RequestUser, id: string): Promise<void> {
+    const q = await this.findById(id);
+    this.assertCanManage(user, String(q.groupId));
+    await this.queues.deleteOne({ _id: q._id });
+  }
+
+  async enroll(user: RequestUser, queueId: string, dto: EnrollDto): Promise<QueueDocument> {
+    const q = await this.findById(queueId);
+    this.assertMember(user, String(q.groupId));
+    this.ensureOpen(q);
+
+    this.assertSlotAvailable(q, dto.slotIndex);
+    if (!q.rules.allowMultipleEntriesPerUser) {
+      if (q.entries.some((e) => String(e.userId) === user.userId)) {
+        throw new BadRequestException('You are already enrolled');
+      }
+    }
+
+    const profileComplete = await this.assertProfileComplete(user.userId);
+    if (!profileComplete) {
+      throw new BadRequestException('Fill full name in profile before enrolling');
+    }
+
+    q.entries.push({
+      slotIndex: dto.slotIndex,
+      userId: new Types.ObjectId(user.userId),
+      labNumber: dto.labNumber,
+      status: QueueStatus.Default,
+      enrolledAt: new Date(),
+    });
+    await q.save();
+    return q;
+  }
+
+  async adminEnroll(user: RequestUser, queueId: string, dto: AdminEnrollDto): Promise<QueueDocument> {
+    const q = await this.findById(queueId);
+    this.assertCanManage(user, String(q.groupId));
+    this.assertSlotAvailable(q, dto.slotIndex);
+    q.entries.push({
+      slotIndex: dto.slotIndex,
+      userId: new Types.ObjectId(dto.userId),
+      labNumber: dto.labNumber,
+      status: QueueStatus.Default,
+      enrolledAt: new Date(),
+    });
+    await q.save();
+    return q;
+  }
+
+  async leave(user: RequestUser, queueId: string, slotIndex: number): Promise<QueueDocument> {
+    const q = await this.findById(queueId);
+    const entry = q.entries.find((e) => e.slotIndex === slotIndex);
+    if (!entry) throw new NotFoundException('Entry not found');
+    const isOwner = String(entry.userId) === user.userId;
+    const canManage = this.hasManage(user, String(q.groupId));
+    if (!isOwner && !canManage) throw new ForbiddenException();
+
+    q.entries = q.entries.filter((e) => !(e.slotIndex === slotIndex && String(e.userId) === String(entry.userId)));
+    await q.save();
+    return q;
+  }
+
+  async updateEntry(
+    user: RequestUser,
+    queueId: string,
+    slotIndex: number,
+    dto: UpdateEntryDto,
+  ): Promise<QueueDocument> {
+    const q = await this.findById(queueId);
+    const entry = q.entries.find((e) => e.slotIndex === slotIndex);
+    if (!entry) throw new NotFoundException('Entry not found');
+
+    const isOwner = String(entry.userId) === user.userId;
+    const canManage = this.hasManage(user, String(q.groupId));
+
+    if (dto.status !== undefined && !canManage) {
+      throw new ForbiddenException('Only head/deputy/teacher can change status');
+    }
+    if (!isOwner && !canManage) throw new ForbiddenException();
+
+    if (dto.labNumber !== undefined) entry.labNumber = dto.labNumber;
+    if (dto.status !== undefined) entry.status = dto.status;
+    await q.save();
+    return q;
+  }
+
+  async requestSwap(
+    user: RequestUser,
+    queueId: string,
+    slotIndex: number,
+    dto: RequestSwapDto,
+  ): Promise<QueueSwapRequestDocument> {
+    const q = await this.findById(queueId);
+    const own = q.entries.find((e) => e.slotIndex === slotIndex && String(e.userId) === user.userId);
+    if (!own) throw new ForbiddenException('You are not at this slot');
+    const target = q.entries.find((e) => e.slotIndex === dto.targetSlotIndex);
+    if (!target) throw new NotFoundException('Target slot is empty');
+    if (String(target.userId) === user.userId) throw new BadRequestException('Cannot swap with yourself');
+
+    const swap = await this.swaps.create({
+      queueId: q._id,
+      fromUserId: new Types.ObjectId(user.userId),
+      toUserId: target.userId,
+      fromSlotIndex: own.slotIndex,
+      toSlotIndex: target.slotIndex,
+      status: 'pending',
+    });
+
+    // Telegram DM to the target user
+    const [me, them] = await Promise.all([
+      this.users.findById(user.userId).lean().exec(),
+      this.users.findById(target.userId).lean().exec(),
+    ]);
+    if (them?.telegramId) {
+      const fromName =
+        me?.fullName?.trim() ||
+        [me?.firstName, me?.lastName].filter(Boolean).join(' ').trim() ||
+        me?.username ||
+        'Студент';
+      const text =
+        `<b>Запит на обмін у черзі</b>\n\n` +
+        `${escapeHtml(fromName)} пропонує помінятися місцями у черзі «${escapeHtml(q.title)}».\n` +
+        `Місце ${own.slotIndex} ↔ Місце ${target.slotIndex}.\n\n` +
+        `Відкрийте FICE Helper, щоб прийняти або відхилити.`;
+      await this.bot.sendMessage(them.telegramId, text);
+    } else {
+      this.logger.warn(`Swap target user ${target.userId} has no telegramId`);
+    }
+
+    return swap;
+  }
+
+  async respondSwap(user: RequestUser, swapId: string, accept: boolean): Promise<void> {
+    const swap = await this.swaps.findById(swapId).exec();
+    if (!swap) throw new NotFoundException('Swap not found');
+    if (String(swap.toUserId) !== user.userId) throw new ForbiddenException();
+    if (swap.status !== 'pending') throw new BadRequestException('Already decided');
+
+    if (!accept) {
+      swap.status = 'declined';
+      await swap.save();
+      return;
+    }
+    const q = await this.queues.findById(swap.queueId).exec();
+    if (!q) throw new NotFoundException('Queue gone');
+    const a = q.entries.find((e) => e.slotIndex === swap.fromSlotIndex);
+    const b = q.entries.find((e) => e.slotIndex === swap.toSlotIndex);
+    if (!a || !b) throw new BadRequestException('Swap no longer valid');
+    [a.slotIndex, b.slotIndex] = [b.slotIndex, a.slotIndex];
+    await q.save();
+    swap.status = 'accepted';
+    await swap.save();
+  }
+
+  private normaliseRules(dto?: QueueRulesInput | QueueRulesDto | undefined): Queue['rules'] {
+    const autoOpenAt = dto?.autoOpenAt
+      ? dto.autoOpenAt instanceof Date
+        ? dto.autoOpenAt
+        : new Date(dto.autoOpenAt)
+      : undefined;
+    const autoCloseAt = dto?.autoCloseAt
+      ? dto.autoCloseAt instanceof Date
+        ? dto.autoCloseAt
+        : new Date(dto.autoCloseAt)
+      : undefined;
+
+    return {
+      allowMultipleEntriesPerUser: dto?.allowMultipleEntriesPerUser ?? false,
+      allowGroupSubmission: dto?.allowGroupSubmission ?? false,
+      isOpen: dto?.isOpen ?? true,
+      autoOpenAt,
+      autoCloseAt,
+    };
+  }
+
+  private assertSlotAvailable(q: QueueDocument, slotIndex: number): void {
+    if (slotIndex < 1 || slotIndex > q.slotsCount) {
+      throw new BadRequestException('Slot out of range');
+    }
+    const occupied = q.entries.filter((e) => e.slotIndex === slotIndex);
+    if (occupied.length > 0 && !q.rules.allowGroupSubmission) {
+      throw new BadRequestException('Slot is already taken');
+    }
+  }
+
+  private ensureOpen(q: QueueDocument): void {
+    const now = new Date();
+    let isOpen = q.rules.isOpen;
+    if (q.rules.autoOpenAt && q.rules.autoOpenAt <= now) isOpen = true;
+    if (q.rules.autoCloseAt && q.rules.autoCloseAt <= now) isOpen = false;
+    if (!isOpen) throw new BadRequestException('Queue is closed');
+  }
+
+  private assertCanManage(user: RequestUser, groupId: string): void {
+    if (!this.hasManage(user, groupId)) {
+      throw new ForbiddenException('Only head/deputy can manage queues');
+    }
+  }
+
+  private hasManage(user: RequestUser, groupId: string): boolean {
+    const m = user.memberships.find((x) => x.groupId === groupId);
+    return !!m && (ROLE_LEVEL[m.role] ?? 0) >= ROLE_LEVEL[Role.DeputyHead];
+  }
+
+  private assertMember(user: RequestUser, groupId: string): void {
+    if (!user.memberships.some((m) => m.groupId === groupId)) {
+      throw new ForbiddenException('You are not a member of this group');
+    }
+  }
+
+  private async assertProfileComplete(userId: string): Promise<boolean> {
+    const u = await this.users.findById(userId).lean().exec();
+    return !!u?.fullName && u.fullName.trim().length > 0;
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
