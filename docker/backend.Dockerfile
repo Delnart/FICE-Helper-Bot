@@ -8,6 +8,7 @@ RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 FROM node:20-alpine AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=2048
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 COPY tsconfig.base.json ./
