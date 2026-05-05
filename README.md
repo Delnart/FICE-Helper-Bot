@@ -97,6 +97,25 @@ npm run dev
 npm run docker:up
 ```
 
+Для доменного запуску через хостовий Caddy використайте такий конфіг у [docker/Caddyfile](docker/Caddyfile):
+
+```caddy
+ficebot.dev {
+  reverse_proxy localhost:3001
+}
+
+api.ficebot.dev {
+  reverse_proxy localhost:3000
+}
+```
+
+Після цього виставте в `.env` такі значення:
+
+```ini
+PUBLIC_MINI_APP_URL=https://ficebot.dev
+NEXT_PUBLIC_API_BASE=https://api.ficebot.dev
+```
+
 Альтернатива без npm-скрипта:
 
 ```bash

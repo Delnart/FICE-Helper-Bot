@@ -27,15 +27,18 @@ services:
       MONGO_URI: ${MONGO_URI}
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
-      CORS_ORIGIN: ${CORS_ORIGIN}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://ficebot.dev}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
       CAMPUS_API_BASE: ${CAMPUS_API_BASE:-https://api.campus.kpi.ua}
       CAMPUS_API_TOKEN: ${CAMPUS_API_TOKEN:-}
-      GOOGLE_SHEETS_ID: ${GOOGLE_SHEETS_ID}
-      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL}
-      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY}
-      PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL}
+      GOOGLE_SHEETS_ID: ${GOOGLE_SPREADSHEET_ID:-}
+      GOOGLE_SPREADSHEET_ID: ${GOOGLE_SPREADSHEET_ID:-}
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}
+      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
+      PUBLIC_WEB_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
     ports:
       - "3000:3000"
 
@@ -44,13 +47,13 @@ services:
       context: ..
       dockerfile: docker/frontend.Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE}
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.ficebot.dev}
     restart: unless-stopped
     depends_on:
       - backend
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE}
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.ficebot.dev}
     ports:
       - "3001:3001"
 

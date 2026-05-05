@@ -461,7 +461,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async handlePrivateStart(ctx: Context): Promise<void> {
     const from = ctx.from;
     if (!from) return;
-    const webApp = this.config.get<string>('PUBLIC_WEB_APP_URL');
+    const webApp =
+      this.config.get<string>('PUBLIC_MINI_APP_URL') ??
+      this.config.get<string>('PUBLIC_WEB_APP_URL');
     const appKb = webApp ? new InlineKeyboard().webApp('Відкрити FICE Helper', webApp) : undefined;
 
     // Already a known user with at least one membership? → just send welcome + open app

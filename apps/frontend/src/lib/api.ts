@@ -1,6 +1,13 @@
 import { getInitData } from './telegram';
 
-export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? '').replace(/\/$/, '') || '/api';
+function normalizeApiBase(base: string | undefined): string {
+  const trimmed = (base ?? '').replace(/\/$/, '');
+  if (!trimmed) return '/api';
+  if (trimmed.endsWith('/api')) return trimmed;
+  return /^https?:\/\//i.test(trimmed) ? `${trimmed}/api` : trimmed;
+}
+
+export const API_BASE = normalizeApiBase(process.env.NEXT_PUBLIC_API_BASE);
 
 interface AuthState {
   token: string | null;
