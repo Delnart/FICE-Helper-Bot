@@ -39,6 +39,7 @@ services:
       GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
       PUBLIC_WEB_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
       PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
     ports:
       - "3000:3000"
 
