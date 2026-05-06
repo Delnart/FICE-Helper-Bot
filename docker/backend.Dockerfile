@@ -1,8 +1,12 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
+# All workspaces declared in root package.json need their manifest present,
+# otherwise npm silently skips resolving deps for the missing one (and any
+# dev-tools imported by it disappear from /app/node_modules).
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
+COPY apps/frontend/package.json apps/frontend/
 RUN npm install --workspaces=false --no-audit --no-fund --legacy-peer-deps || true
 RUN npm install --no-audit --no-fund --legacy-peer-deps
 
