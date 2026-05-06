@@ -84,6 +84,12 @@ export class QueuesController {
     return this.queues.listIncomingSwaps(user, id);
   }
 
+  /** My own pending outgoing swap requests in this queue (for the cancel UI). */
+  @Get(':id/swaps/outgoing')
+  outgoingSwaps(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.queues.listOutgoingSwaps(user, id);
+  }
+
   @Patch(':id')
   update(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: UpdateQueueDto) {
     return this.queues.update(user, id, dto);

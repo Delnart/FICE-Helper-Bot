@@ -59,6 +59,14 @@ interface IncomingSwap {
   toSlotIndex: number;
 }
 
+interface OutgoingSwap {
+  _id: string;
+  toUserId: string;
+  toFullName: string;
+  fromSlotIndex: number;
+  toSlotIndex: number;
+}
+
 interface Member {
   _id: string;
   fullName: string;
@@ -113,6 +121,13 @@ export default function SubjectQueuePage() {
     refetchInterval: 20_000,
   });
 
+  const outgoing = useQuery({
+    queryKey: ['queue-outgoing-swaps', queueId],
+    queryFn: () => api<OutgoingSwap[]>(`/queues/${queueId}/swaps/outgoing`),
+    enabled: !!queueId,
+    refetchInterval: 30_000,
+  });
+
   const [openSlot, setOpenSlot] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -139,7 +154,10 @@ export default function SubjectQueuePage() {
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['queue-by-subject', subjectId] });
-    if (queueId) qc.invalidateQueries({ queryKey: ['queue-incoming-swaps', queueId] });
+    if (queueId) {
+      qc.invalidateQueries({ queryKey: ['queue-incoming-swaps', queueId] });
+      qc.invalidateQueries({ queryKey: ['queue-outgoing-swaps', queueId] });
+    }
   };
 
   if (queue.isLoading) {
@@ -201,6 +219,16 @@ export default function SubjectQueuePage() {
           ) : undefined
         }
       />
+
+      {/* My own outgoing swap requests — gives the user a way to cancel them
+          (since "1 active per queue" cap blocks new ones until this one resolves). */}
+      {outgoing.data && outgoing.data.length > 0 ? (
+        <OutgoingSwapsCard
+          queueId={data._id}
+          swaps={outgoing.data}
+          onChanged={refresh}
+        />
+      ) : null}
 
       {/* Incoming swaps */}
       {incoming.data && incoming.data.length > 0 ? (
@@ -464,6 +492,74 @@ function Avatar({
     >
       {initials || '?'}
     </div>
+  );
+}
+
+/**
+ * Sender's view of their own pending swap requests in this queue.
+ * Shows who they wrote to + which slots they want to swap, with a Cancel
+ * button. Required because the backend caps users to one active outgoing
+ * swap per queue — without this UI you'd have no way to free that slot.
+ */
+function OutgoingSwapsCard({
+  queueId,
+  swaps,
+  onChanged,
+}: {
+  queueId: string;
+  swaps: OutgoingSwap[];
+  onChanged: () => void;
+}) {
+  const qc = useQueryClient();
+  const cacheKey = ['queue-outgoing-swaps', queueId];
+
+  const cancel = useMutation({
+    mutationFn: (swapId: string) =>
+      api(`/queues/swaps/${swapId}`, { method: 'DELETE' }),
+    onMutate: (swapId) => {
+      qc.setQueryData<OutgoingSwap[]>(cacheKey, (prev) =>
+        (prev ?? []).filter((s) => s._id !== swapId),
+      );
+    },
+    onSuccess: () => {
+      haptic('success');
+      onChanged();
+    },
+    onError: () => {
+      haptic('error');
+      void qc.invalidateQueries({ queryKey: cacheKey });
+    },
+  });
+
+  return (
+    <section className="card border-paper-300 space-y-2">
+      <div className="text-[12px] uppercase tracking-wide text-ink-500 font-medium">
+        Ваші запити на обмін ({swaps.length})
+      </div>
+      {swaps.map((s) => (
+        <div key={s._id} className="flex items-center justify-between gap-2">
+          <div className="text-sm leading-snug min-w-0">
+            <div className="text-xs text-ink-500 mb-0.5">Чекає відповіді:</div>
+            <div className="font-medium truncate">{s.toFullName}</div>
+            <div className="text-xs text-ink-500 mt-0.5">
+              ваше <b>№{s.fromSlotIndex}</b> ↔ їхнє <b>№{s.toSlotIndex}</b>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary h-8 px-3 text-xs flex-shrink-0 disabled:opacity-50"
+            disabled={cancel.isPending}
+            onClick={() => {
+              if (window.confirm(`Скасувати запит до ${s.toFullName}?`)) {
+                cancel.mutate(s._id);
+              }
+            }}
+          >
+            Скасувати
+          </button>
+        </div>
+      ))}
+    </section>
   );
 }
 

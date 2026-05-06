@@ -143,6 +143,49 @@ export class QueuesService {
     };
   }
 
+  /** List the user's own pending OUTGOING swap requests in this queue. */
+  async listOutgoingSwaps(
+    user: RequestUser,
+    queueId: string,
+  ): Promise<
+    Array<{
+      _id: string;
+      toUserId: string;
+      toFullName: string;
+      fromSlotIndex: number;
+      toSlotIndex: number;
+    }>
+  > {
+    if (!Types.ObjectId.isValid(queueId)) return [];
+    const swaps = await this.swaps
+      .find({
+        queueId: new Types.ObjectId(queueId),
+        fromUserId: new Types.ObjectId(user.userId),
+        status: 'pending',
+      })
+      .lean()
+      .exec();
+    if (swaps.length === 0) return [];
+    const toIds = swaps.map((s) => s.toUserId);
+    const toUsers = await this.users.find({ _id: { $in: toIds } }).lean().exec();
+    const nameById = new Map(
+      toUsers.map((u) => [
+        String(u._id),
+        u.fullName?.trim() ||
+          [u.firstName, u.lastName].filter(Boolean).join(' ').trim() ||
+          u.username ||
+          'Користувач',
+      ]),
+    );
+    return swaps.map((s) => ({
+      _id: String(s._id),
+      toUserId: String(s.toUserId),
+      toFullName: nameById.get(String(s.toUserId)) ?? 'Користувач',
+      fromSlotIndex: s.fromSlotIndex,
+      toSlotIndex: s.toSlotIndex,
+    }));
+  }
+
   async listIncomingSwaps(user: RequestUser, queueId: string): Promise<
     Array<{ _id: string; fromUserId: string; fromFullName: string; fromSlotIndex: number; toSlotIndex: number }>
   > {
