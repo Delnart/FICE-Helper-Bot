@@ -136,7 +136,10 @@ export class HomeworkService {
       .lean()
       .exec();
     const m = user.memberships.find((x) => x.groupId === String(hw.groupId));
-    const canManage = m ? ROLE_LEVEL[m.role] >= ROLE_LEVEL[Role.Teacher] : false;
+    // Homework is editable by any member of the group (community-managed list).
+    // Permission to *complete* it (the "Позначити виконаним" button) is what the
+    // `isTeacher` flag below controls — teachers don't have homework themselves.
+    const canManage = !!m;
     // Teachers don't complete homework — this also covers Campus-only teachers
     // who are linked to the subject but may not have a group membership yet.
     const isTeacher =
@@ -188,11 +191,16 @@ export class HomeworkService {
     });
   }
 
+  /**
+   * Homework is community-managed: anyone in the group can add / edit / delete
+   * any entry. The bar is just "be a member of this group". We keep this method
+   * (rather than removing the gate) so a non-member curl-ing the API still gets
+   * a clean 403.
+   */
   private assertCanManage(user: RequestUser, groupId: string): void {
     const m = user.memberships.find((x) => x.groupId === groupId);
-    const level = m ? ROLE_LEVEL[m.role] : 0;
-    if (level < ROLE_LEVEL[Role.Teacher]) {
-      throw new ForbiddenException('Only head/deputy/teacher can manage homework');
+    if (!m) {
+      throw new ForbiddenException('Тільки учасники групи можуть керувати ДЗ.');
     }
   }
 }

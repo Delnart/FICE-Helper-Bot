@@ -32,6 +32,18 @@ export interface CampusGroupSummary {
   name: string;
 }
 
+export interface CampusSessionItem {
+  subjectName: string;
+  /** ISO date of the exam, e.g. "2026-01-12" — time is taken from `startTime`. */
+  date: string;
+  startTime?: string;
+  endTime?: string;
+  /** "exam" / "credit" / "other" — Campus exposes "Іспит" / "Залік" / "ПМК". */
+  type: 'exam' | 'credit' | 'other';
+  room?: string;
+  teacherNames: string[];
+}
+
 interface GroupsIndexRow {
   id: number | string;
   name: string;
@@ -97,6 +109,28 @@ export class CampusService implements OnModuleInit {
       return items;
     } catch (err) {
       this.logger.warn(`Failed to fetch schedule for ${campusGroupId}: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Session (exam) schedule for a group from Campus.
+   * Endpoint: `/schedule/exams/group?groupId=…` — returns one entry per exam:
+   * subject name, exam date, type (іспит/залік), room.
+   * On any failure returns an empty array — UI shows an empty state.
+   */
+  async getGroupSessionSchedule(campusGroupId: string): Promise<CampusSessionItem[]> {
+    try {
+      const { data } = await this.http.get('/schedule/exams/group', {
+        params: { groupId: campusGroupId },
+      });
+      const items = normaliseSessions(data);
+      this.logger.log(`Campus exams for ${campusGroupId}: ${items.length} entries`);
+      return items;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to fetch exam schedule for ${campusGroupId}: ${(err as Error).message}`,
+      );
       return [];
     }
   }
@@ -384,7 +418,7 @@ function unwrapList<T>(raw: unknown): T[] | null {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>;
-    for (const key of ['data', 'items', 'lessons', 'result', 'results']) {
+    for (const key of ['data', 'items', 'lessons', 'exams', 'sessions', 'result', 'results']) {
       const v = obj[key];
       if (Array.isArray(v)) return v as T[];
       if (v && typeof v === 'object') {
@@ -455,6 +489,94 @@ function normaliseSchedule(raw: unknown): CampusScheduleItem[] {
       } satisfies CampusScheduleItem;
     })
     .filter((x) => x.subjectName && x.dayOfWeek >= 1 && x.dayOfWeek <= 6);
+}
+
+/**
+ * Parse the session/exam schedule from Campus. The `/schedule/exams/group`
+ * endpoint typically returns a flat array of exam rows, each with the subject
+ * name, ISO date, time bounds, lecturer, and room. Field names vary across
+ * Campus versions — we try every common variant before giving up on a row.
+ *
+ * Anything missing a subject name *or* a date is dropped silently.
+ */
+function normaliseSessions(raw: unknown): CampusSessionItem[] {
+  const arr = unwrapList<Record<string, unknown>>(raw) ?? [];
+  const out: CampusSessionItem[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== 'object') continue;
+    const subjectName = String(
+      r.discipline_full_name ??
+        r.discipline_short_name ??
+        r.name ??
+        r.subjectName ??
+        r.discipline ??
+        r.subject ??
+        '',
+    ).trim();
+    if (!subjectName) continue;
+
+    // Date can come as plain ISO ("2026-01-12"), full timestamp, or split.
+    const dateRaw = String(
+      r.date ??
+        r.exam_date ??
+        r.examDate ??
+        r.dateExam ??
+        r.startDate ??
+        r.start_date ??
+        r.dateStart ??
+        '',
+    ).trim();
+    if (!dateRaw) continue;
+    const isoDate = dateRaw.length >= 10 ? dateRaw.slice(0, 10) : dateRaw;
+
+    const tag = String(
+      r.type ?? r.lesson_type ?? r.tag ?? r.examType ?? r.exam_type ?? '',
+    ).toLowerCase();
+    const type: CampusSessionItem['type'] =
+      tag.includes('іспит') || tag.includes('exam') ? 'exam' :
+      tag.includes('залік') || tag.includes('credit') ? 'credit' :
+      'other';
+
+    // Time: accept "time", "time_start", "timeStart", or extracted from full ISO.
+    const startRaw =
+      r.time_start ??
+      r.timeStart ??
+      r.start_time ??
+      r.startTime ??
+      r.time ??
+      // Pull HH:MM out of "2026-01-12T08:30:00" if that's all we got.
+      (dateRaw.length > 10 && dateRaw.includes('T') ? dateRaw.split('T')[1] : undefined);
+    const endRaw = r.time_end ?? r.timeEnd ?? r.end_time ?? r.endTime;
+
+    // Teachers: support both `teachers: [{name}]` and `lecturer: {name}` shapes.
+    const teachersArr = Array.isArray(r.teachers) ? r.teachers : undefined;
+    const lecturer = (r.lecturer ?? r.teacher) as { name?: string; full_name?: string } | undefined;
+    const teacherNames = teachersArr
+      ? teachersArr
+          .map((t: unknown) => {
+            const o = t as { name?: string; full_name?: string };
+            return o?.full_name ?? o?.name ?? '';
+          })
+          .filter(Boolean)
+      : lecturer?.name || lecturer?.full_name
+        ? [String(lecturer.full_name ?? lecturer.name)]
+        : [];
+
+    out.push({
+      subjectName,
+      date: isoDate,
+      startTime: startRaw ? trimTime(String(startRaw)) : undefined,
+      endTime: endRaw ? trimTime(String(endRaw)) : undefined,
+      type,
+      room: String(
+        r.lesson_room ?? r.room ?? r.auditorium ?? r.auditory ?? '',
+      ).trim() || undefined,
+      teacherNames,
+    });
+  }
+  // Sort chronologically — UI relies on this order.
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
 }
 
 /** Unwrap one layer of `{data: ...}` if present. */

@@ -23,6 +23,10 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
+      # All time-of-day logic ("now lesson", "next lesson", "queue auto-open at
+      # 14:00") runs against the container's local time. Pin to Kyiv so a server
+      # in any region produces the same answers as a Kyiv-based student.
+      TZ: Europe/Kyiv
       BACKEND_PORT: 3000
       MONGO_URI: ${MONGO_URI}
       JWT_SECRET: ${JWT_SECRET}
@@ -39,6 +43,7 @@ services:
       GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
       PUBLIC_WEB_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
       PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
     ports:
       - "3000:3000"
 

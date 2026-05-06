@@ -35,10 +35,11 @@ export default function SubjectHomeworkPage() {
     enabled: !!id,
   });
 
-  // Teachers can manage homework too (Backend's homework canManage uses
-  // ROLE_LEVEL >= Teacher, so the actions go through; the UI just needs to
-  // show the buttons).
-  const canManage = !!(subject.data?.canManage || subject.data?.isTeacher);
+  // Homework is community-managed — any group member can add/edit/delete.
+  // Teachers also see the buttons (their group membership covers them).
+  // We show the buttons whenever the subject loaded (i.e. user has access);
+  // the server-side check rejects non-members anyway.
+  const canManage = !!subject.data;
 
   return (
     <div className="space-y-4">

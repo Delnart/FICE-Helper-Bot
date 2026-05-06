@@ -8,6 +8,7 @@ import { api } from '../../../../../lib/api';
 import { PageHeader } from '../../../../../components/PageHeader';
 import { haptic } from '../../../../../lib/telegram';
 import { cn } from '../../../../../lib/cn';
+import { LabNumberInput } from '../../../../../components/LabNumberInput';
 
 type QueueStatus =
   | 'default'
@@ -773,14 +774,7 @@ function EnrollForm({
       ) : null}
       <div>
         <div className="label">Номер лабораторної</div>
-        <input
-          type="number"
-          className="input"
-          min={1}
-          value={labNumber}
-          onChange={(e) => setLabNumber(Math.max(1, Number(e.target.value) || 1))}
-          disabled={disabled}
-        />
+        <LabNumberInput value={labNumber} onChange={setLabNumber} disabled={disabled} />
       </div>
       {disabledHint ? <div className="text-xs text-ink-500">{disabledHint}</div> : null}
       {error ? <div className="text-sm text-danger">{error}</div> : null}
@@ -891,13 +885,7 @@ function AdminEnrollSection({
       ) : null}
       <div>
         <div className="label">Номер лаби</div>
-        <input
-          type="number"
-          className="input"
-          min={1}
-          value={labNumber}
-          onChange={(e) => setLabNumber(Math.max(1, Number(e.target.value) || 1))}
-        />
+        <LabNumberInput value={labNumber} onChange={setLabNumber} />
       </div>
       {error ? <div className="text-sm text-danger">{error}</div> : null}
       <button
@@ -1030,13 +1018,7 @@ function OccupantBlock({
         <div className="flex gap-2 items-end">
           <div className="flex-1">
             <div className="label">Номер лаби</div>
-            <input
-              type="number"
-              className="input"
-              min={1}
-              value={labNumber}
-              onChange={(e) => setLabNumber(Math.max(1, Number(e.target.value) || 1))}
-            />
+            <LabNumberInput value={labNumber} onChange={setLabNumber} />
           </div>
           <button
             type="button"

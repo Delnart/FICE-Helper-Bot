@@ -178,6 +178,83 @@ export class ScheduleService {
     return { current, next, weekType: week };
   }
 
+  // ── Session (exam) schedule ──────────────────────────────────────────────────
+
+  /**
+   * Exam schedule for a group (live from Campus by group's `campusGroupId`).
+   * Returns one item per exam, already sorted by date.
+   */
+  async sessionsForGroup(groupId: string): Promise<unknown[]> {
+    if (!Types.ObjectId.isValid(groupId)) return [];
+    const group = await this.groups.findById(groupId).lean().exec();
+    if (!group?.campusGroupId) return [];
+    const items = await this.campus.getGroupSessionSchedule(group.campusGroupId);
+    // Build subject map so the front can deep-link from session card → /subjects/:id
+    const subjectMap = await this.buildSubjectMap(groupId);
+    return items.map((s, idx) => ({
+      _id: `sess-${group.campusGroupId}-${s.date}-${idx}`,
+      subjectName: s.subjectName,
+      subjectId: subjectMap.get(normaliseName(s.subjectName)),
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      type: s.type,
+      room: s.room,
+      teacherNames: s.teacherNames,
+    }));
+  }
+
+  /**
+   * Exam schedule for a teacher — every group they teach in, merged together
+   * and sorted by date. Useful for the lecturer's session view.
+   */
+  async sessionsForLecturer(userId: string): Promise<unknown[]> {
+    const user = await this.users.findById(userId).lean().exec();
+    if (!user?.campusLecturerId) return [];
+    // We don't have a direct lecturer-sessions endpoint, so iterate the
+    // groups they teach (via subject.teachers) and collect their sessions.
+    const subjects = await this.subjects
+      .find({ 'teachers.teacherUserId': user._id }, { groupId: 1, name: 1, shortName: 1 })
+      .lean()
+      .exec();
+    const groupIds = [...new Set(subjects.map((s) => String(s.groupId)))];
+    const allGroups = await this.groups
+      .find({ _id: { $in: groupIds.map((id) => new Types.ObjectId(id)) } })
+      .lean()
+      .exec();
+    const subjectsByGroup = new Map<string, Set<string>>();
+    for (const s of subjects) {
+      const gid = String(s.groupId);
+      const set = subjectsByGroup.get(gid) ?? new Set<string>();
+      if (s.name) set.add(normaliseName(s.name));
+      if (s.shortName) set.add(normaliseName(s.shortName));
+      subjectsByGroup.set(gid, set);
+    }
+
+    const out: Array<Record<string, unknown>> = [];
+    for (const g of allGroups) {
+      if (!g.campusGroupId) continue;
+      const items = await this.campus.getGroupSessionSchedule(g.campusGroupId);
+      const subjectFilter = subjectsByGroup.get(String(g._id));
+      for (const s of items) {
+        // Only show exams for subjects the lecturer is actually assigned to.
+        if (subjectFilter && !subjectFilter.has(normaliseName(s.subjectName))) continue;
+        out.push({
+          _id: `sess-${g.campusGroupId}-${s.date}-${s.subjectName}`,
+          subjectName: s.subjectName,
+          groupName: g.academicName,
+          date: s.date,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          type: s.type,
+          room: s.room,
+        });
+      }
+    }
+    out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return out;
+  }
+
   // ── Lecturer schedule (teacher view) ─────────────────────────────────────────
 
   /**

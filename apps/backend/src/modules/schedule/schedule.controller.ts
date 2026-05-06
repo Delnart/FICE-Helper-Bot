@@ -63,6 +63,21 @@ export class ScheduleController {
     return this.schedule.lecturerNow(user.userId);
   }
 
+  /**
+   * Exam-schedule (сесія) for the active group. Anyone in the group sees it.
+   */
+  @Get('sessions')
+  sessions(@ActiveGroupId() activeGroupId: string | undefined) {
+    if (!activeGroupId) throw new BadRequestException('No active group');
+    return this.schedule.sessionsForGroup(activeGroupId);
+  }
+
+  /** Exam-schedule for teachers (across all groups they teach in). */
+  @Get('lecturer/sessions')
+  lecturerSessions(@CurrentUser() user: RequestUser) {
+    return this.schedule.sessionsForLecturer(user.userId);
+  }
+
   @Post('sync')
   sync(
     @CurrentUser() user: RequestUser,

@@ -5,6 +5,7 @@ import {
   IsInt,
   IsISO8601,
   IsMongoId,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -36,9 +37,15 @@ export class UpdateQueueDto {
   @IsOptional() @ValidateNested() @Type(() => QueueRulesDto) rules?: QueueRulesDto;
 }
 
+/**
+ * Cap on the lab number — anything past 50 is almost certainly a typo.
+ * Sub-labs like "3.1" / "3.2" are allowed: one decimal place, still ≤ 50.
+ */
+const MAX_LAB_NUMBER = 50;
+
 export class EnrollDto {
   @IsInt() @Min(1) slotIndex!: number;
-  @IsInt() @Min(1) labNumber!: number;
+  @IsNumber({ maxDecimalPlaces: 1 }) @Min(0.1) @Max(MAX_LAB_NUMBER) labNumber!: number;
 }
 
 export class AdminEnrollDto extends EnrollDto {
@@ -46,7 +53,11 @@ export class AdminEnrollDto extends EnrollDto {
 }
 
 export class UpdateEntryDto {
-  @IsOptional() @IsInt() @Min(1) labNumber?: number;
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 1 })
+  @Min(0.1)
+  @Max(MAX_LAB_NUMBER)
+  labNumber?: number;
   @IsOptional() @IsEnum(QueueStatus) status?: QueueStatus;
 }
 

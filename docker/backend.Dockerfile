@@ -8,6 +8,7 @@ RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 FROM node:20-alpine AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=2048
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 COPY tsconfig.base.json ./
@@ -19,6 +20,13 @@ RUN npx nest build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Alpine ships without tzdata, so `TZ=Europe/Kyiv` would silently fall back to
+# UTC and our "now lesson" calc would be 3 hours off. Install tzdata + bake the
+# Kyiv zone in by default; docker-compose can still override TZ per env.
+RUN apk add --no-cache tzdata \
+  && cp /usr/share/zoneinfo/Europe/Kyiv /etc/localtime \
+  && echo "Europe/Kyiv" > /etc/timezone
+ENV TZ=Europe/Kyiv
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
