@@ -204,14 +204,11 @@ export default function SubjectQueuePage() {
 
       {/* Incoming swaps */}
       {incoming.data && incoming.data.length > 0 ? (
-        <section className="card border-warn/40 bg-warn/5 space-y-2">
-          <div className="text-[12px] uppercase tracking-wide text-warn font-medium">
-            Пропозиція обміну
-          </div>
-          {incoming.data.map((s) => (
-            <SwapInvite key={s._id} swap={s} onDone={refresh} />
-          ))}
-        </section>
+        <IncomingSwapsCard
+          queueId={data._id}
+          swaps={incoming.data}
+          onChanged={refresh}
+        />
       ) : null}
 
       {/* Settings (manage only) */}
@@ -470,35 +467,130 @@ function Avatar({
   );
 }
 
-function SwapInvite({ swap, onDone }: { swap: IncomingSwap; onDone: () => void }) {
+/**
+ * Section card for the receiver: shows every pending incoming swap, plus a
+ * one-click "Decline all" button when there are 2+ — anti-spam relief.
+ *
+ * Optimistic UI: when receiver clicks Accept/Decline, the row disappears
+ * immediately (we patch React Query's cache before the server responds).
+ */
+function IncomingSwapsCard({
+  queueId,
+  swaps,
+  onChanged,
+}: {
+  queueId: string;
+  swaps: IncomingSwap[];
+  onChanged: () => void;
+}) {
+  const qc = useQueryClient();
+  const cacheKey = ['queue-incoming-swaps', queueId];
+
+  // Optimistically remove a swap from the local list so the row vanishes
+  // before the network round-trip completes.
+  const removeFromCache = (swapId: string) => {
+    qc.setQueryData<IncomingSwap[]>(cacheKey, (prev) =>
+      (prev ?? []).filter((s) => s._id !== swapId),
+    );
+  };
+  const removeAllFromCache = () => {
+    qc.setQueryData<IncomingSwap[]>(cacheKey, []);
+  };
+
+  const declineAll = useMutation({
+    mutationFn: () =>
+      api<{ declined: number }>(`/queues/${queueId}/swaps/decline-all`, {
+        method: 'POST',
+      }),
+    onMutate: () => removeAllFromCache(),
+    onSuccess: () => {
+      haptic('success');
+      onChanged();
+    },
+    onError: () => {
+      haptic('error');
+      // Roll back: refetch the truth.
+      void qc.invalidateQueries({ queryKey: cacheKey });
+    },
+  });
+
+  return (
+    <section className="card border-warn/40 bg-warn/5 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[12px] uppercase tracking-wide text-warn font-medium">
+          Пропозиції обміну ({swaps.length})
+        </div>
+        {swaps.length > 1 ? (
+          <button
+            type="button"
+            className="text-xs text-ink-500 hover:text-danger underline disabled:opacity-50"
+            disabled={declineAll.isPending}
+            onClick={() => {
+              if (window.confirm(`Відхилити всі ${swaps.length} пропозицій обміну?`)) {
+                declineAll.mutate();
+              }
+            }}
+          >
+            Відхилити всі
+          </button>
+        ) : null}
+      </div>
+      {swaps.map((s) => (
+        <SwapInvite
+          key={s._id}
+          swap={s}
+          onResolve={() => {
+            removeFromCache(s._id);
+            onChanged();
+          }}
+          onError={() => void qc.invalidateQueries({ queryKey: cacheKey })}
+        />
+      ))}
+    </section>
+  );
+}
+
+function SwapInvite({
+  swap,
+  onResolve,
+  onError,
+}: {
+  swap: IncomingSwap;
+  onResolve: () => void;
+  onError: () => void;
+}) {
   const respond = useMutation({
     mutationFn: (accept: boolean) =>
       api(`/queues/swaps/${swap._id}/respond`, {
         method: 'POST',
         json: { accept },
       }),
-    onSuccess: () => {
-      haptic('success');
-      onDone();
+    // Fire optimistic removal *before* network so the row disappears instantly.
+    onMutate: () => onResolve(),
+    onSuccess: () => haptic('success'),
+    onError: () => {
+      haptic('error');
+      onError();
     },
-    onError: () => haptic('error'),
   });
   return (
     <div className="flex items-center justify-between gap-2">
-      <div className="text-sm">
-        <span className="font-medium">{swap.fromFullName}</span> пропонує помінятися:
-        №{swap.fromSlotIndex} ↔ №{swap.toSlotIndex}
+      <div className="text-sm leading-snug">
+        <div className="font-medium">{swap.fromFullName}</div>
+        <div className="text-xs text-ink-500 mt-0.5">
+          їхнє місце <b>№{swap.fromSlotIndex}</b> → ваше <b>№{swap.toSlotIndex}</b>
+        </div>
       </div>
       <div className="flex gap-1.5 flex-shrink-0">
         <button
-          className="btn-primary h-8 px-3 text-xs"
+          className="btn-primary h-8 px-3 text-xs disabled:opacity-50"
           disabled={respond.isPending}
           onClick={() => respond.mutate(true)}
         >
           Згоден
         </button>
         <button
-          className="btn-secondary h-8 px-3 text-xs"
+          className="btn-secondary h-8 px-3 text-xs disabled:opacity-50"
           disabled={respond.isPending}
           onClick={() => respond.mutate(false)}
         >

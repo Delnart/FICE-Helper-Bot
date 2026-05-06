@@ -348,9 +348,139 @@ export class QueuesService {
     if (!isOwner && !canManage) throw new ForbiddenException();
 
     if (dto.labNumber !== undefined) entry.labNumber = dto.labNumber;
+
+    const oldStatus = entry.status;
     if (dto.status !== undefined) entry.status = dto.status;
+
+    // Auto-cascade status changes through the queue: when status TRANSITIONS
+    // to a "moving" state, promote the next eligible slot. Only fires on
+    // genuine transitions (oldStatus !== newStatus) — re-saving the same
+    // status doesn't re-fire DMs.
+    const promoted = (dto.status !== undefined && dto.status !== oldStatus)
+      ? this.advanceQueueChain(q, slotIndex, dto.status, oldStatus)
+      : [];
+
     await q.save();
+
+    // DM promoted users — fire-and-forget so the request stays fast.
+    for (const p of promoted) {
+      void this.notifyChainPromotion(p, q).catch((err) =>
+        this.logger.warn(`queue chain DM failed: ${(err as Error).message}`),
+      );
+    }
     return q;
+  }
+
+  /**
+   * Mutate `q.entries` in place to cascade a status transition to the next
+   * eligible slot(s). Returns the list of slots that were promoted, so the
+   * caller can DM those users.
+   *
+   *  • newStatus = `passing` → next eligible occupant becomes `preparing`.
+   *  • newStatus ∈ {`passed`,`missed`,`failed`} → next becomes `passing`,
+   *    AND the one after that becomes `preparing`.
+   *
+   * "Eligible" = has an occupant, slotIndex strictly greater than current,
+   * status not already `passed`/`missed`/`failed`. We never demote: someone
+   * already preparing stays preparing, etc.
+   */
+  private advanceQueueChain(
+    q: QueueDocument,
+    fromSlotIndex: number,
+    newStatus: QueueStatus,
+    oldStatus: QueueStatus,
+  ): Array<{ slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus }> {
+    const passing: QueueStatus = QueueStatus.Passing;
+    const preparing: QueueStatus = QueueStatus.Preparing;
+    const finalStates: QueueStatus[] = [
+      QueueStatus.Passed,
+      QueueStatus.Missed,
+      QueueStatus.Failed,
+    ];
+
+    const promotions: Array<{ slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus }> = [];
+
+    // Helper: find next eligible occupant strictly after `afterIndex`.
+    const findNext = (afterIndex: number) =>
+      q.entries
+        .filter(
+          (e) =>
+            e.slotIndex > afterIndex &&
+            !!e.userId &&
+            !finalStates.includes(e.status as QueueStatus),
+        )
+        .sort((a, b) => a.slotIndex - b.slotIndex)[0];
+
+    if (newStatus === passing && oldStatus !== passing) {
+      // Slot N → "Здає": promote N+1 to "Готується".
+      const next = findNext(fromSlotIndex);
+      if (next && next.status !== preparing && next.status !== passing) {
+        next.status = preparing;
+        if (next.userId) {
+          promotions.push({
+            slotIndex: next.slotIndex,
+            userId: next.userId,
+            toStatus: preparing,
+          });
+        }
+      }
+    } else if (
+      finalStates.includes(newStatus) &&
+      !finalStates.includes(oldStatus)
+    ) {
+      // Slot N → "Здав"/"Пропустив"/"Не здав":
+      //   N+1 (preparing or default) → "Здає"
+      //   N+2 (default) → "Готується"
+      const next1 = findNext(fromSlotIndex);
+      if (next1 && next1.status !== passing) {
+        next1.status = passing;
+        if (next1.userId) {
+          promotions.push({
+            slotIndex: next1.slotIndex,
+            userId: next1.userId,
+            toStatus: passing,
+          });
+        }
+        const next2 = findNext(next1.slotIndex);
+        if (next2 && next2.status !== preparing && next2.status !== passing) {
+          next2.status = preparing;
+          if (next2.userId) {
+            promotions.push({
+              slotIndex: next2.slotIndex,
+              userId: next2.userId,
+              toStatus: preparing,
+            });
+          }
+        }
+      }
+    }
+
+    return promotions;
+  }
+
+  /** DM a user that the queue advanced and they're now next / preparing. */
+  private async notifyChainPromotion(
+    p: { slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus },
+    q: QueueDocument,
+  ): Promise<void> {
+    const u = await this.users.findById(p.userId).lean().exec();
+    if (!u?.telegramId) return;
+
+    // Honour `dmNextInQueue` notification preference.
+    const prefs = await this.swaps.db
+      .collection('notification_prefs')
+      .findOne({ userId: new Types.ObjectId(String(u._id)) });
+    if (prefs && prefs.dmNextInQueue === false) return;
+
+    const text =
+      p.toStatus === QueueStatus.Passing
+        ? `<b>Ваша черга — ідіть здавати!</b>\n\n` +
+          `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
+          `Попередній студент завершив, ви тепер «Здає».`
+        : `<b>Готуйтесь — ви наступний</b>\n\n` +
+          `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
+          `Попередній починає здавати — підготуйте свої файли.`;
+    await this.bot.sendMessage(u.telegramId, text);
   }
 
   async requestSwap(
@@ -365,6 +495,40 @@ export class QueuesService {
     const target = q.entries.find((e) => e.slotIndex === dto.targetSlotIndex);
     if (!target) throw new NotFoundException('Target slot is empty');
     if (String(target.userId) === user.userId) throw new BadRequestException('Cannot swap with yourself');
+
+    // Anti-flood: at most one pending swap per (queue, fromUser). Forces the
+    // user to either wait for a response, or cancel/replace their previous
+    // request — instead of spamming everyone in the queue.
+    const existing = await this.swaps
+      .findOne({
+        queueId: q._id,
+        fromUserId: new Types.ObjectId(user.userId),
+        status: 'pending',
+      })
+      .lean()
+      .exec();
+    if (existing) {
+      throw new BadRequestException(
+        'У вас вже є активний запит на обмін у цій черзі. Скасуйте його, щоб надіслати новий.',
+      );
+    }
+
+    // Same fromUser → same toUser within an hour: silently dedupe so a user
+    // can't bypass the limit by cancelling and re-requesting in a tight loop.
+    const recentTo = await this.swaps
+      .findOne({
+        queueId: q._id,
+        fromUserId: new Types.ObjectId(user.userId),
+        toUserId: target.userId,
+        createdAt: { $gte: new Date(Date.now() - 60 * 60 * 1000) },
+      })
+      .lean()
+      .exec();
+    if (recentTo) {
+      throw new BadRequestException(
+        'Ви вже надсилали запит цій людині недавно. Спробуйте через годину.',
+      );
+    }
 
     const swap = await this.swaps.create({
       queueId: q._id,
@@ -405,13 +569,17 @@ export class QueuesService {
     if (String(swap.toUserId) !== user.userId) throw new ForbiddenException();
     if (swap.status !== 'pending') throw new BadRequestException('Already decided');
 
+    const q = await this.queues.findById(swap.queueId).exec();
+    if (!q) throw new NotFoundException('Queue gone');
+
     if (!accept) {
       swap.status = 'declined';
       await swap.save();
+      void this.notifySwapResolved(swap, q, false).catch((err) =>
+        this.logger.warn(`swap decline DM failed: ${(err as Error).message}`),
+      );
       return;
     }
-    const q = await this.queues.findById(swap.queueId).exec();
-    if (!q) throw new NotFoundException('Queue gone');
     const a = q.entries.find((e) => e.slotIndex === swap.fromSlotIndex);
     const b = q.entries.find((e) => e.slotIndex === swap.toSlotIndex);
     if (!a || !b) throw new BadRequestException('Swap no longer valid');
@@ -419,6 +587,96 @@ export class QueuesService {
     await q.save();
     swap.status = 'accepted';
     await swap.save();
+    void this.notifySwapResolved(swap, q, true).catch((err) =>
+      this.logger.warn(`swap accept DM failed: ${(err as Error).message}`),
+    );
+  }
+
+  /**
+   * Bulk-decline: receiver presses one button to reject every pending swap
+   * request that came to them in this queue. Each sender gets a DM.
+   */
+  async declineAllIncomingSwaps(
+    user: RequestUser,
+    queueId: string,
+  ): Promise<{ declined: number }> {
+    if (!Types.ObjectId.isValid(queueId)) throw new NotFoundException('Queue not found');
+    const q = await this.queues.findById(queueId).lean().exec();
+    if (!q) throw new NotFoundException('Queue not found');
+
+    const pending = await this.swaps
+      .find({
+        queueId: new Types.ObjectId(queueId),
+        toUserId: new Types.ObjectId(user.userId),
+        status: 'pending',
+      })
+      .exec();
+    if (pending.length === 0) return { declined: 0 };
+
+    await this.swaps.updateMany(
+      {
+        queueId: new Types.ObjectId(queueId),
+        toUserId: new Types.ObjectId(user.userId),
+        status: 'pending',
+      },
+      { $set: { status: 'declined' } },
+    );
+
+    // Fire-and-forget DMs to each sender so they know not to wait.
+    for (const swap of pending) {
+      void this.notifySwapResolved(swap, q as QueueDocument, false).catch((err) =>
+        this.logger.warn(`bulk-decline DM failed: ${(err as Error).message}`),
+      );
+    }
+    return { declined: pending.length };
+  }
+
+  /**
+   * Cancel one's own pending swap request — required so the user can replace
+   * it with a new one (since `requestSwap` enforces "at most one pending").
+   */
+  async cancelMySwap(user: RequestUser, swapId: string): Promise<void> {
+    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Swap not found');
+    const swap = await this.swaps.findById(swapId).exec();
+    if (!swap) throw new NotFoundException('Swap not found');
+    if (String(swap.fromUserId) !== user.userId) throw new ForbiddenException();
+    if (swap.status !== 'pending') throw new BadRequestException('Already decided');
+    swap.status = 'cancelled' as 'declined'; // schema only knows declined; reuse
+    await swap.save();
+  }
+
+  /**
+   * DM the swap's sender that their request was accepted/declined. Respects
+   * the user's `dmSwapRequests` notification preference.
+   */
+  private async notifySwapResolved(
+    swap: QueueSwapRequestDocument,
+    q: QueueDocument,
+    accepted: boolean,
+  ): Promise<void> {
+    const fromUser = await this.users.findById(swap.fromUserId).lean().exec();
+    if (!fromUser?.telegramId) return;
+
+    // Honour user's DM preference for swap-related events.
+    const prefs = await this.swaps.db
+      .collection('notification_prefs')
+      .findOne({ userId: new Types.ObjectId(String(fromUser._id)) });
+    if (prefs && prefs.dmSwapRequests === false) return;
+
+    const target = await this.users.findById(swap.toUserId).lean().exec();
+    const targetName =
+      target?.fullName?.trim() ||
+      [target?.firstName, target?.lastName].filter(Boolean).join(' ').trim() ||
+      target?.username ||
+      'студент';
+    const text = accepted
+      ? `<b>Обмін підтверджено</b>\n\n` +
+        `${escapeHtml(targetName)} погодився на обмін у черзі «${escapeHtml(q.title)}». ` +
+        `Ваше нове місце: <b>№${swap.fromSlotIndex}</b> ↔ було <b>№${swap.toSlotIndex}</b>.`
+      : `<b>Обмін відхилено</b>\n\n` +
+        `${escapeHtml(targetName)} відхилив запит на обмін у черзі «${escapeHtml(q.title)}» ` +
+        `(місце ${swap.fromSlotIndex} ↔ ${swap.toSlotIndex}).`;
+    await this.bot.sendMessage(fromUser.telegramId, text);
   }
 
   private normaliseRules(dto?: QueueRulesInput | QueueRulesDto | undefined): Queue['rules'] {

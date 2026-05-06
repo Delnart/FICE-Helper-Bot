@@ -57,6 +57,18 @@ export class QueuesController {
     return this.queues.respondSwap(user, swapId, accept);
   }
 
+  /** Cancel one's own pending swap request (so they can send a new one). */
+  @Delete('swaps/:swapId')
+  cancelSwap(@CurrentUser() user: RequestUser, @Param('swapId') swapId: string) {
+    return this.queues.cancelMySwap(user, swapId).then(() => ({ ok: true }));
+  }
+
+  /** Bulk-decline every pending incoming swap request in this queue. */
+  @Post(':id/swaps/decline-all')
+  declineAllIncoming(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.queues.declineAllIncomingSwaps(user, id);
+  }
+
   @Get('by-subject/:subjectId')
   bySubject(@CurrentUser() user: RequestUser, @Param('subjectId') subjectId: string) {
     return this.queues.findOrCreateForSubject(user, subjectId);
