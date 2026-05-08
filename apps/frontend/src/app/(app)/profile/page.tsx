@@ -27,6 +27,7 @@ export default function ProfilePage() {
   const [fullName, setFullName] = useState('');
   const [birthday, setBirthday] = useState('');
   const [editing, setEditing] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   useEffect(() => {
     if (me.data) {
@@ -35,19 +36,49 @@ export default function ProfilePage() {
     }
   }, [me.data]);
 
+  // Mirror of the backend regex (UpdateProfileDto). Latin + Cyrillic letters,
+  // space, dot, hyphen, apostrophes — anything else (digits, emoji, symbols)
+  // is rejected. We pre-validate client-side so the user gets instant feedback
+  // instead of a generic 400 from the server.
+  const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
+  const validateName = (name: string): string | null => {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return 'Вкажіть ПІБ.';
+    if (trimmed.length > 200) return 'ПІБ занадто довге (макс. 200 символів).';
+    if (!FULL_NAME_RE.test(trimmed)) {
+      return 'ПІБ має містити лише літери, пробіл, дефіс або апостроф. Емодзі та цифри не допускаються.';
+    }
+    return null;
+  };
+
   const save = useMutation({
     mutationFn: () =>
       api<MeDto>('/users/me', {
         method: 'PATCH',
-        json: { fullName, birthday: birthday || null },
+        json: { fullName: fullName.trim(), birthday: birthday || null },
       }),
     onSuccess: () => {
       haptic('success');
       setEditing(false);
+      setNameError(null);
       qc.invalidateQueries({ queryKey: ['me'] });
     },
-    onError: () => haptic('error'),
+    onError: (err: Error) => {
+      setNameError(err.message);
+      haptic('error');
+    },
   });
+
+  function handleSave() {
+    const err = validateName(fullName);
+    if (err) {
+      setNameError(err);
+      haptic('error');
+      return;
+    }
+    setNameError(null);
+    save.mutate();
+  }
 
   const activeGroupId = getActiveGroup();
   const activeMembership = me.data?.memberships.find((m) => m.groupId === activeGroupId);
@@ -96,12 +127,20 @@ export default function ProfilePage() {
               <input
                 className="input"
                 value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
+                onChange={(e) => {
+                  setFullName(e.target.value);
+                  if (nameError) setNameError(null); // clear on next keystroke
+                }}
                 placeholder="Прізвище Імʼя По-батькові"
               />
-              <div className="text-[12px] text-ink-500 mt-1.5">
-                Повне імʼя відображається у журналі та чергах.
-              </div>
+              {nameError ? (
+                <div className="text-[12px] text-danger mt-1.5">{nameError}</div>
+              ) : (
+                <div className="text-[12px] text-ink-500 mt-1.5">
+                  Повне імʼя відображається у журналі та чергах. Лише літери,
+                  пробіл, дефіс або апостроф.
+                </div>
+              )}
             </div>
             {!isTeacherOnly ? (
               <div>
@@ -132,7 +171,7 @@ export default function ProfilePage() {
               <button
                 className="btn-primary flex-1"
                 disabled={save.isPending || !fullName.trim()}
-                onClick={() => save.mutate()}
+                onClick={handleSave}
               >
                 {save.isPending ? 'Зберігаємо…' : 'Зберегти'}
               </button>

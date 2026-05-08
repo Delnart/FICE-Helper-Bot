@@ -1,16 +1,19 @@
 import { IsISO8601, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 /**
- * Allowed characters in a person's full name:
- *   • Cyrillic letters (Ukrainian + Russian range U+0400..U+04FF)
- *   • Latin letters
- *   • space, hyphen, apostrophe (' and ’)
+ * Allowed characters in a person's full name. Tightened from `\p{L}`, which
+ * inadvertently let through letter-like symbols and some emoji-adjacent
+ * characters; we now restrict to two specific scripts:
+ *
+ *   • Latin script (with diacritics — covers «André», «Müller», etc.)
+ *   • Cyrillic script (Ukrainian + Russian + variants)
+ *   • space, hyphen, apostrophes (`'` U+0027 and `’` U+2019)
  *   • dot (J. K. Rowling — initialed names are still names)
  *
- * Anything else (digits, emoji, punctuation, math symbols) is rejected so the
- * journal / queue / homework lists stay readable. We also cap to 200 chars.
+ * Digits, emoji, math/symbol characters, punctuation, fullwidth forms, etc.
+ * are all rejected so journals / queues / homework lists stay readable.
  */
-const FULL_NAME_RE = /^[\p{L}Ѐ-ӿ\s.'’-]+$/u;
+const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
 
 export class UpdateProfileDto {
   @IsOptional()

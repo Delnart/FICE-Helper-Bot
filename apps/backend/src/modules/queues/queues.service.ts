@@ -415,17 +415,17 @@ export class QueuesService {
   }
 
   /**
-   * Mutate `q.entries` in place to cascade a status transition to the next
-   * eligible slot(s). Returns the list of slots that were promoted, so the
-   * caller can DM those users.
+   * Single rule (kept simple after a real-world test ran the queue out of
+   * order and the multi-step cascade promoted wrong people):
    *
-   *  • newStatus = `passing` → next eligible occupant becomes `preparing`.
-   *  • newStatus ∈ {`passed`,`missed`,`failed`} → next becomes `passing`,
-   *    AND the one after that becomes `preparing`.
+   *   newStatus = `passing` AND oldStatus !== `passing`
+   *     → next eligible occupant becomes `preparing` + DM.
    *
-   * "Eligible" = has an occupant, slotIndex strictly greater than current,
-   * status not already `passed`/`missed`/`failed`. We never demote: someone
-   * already preparing stays preparing, etc.
+   * Everything else (`passed`/`missed`/`failed`) does NOT cascade — the head
+   * keeps explicit control, sets the next "Здає" themselves.
+   *
+   * "Next eligible" = the strictly-greater slotIndex with an occupant whose
+   * status isn't already `passing`, `passed`, `missed`, or `failed`.
    */
   private advanceQueueChain(
     q: QueueDocument,
@@ -435,73 +435,34 @@ export class QueuesService {
   ): Array<{ slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus }> {
     const passing: QueueStatus = QueueStatus.Passing;
     const preparing: QueueStatus = QueueStatus.Preparing;
-    const finalStates: QueueStatus[] = [
+
+    if (newStatus !== passing || oldStatus === passing) return [];
+
+    // Skip any slot that's already past or actively passing — promote the
+    // first slot after it that's still in default/preparing.
+    const blockingStatuses: QueueStatus[] = [
+      QueueStatus.Passing,
       QueueStatus.Passed,
       QueueStatus.Missed,
       QueueStatus.Failed,
     ];
+    const next = q.entries
+      .filter(
+        (e) =>
+          e.slotIndex > fromSlotIndex &&
+          !!e.userId &&
+          !blockingStatuses.includes(e.status as QueueStatus),
+      )
+      .sort((a, b) => a.slotIndex - b.slotIndex)[0];
 
-    const promotions: Array<{ slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus }> = [];
-
-    // Helper: find next eligible occupant strictly after `afterIndex`.
-    const findNext = (afterIndex: number) =>
-      q.entries
-        .filter(
-          (e) =>
-            e.slotIndex > afterIndex &&
-            !!e.userId &&
-            !finalStates.includes(e.status as QueueStatus),
-        )
-        .sort((a, b) => a.slotIndex - b.slotIndex)[0];
-
-    if (newStatus === passing && oldStatus !== passing) {
-      // Slot N → "Здає": promote N+1 to "Готується".
-      const next = findNext(fromSlotIndex);
-      if (next && next.status !== preparing && next.status !== passing) {
-        next.status = preparing;
-        if (next.userId) {
-          promotions.push({
-            slotIndex: next.slotIndex,
-            userId: next.userId,
-            toStatus: preparing,
-          });
-        }
-      }
-    } else if (
-      finalStates.includes(newStatus) &&
-      !finalStates.includes(oldStatus)
-    ) {
-      // Slot N → "Здав"/"Пропустив"/"Не здав":
-      //   N+1 (preparing or default) → "Здає"
-      //   N+2 (default) → "Готується"
-      const next1 = findNext(fromSlotIndex);
-      if (next1 && next1.status !== passing) {
-        next1.status = passing;
-        if (next1.userId) {
-          promotions.push({
-            slotIndex: next1.slotIndex,
-            userId: next1.userId,
-            toStatus: passing,
-          });
-        }
-        const next2 = findNext(next1.slotIndex);
-        if (next2 && next2.status !== preparing && next2.status !== passing) {
-          next2.status = preparing;
-          if (next2.userId) {
-            promotions.push({
-              slotIndex: next2.slotIndex,
-              userId: next2.userId,
-              toStatus: preparing,
-            });
-          }
-        }
-      }
-    }
-
-    return promotions;
+    if (!next || next.status === preparing) return [];
+    next.status = preparing;
+    return next.userId
+      ? [{ slotIndex: next.slotIndex, userId: next.userId, toStatus: preparing }]
+      : [];
   }
 
-  /** DM a user that the queue advanced and they're now next / preparing. */
+  /** DM a user that the queue advanced and they're now `preparing`. */
   private async notifyChainPromotion(
     p: { slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus },
     q: QueueDocument,
@@ -515,14 +476,12 @@ export class QueuesService {
       .findOne({ userId: new Types.ObjectId(String(u._id)) });
     if (prefs && prefs.dmNextInQueue === false) return;
 
+    // Currently only `preparing` ever gets promoted (status chain simplified
+    // after a chaotic queue run — passed/missed/failed no longer cascade).
     const text =
-      p.toStatus === QueueStatus.Passing
-        ? `<b>Ваша черга — ідіть здавати!</b>\n\n` +
-          `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
-          `Попередній студент завершив, ви тепер «Здає».`
-        : `<b>Готуйтесь — ви наступний</b>\n\n` +
-          `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
-          `Попередній починає здавати — підготуйте свої файли.`;
+      `<b>Готуйтесь — ви наступний</b>\n\n` +
+      `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
+      `Попередній починає здавати — підготуйте свої файли.`;
     await this.bot.sendMessage(u.telegramId, text);
   }
 

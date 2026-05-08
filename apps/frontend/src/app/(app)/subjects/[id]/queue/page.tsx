@@ -635,10 +635,11 @@ function IncomingSwapsCard({
         <SwapInvite
           key={s._id}
           swap={s}
-          onResolve={() => {
-            removeFromCache(s._id);
-            onChanged();
-          }}
+          // Optimistic remove on click — DON'T also invalidate here, otherwise
+          // React Query immediately refetches and the still-pending row from
+          // the backend reappears before the respond request finishes.
+          onResolveStart={() => removeFromCache(s._id)}
+          onResolveDone={() => onChanged()}
           onError={() => void qc.invalidateQueries({ queryKey: cacheKey })}
         />
       ))}
@@ -648,11 +649,15 @@ function IncomingSwapsCard({
 
 function SwapInvite({
   swap,
-  onResolve,
+  onResolveStart,
+  onResolveDone,
   onError,
 }: {
   swap: IncomingSwap;
-  onResolve: () => void;
+  /** Called BEFORE the network request — strip the row from the cache. */
+  onResolveStart: () => void;
+  /** Called AFTER the request succeeds — refresh the broader queue. */
+  onResolveDone: () => void;
   onError: () => void;
 }) {
   const respond = useMutation({
@@ -661,9 +666,15 @@ function SwapInvite({
         method: 'POST',
         json: { accept },
       }),
-    // Fire optimistic removal *before* network so the row disappears instantly.
-    onMutate: () => onResolve(),
-    onSuccess: () => haptic('success'),
+    // Optimistic strip — row disappears instantly.
+    onMutate: () => onResolveStart(),
+    // Only refresh the broader queue after the backend confirmed the change,
+    // otherwise the refetch returns the still-pending row and undoes our
+    // optimistic removal.
+    onSuccess: () => {
+      haptic('success');
+      onResolveDone();
+    },
     onError: () => {
       haptic('error');
       onError();
