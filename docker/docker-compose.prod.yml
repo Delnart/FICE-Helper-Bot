@@ -1,0 +1,75 @@
+# Production compose: pulls pre-built images from GitHub Container Registry
+# instead of building locally on the VPS. This is the file the server uses
+# day-to-day; the original `docker-compose.yml` (with `build:` blocks) stays
+# for local development and the rare "build on server" fallback.
+#
+# Deploy flow:
+#   • Laptop: ./scripts/build-and-push.{sh,ps1}
+#   • Server: docker compose -f docker/docker-compose.prod.yml --env-file .env pull
+#             docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+#
+# Mongo is identical to the dev compose — no point in two flavours of the DB.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-change-me}
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  backend:
+    image: ghcr.io/delnart/fice-backend:latest
+    # Always pull the newest version of the tag when `up -d` runs — saves us
+    # one explicit `docker compose pull` step on every redeploy.
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      TZ: Europe/Kyiv
+      BACKEND_PORT: 3000
+      MONGO_URI: ${MONGO_URI}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://ficebot.dev}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+      CAMPUS_API_BASE: ${CAMPUS_API_BASE:-https://api.campus.kpi.ua}
+      CAMPUS_API_TOKEN: ${CAMPUS_API_TOKEN:-}
+      GOOGLE_SHEETS_ID: ${GOOGLE_SPREADSHEET_ID:-}
+      GOOGLE_SPREADSHEET_ID: ${GOOGLE_SPREADSHEET_ID:-}
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}
+      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
+      PUBLIC_WEB_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
+    ports:
+      - "3000:3000"
+
+  frontend:
+    image: ghcr.io/delnart/fice-frontend:latest
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      # NEXT_PUBLIC_API_BASE is baked into the bundle at build time, so this
+      # runtime var is informational only (Next.js doesn't read it at runtime).
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.ficebot.dev}
+    ports:
+      - "3001:3001"
+
+volumes:
+  mongo_data:
