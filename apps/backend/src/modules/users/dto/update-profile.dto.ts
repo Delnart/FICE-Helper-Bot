@@ -18,7 +18,10 @@ const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
-  @MaxLength(200)
+  // 100 chars is enough even for the longest real Ukrainian/Russian names
+  // (Двойне-прізвище-через-дефіс По-Батькові). Lower than this cap also
+  // keeps journal / queue / homework UIs readable on small screens.
+  @MaxLength(100)
   @Matches(FULL_NAME_RE, {
     message:
       'ПІБ має містити лише літери, пробіл, дефіс або апостроф. ' +

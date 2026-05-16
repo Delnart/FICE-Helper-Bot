@@ -34,18 +34,45 @@ interface GroupMember {
 
 export default function GroupSettingsPage() {
   const qc = useQueryClient();
+  const queryKey = ['group-settings'];
   const { data } = useQuery({
-    queryKey: ['group-settings'],
+    queryKey,
     queryFn: () => api<GroupSettings>('/groups/current/settings'),
   });
+  // Optimistic-update pattern (see notifications/page.tsx) — toggles flip
+  // instantly, no race between concurrent PATCH requests.
   const save = useMutation({
     mutationFn: (p: Partial<GroupSettings>) =>
       api<GroupSettings>('/groups/current/settings', { method: 'PATCH', json: p }),
-    onSuccess: () => {
+    onMutate: async (partial) => {
+      await qc.cancelQueries({ queryKey });
+      const prev = qc.getQueryData<GroupSettings>(queryKey);
+      if (prev) qc.setQueryData<GroupSettings>(queryKey, { ...prev, ...partial });
+      return { prev };
+    },
+    onSuccess: (server) => {
+      qc.setQueryData<GroupSettings>(queryKey, server);
       haptic('selection');
-      qc.invalidateQueries({ queryKey: ['group-settings'] });
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData<GroupSettings>(queryKey, ctx.prev);
+      haptic('error');
     },
   });
+
+  // Local state for the slider — debounced so we don't fire a PATCH per pixel
+  // dragged. The value is shown immediately from `localMinutes`; the server
+  // call only goes out once the user stops moving for 300ms.
+  const [localMinutes, setLocalMinutes] = useState<number | null>(null);
+  const minutesValue = localMinutes ?? data?.lessonReminderMinutes ?? 0;
+  useEffect(() => {
+    if (localMinutes === null) return;
+    const t = setTimeout(() => {
+      save.mutate({ lessonReminderMinutes: localMinutes });
+      setLocalMinutes(null); // hand control back to server-state
+    }, 300);
+    return () => clearTimeout(t);
+  }, [localMinutes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data) return <div className="card text-sm text-ink-500">Завантаження…</div>;
   const disabled = !data.canEdit;
@@ -96,12 +123,14 @@ export default function GroupSettingsPage() {
             min={0}
             max={60}
             step={5}
-            value={data.lessonReminderMinutes}
+            value={minutesValue}
             disabled={disabled}
-            onChange={(e) => save.mutate({ lessonReminderMinutes: Number(e.target.value) })}
+            onChange={(e) => setLocalMinutes(Number(e.target.value))}
             className="w-full"
           />
-          <div className="text-sm text-ink-500">{data.lessonReminderMinutes} хв</div>
+          <div className="text-sm text-ink-500">
+            {minutesValue === 0 ? 'Не сповіщати' : `${minutesValue} хв до пари`}
+          </div>
         </div>
       </section>
     </div>

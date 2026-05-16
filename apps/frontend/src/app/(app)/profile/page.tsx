@@ -127,9 +127,18 @@ export default function ProfilePage() {
               <input
                 className="input"
                 value={fullName}
+                maxLength={100}
                 onChange={(e) => {
-                  setFullName(e.target.value);
-                  if (nameError) setNameError(null); // clear on next keystroke
+                  // Strip disallowed chars on input so the user sees instant
+                  // feedback instead of typing happily into a field that will
+                  // 400 on save. Keep only Latin/Cyrillic letters, space,
+                  // hyphen, apostrophes, dot. Same set as backend regex.
+                  const filtered = e.target.value.replace(
+                    /[^\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]/gu,
+                    '',
+                  );
+                  setFullName(filtered.slice(0, 100));
+                  if (nameError) setNameError(null);
                 }}
                 placeholder="Прізвище Імʼя По-батькові"
               />
@@ -137,8 +146,7 @@ export default function ProfilePage() {
                 <div className="text-[12px] text-danger mt-1.5">{nameError}</div>
               ) : (
                 <div className="text-[12px] text-ink-500 mt-1.5">
-                  Повне імʼя відображається у журналі та чергах. Лише літери,
-                  пробіл, дефіс або апостроф.
+                  Лише літери, пробіл, дефіс або апостроф. До 100 символів.
                 </div>
               )}
             </div>

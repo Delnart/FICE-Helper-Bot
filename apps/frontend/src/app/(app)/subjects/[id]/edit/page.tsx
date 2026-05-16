@@ -118,6 +118,12 @@ export default function EditSubjectPage() {
     mutationFn: () => api<{ ok: true }>(`/subjects/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       haptic('success');
+      // Drop this subject from every cache it appears in, otherwise the
+      // home page / subject lists still show it until manual refresh.
+      qc.removeQueries({ queryKey: ['subject', id] });
+      void qc.invalidateQueries({ queryKey: ['subjects'] });
+      void qc.invalidateQueries({ queryKey: ['subject-hw'] });
+      void qc.invalidateQueries({ queryKey: ['hw-pending-count'] });
       router.replace('/');
     },
     onError: (err: unknown) => {

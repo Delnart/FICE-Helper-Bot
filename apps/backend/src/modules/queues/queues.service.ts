@@ -298,6 +298,9 @@ export class QueuesService {
   async update(user: RequestUser, id: string, dto: UpdateQueueDto): Promise<QueueDocument> {
     const q = await this.findById(id);
     this.assertCanManage(user, String(q.groupId));
+
+    const wasOpen = this.liveStatus(q) === 'open';
+
     if (dto.title !== undefined) q.title = dto.title;
     if (dto.slotsCount !== undefined) {
       if (q.entries.some((e) => e.slotIndex > dto.slotsCount!)) {
@@ -307,7 +310,79 @@ export class QueuesService {
     }
     if (dto.rules) q.rules = { ...q.rules, ...this.normaliseRules(dto.rules) };
     await q.save();
+
+    const isOpenNow = this.liveStatus(q) === 'open';
+    // Transition closed → open → fire DM + group chat notification.
+    // Fire-and-forget so the API response stays fast.
+    if (!wasOpen && isOpenNow) {
+      void this.dispatchQueueOpenNotifications(q).catch((err) =>
+        this.logger.warn(`queue-open dispatch failed: ${(err as Error).message}`),
+      );
+    }
     return q;
+  }
+
+  /**
+   * Announce a freshly-opened queue:
+   *   • Telegram DM to every group member who has `dmQueueOpen=true` in prefs.
+   *   • One message in the group chat if `group.notificationsEnabled=true`.
+   * Both channels are best-effort — one failing doesn't stop the other.
+   */
+  private async dispatchQueueOpenNotifications(q: QueueDocument): Promise<void> {
+    const groupId = q.groupId;
+    const group = await this.swaps.db
+      .collection('academic_groups')
+      .findOne({ _id: groupId });
+    if (!group) return;
+
+    // 1. Group chat announcement.
+    if (group.notificationsEnabled !== false && group.telegramChatId) {
+      const opts: Record<string, unknown> = {};
+      if (group.messageThreadId) opts.message_thread_id = group.messageThreadId;
+      await this.bot
+        .sendMessage(
+          group.telegramChatId as number,
+          `<b>🔔 Черга «${escapeHtml(q.title)}» відкрита</b>\n` +
+            `Заходьте в FICE Helper і записуйтесь.`,
+          opts,
+        )
+        .catch((err) =>
+          this.logger.warn(`group chat queue-open failed: ${(err as Error).message}`),
+        );
+    }
+
+    // 2. DM each member who opted in.
+    const members = await this.users
+      .find({ 'memberships.groupId': groupId }, { _id: 1, telegramId: 1 })
+      .lean()
+      .exec();
+    if (members.length === 0) return;
+
+    const prefsByUser = await this.swaps.db
+      .collection('notification_prefs')
+      .find({ userId: { $in: members.map((m) => m._id) } })
+      .toArray();
+    const optInMap = new Map<string, boolean>(
+      prefsByUser.map((p) => [String(p.userId), p.dmQueueOpen !== false]),
+    );
+
+    const dmText =
+      `<b>🔔 Черга відкрилась</b>\n\n` +
+      `«${escapeHtml(q.title)}» — можна записуватись.\n` +
+      `Відкрийте FICE Helper, щоб обрати місце.`;
+
+    for (const m of members) {
+      if (!m.telegramId) continue;
+      // Default = opt-in: if user never opened settings, prefs row may not exist
+      // → treat as "send" (matches schema default true).
+      const optedIn = optInMap.get(String(m._id)) ?? true;
+      if (!optedIn) continue;
+      await this.bot
+        .sendMessage(m.telegramId, dmText)
+        .catch((err) =>
+          this.logger.warn(`queue-open DM to ${m.telegramId} failed: ${(err as Error).message}`),
+        );
+    }
   }
 
   async remove(user: RequestUser, id: string): Promise<void> {

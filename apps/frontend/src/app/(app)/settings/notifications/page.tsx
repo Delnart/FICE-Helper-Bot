@@ -22,12 +22,38 @@ const LABELS: Array<{ k: keyof Prefs; title: string; hint: string }> = [
 
 export default function NotificationsSettingsPage() {
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['prefs'], queryFn: () => api<Prefs>('/notifications/prefs') });
+  const queryKey = ['prefs'];
+  const { data } = useQuery({ queryKey, queryFn: () => api<Prefs>('/notifications/prefs') });
+
+  /**
+   * Optimistic update via React Query's onMutate pattern.
+   * Why: previously every toggle triggered an invalidate → refetch round-trip,
+   * which (a) was visually laggy and (b) raced — toggling two switches in a row
+   * meant the second mutation's refetch sometimes returned stale data and
+   * "un-toggled" the first one. Now:
+   *   1. onMutate: patch the cache locally — toggle flips instantly.
+   *   2. mutationFn: send PATCH in background; backend response writes back to cache.
+   *   3. onError: rollback to the snapshot taken in onMutate.
+   * We DO NOT invalidate on success — the response is the source of truth.
+   */
   const save = useMutation({
-    mutationFn: (p: Partial<Prefs>) => api<Prefs>('/notifications/prefs', { method: 'PATCH', json: p }),
-    onSuccess: () => {
+    mutationFn: (p: Partial<Prefs>) =>
+      api<Prefs>('/notifications/prefs', { method: 'PATCH', json: p }),
+    onMutate: async (partial) => {
+      // Cancel any in-flight refetch so it can't overwrite our optimistic update.
+      await qc.cancelQueries({ queryKey });
+      const prev = qc.getQueryData<Prefs>(queryKey);
+      if (prev) qc.setQueryData<Prefs>(queryKey, { ...prev, ...partial });
+      return { prev };
+    },
+    onSuccess: (server) => {
+      // Server's authoritative response replaces our optimistic guess.
+      qc.setQueryData<Prefs>(queryKey, server);
       haptic('selection');
-      qc.invalidateQueries({ queryKey: ['prefs'] });
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData<Prefs>(queryKey, ctx.prev);
+      haptic('error');
     },
   });
 
