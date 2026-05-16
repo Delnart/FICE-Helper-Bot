@@ -18,6 +18,11 @@ ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 # Tell Next.js: don't try to install missing types — fail loudly if any are
 # missing so we catch the regression in CI instead of in a 1000s yarn retry loop.
 ENV NEXT_TELEMETRY_DISABLED=1
+# 2 GB heap — `next build` peaks around 1.5 GB on this monorepo. Bumping
+# higher only wastes laptop RAM (Docker Desktop already grabs 2-3 GB on
+# Windows). Images are built locally and pushed to GHCR; the prod VPS never
+# sees a build step. If you ever hit a fresh OOM, raise to 3072.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY tsconfig.base.json package.json ./

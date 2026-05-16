@@ -12,7 +12,11 @@ RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 FROM node:20-alpine AS build
 WORKDIR /app
-ENV NODE_OPTIONS=--max-old-space-size=2048
+# Generous heap for nest build (which calls webpack under the hood) — peaks
+# around 1-1.5 GB on large monorepos. We build images on the developer laptop
+# (8-16 GB RAM) and push to GHCR, so this is comfortable; the cheap 1 GB VPS
+# never sees a build step.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 COPY tsconfig.base.json ./

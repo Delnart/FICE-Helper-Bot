@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   1. Docker Desktop running.
-#   2. GitHub PAT with `write:packages` scope:
+#   2. GitHub PAT with write:packages scope:
 #      https://github.com/settings/tokens (Classic).
 #   3. One-time login:
 #      echo "ghp_XXXX" | docker login ghcr.io -u Delnart --password-stdin
@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-# GHCR namespaces are forced lowercase — `Delnart` becomes `delnart`.
+# GHCR namespaces are forced lowercase: Delnart becomes delnart.
 $Owner = "delnart"
 $BackendImage  = "ghcr.io/${Owner}/fice-backend:${Tag}"
 $FrontendImage = "ghcr.io/${Owner}/fice-frontend:${Tag}"
@@ -32,14 +32,14 @@ $FrontendImage = "ghcr.io/${Owner}/fice-frontend:${Tag}"
 # If you ever move the API to a different host, change this here and rebuild.
 $ApiBase = "https://api.ficebot.dev"
 
-Write-Host "🔨 Building backend image: $BackendImage" -ForegroundColor Cyan
+Write-Host "[build] backend image: $BackendImage" -ForegroundColor Cyan
 docker build `
     -t $BackendImage `
     -f docker/backend.Dockerfile `
     .
 if ($LASTEXITCODE -ne 0) { throw "backend build failed" }
 
-Write-Host "🔨 Building frontend image: $FrontendImage" -ForegroundColor Cyan
+Write-Host "[build] frontend image: $FrontendImage" -ForegroundColor Cyan
 docker build `
     --build-arg NEXT_PUBLIC_API_BASE=$ApiBase `
     -t $FrontendImage `
@@ -47,16 +47,16 @@ docker build `
     .
 if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
 
-Write-Host "🚀 Pushing images to ghcr.io..." -ForegroundColor Cyan
+Write-Host "[push] uploading to ghcr.io..." -ForegroundColor Cyan
 docker push $BackendImage
-if ($LASTEXITCODE -ne 0) { throw "backend push failed — did you 'docker login ghcr.io'?" }
+if ($LASTEXITCODE -ne 0) { throw "backend push failed (try docker login ghcr.io)" }
 docker push $FrontendImage
 if ($LASTEXITCODE -ne 0) { throw "frontend push failed" }
 
-# Also tag as `latest` when pushing a versioned tag, so the prod compose
+# Also tag as latest when pushing a versioned tag, so the prod compose
 # (which references :latest) always picks up the newest stable build.
 if ($Tag -ne "latest") {
-    Write-Host "🔗 Also tagging $Tag as latest..." -ForegroundColor Cyan
+    Write-Host "[push] mirroring $Tag onto :latest..." -ForegroundColor Cyan
     docker tag $BackendImage  "ghcr.io/${Owner}/fice-backend:latest"
     docker tag $FrontendImage "ghcr.io/${Owner}/fice-frontend:latest"
     docker push "ghcr.io/${Owner}/fice-backend:latest"
@@ -64,7 +64,7 @@ if ($Tag -ne "latest") {
 }
 
 Write-Host ""
-Write-Host "✅ Push complete." -ForegroundColor Green
-Write-Host "   On the server:" -ForegroundColor Yellow
-Write-Host "     docker compose -f docker/docker-compose.prod.yml --env-file .env pull"
-Write-Host "     docker compose -f docker/docker-compose.prod.yml --env-file .env up -d"
+Write-Host "OK. Push complete." -ForegroundColor Green
+Write-Host "On the server:" -ForegroundColor Yellow
+Write-Host "  docker compose -f docker/docker-compose.prod.yml --env-file .env pull"
+Write-Host "  docker compose -f docker/docker-compose.prod.yml --env-file .env up -d"
