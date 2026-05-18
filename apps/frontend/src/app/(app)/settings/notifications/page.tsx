@@ -20,40 +20,50 @@ const LABELS: Array<{ k: keyof Prefs; title: string; hint: string }> = [
   { k: 'dmSwapRequests', title: 'Запити на обмін', hint: 'Коли хтось пропонує обмін у черзі' },
 ];
 
+// Module-level constant so the queryKey reference is stable across renders.
+// React Query compares keys by deep equality, but reusing the same array also
+// rules out any subtle drift between renders.
+const PREFS_QUERY_KEY = ['prefs'] as const;
+
 export default function NotificationsSettingsPage() {
   const qc = useQueryClient();
-  const queryKey = ['prefs'];
-  const { data } = useQuery({ queryKey, queryFn: () => api<Prefs>('/notifications/prefs') });
+  const { data } = useQuery({
+    queryKey: PREFS_QUERY_KEY,
+    queryFn: () => api<Prefs>('/notifications/prefs'),
+  });
 
   /**
-   * Optimistic update via React Query's onMutate pattern.
-   * Why: previously every toggle triggered an invalidate → refetch round-trip,
-   * which (a) was visually laggy and (b) raced — toggling two switches in a row
-   * meant the second mutation's refetch sometimes returned stale data and
-   * "un-toggled" the first one. Now:
-   *   1. onMutate: patch the cache locally — toggle flips instantly.
-   *   2. mutationFn: send PATCH in background; backend response writes back to cache.
-   *   3. onError: rollback to the snapshot taken in onMutate.
-   * We DO NOT invalidate on success — the response is the source of truth.
+   * Optimistic update + final refetch:
+   *   • onMutate: patch the cache locally — toggle flips instantly.
+   *   • onError: rollback to the snapshot.
+   *   • onSettled (success OR error): invalidate so the next render reads
+   *     the *server's* authoritative state. We deliberately don't write the
+   *     server response into the cache from `onSuccess` anymore — earlier
+   *     attempts showed that if the JSON came back partial (e.g. a Mongoose
+   *     doc serialised without one of the boolean defaults), every key it
+   *     omitted read as `undefined` → `Boolean(undefined)` → all toggles
+   *     visually flip off. Invalidate-then-refetch is the safe path.
    */
   const save = useMutation({
     mutationFn: (p: Partial<Prefs>) =>
       api<Prefs>('/notifications/prefs', { method: 'PATCH', json: p }),
     onMutate: async (partial) => {
-      // Cancel any in-flight refetch so it can't overwrite our optimistic update.
-      await qc.cancelQueries({ queryKey });
-      const prev = qc.getQueryData<Prefs>(queryKey);
-      if (prev) qc.setQueryData<Prefs>(queryKey, { ...prev, ...partial });
+      // Stop any in-flight GET so it can't overwrite the optimistic update.
+      await qc.cancelQueries({ queryKey: PREFS_QUERY_KEY });
+      const prev = qc.getQueryData<Prefs>(PREFS_QUERY_KEY);
+      if (prev) qc.setQueryData<Prefs>(PREFS_QUERY_KEY, { ...prev, ...partial });
       return { prev };
     },
-    onSuccess: (server) => {
-      // Server's authoritative response replaces our optimistic guess.
-      qc.setQueryData<Prefs>(queryKey, server);
-      haptic('selection');
-    },
+    onSuccess: () => haptic('selection'),
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) qc.setQueryData<Prefs>(queryKey, ctx.prev);
+      if (ctx?.prev) qc.setQueryData<Prefs>(PREFS_QUERY_KEY, ctx.prev);
       haptic('error');
+    },
+    onSettled: () => {
+      // Pull fresh truth from the server now that the mutation finished.
+      // This is the ONE invalidate we do — keeps the cache in sync without
+      // racing the in-flight write (cancelled in onMutate above).
+      void qc.invalidateQueries({ queryKey: PREFS_QUERY_KEY });
     },
   });
 

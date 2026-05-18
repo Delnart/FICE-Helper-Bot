@@ -52,9 +52,25 @@ export class NotificationsService {
   }
 
   async updatePrefs(userId: string, dto: UpdatePrefsDto): Promise<NotificationPrefsDocument> {
-    const prefs = await this.getOrCreatePrefs(userId);
-    Object.assign(prefs, dto);
-    await prefs.save();
+    // Atomic single-roundtrip update: `$set` only touches the keys present in
+    // `dto`, leaves all other booleans untouched. Earlier `Object.assign + save`
+    // approach could (rarely) lose recent writes if two PATCH requests landed
+    // on overlapping document instances — that's now impossible.
+    // `upsert: true` handles first-call-ever, `setDefaultsOnInsert` writes the
+    // schema defaults (`true` for every flag) on initial creation.
+    const oid = new Types.ObjectId(userId);
+    const prefs = await this.prefs
+      .findOneAndUpdate(
+        { userId: oid },
+        { $set: dto, $setOnInsert: { userId: oid } },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      )
+      .exec();
+    if (!prefs) {
+      // Theoretically unreachable because of `upsert: true`, but TypeScript
+      // narrows the return to `NotificationPrefsDocument | null`.
+      throw new Error('Failed to upsert notification prefs');
+    }
     return prefs;
   }
 

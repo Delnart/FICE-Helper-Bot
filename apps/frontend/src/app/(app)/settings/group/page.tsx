@@ -32,31 +32,36 @@ interface GroupMember {
   role: string;
 }
 
+// Stable module-level reference (see notifications/page.tsx for why).
+const GROUP_SETTINGS_KEY = ['group-settings'] as const;
+
 export default function GroupSettingsPage() {
   const qc = useQueryClient();
-  const queryKey = ['group-settings'];
   const { data } = useQuery({
-    queryKey,
+    queryKey: GROUP_SETTINGS_KEY,
     queryFn: () => api<GroupSettings>('/groups/current/settings'),
   });
-  // Optimistic-update pattern (see notifications/page.tsx) — toggles flip
-  // instantly, no race between concurrent PATCH requests.
+  // Optimistic-update + refetch-on-settled pattern (same as notifications page).
+  // Toggles flip instantly; the final source of truth is the server's GET
+  // response refetched once the PATCH settles. We avoid writing the PATCH
+  // response into the cache directly because a partial Mongoose serialisation
+  // would zero-out unmentioned booleans → all toggles flicker off.
   const save = useMutation({
     mutationFn: (p: Partial<GroupSettings>) =>
       api<GroupSettings>('/groups/current/settings', { method: 'PATCH', json: p }),
     onMutate: async (partial) => {
-      await qc.cancelQueries({ queryKey });
-      const prev = qc.getQueryData<GroupSettings>(queryKey);
-      if (prev) qc.setQueryData<GroupSettings>(queryKey, { ...prev, ...partial });
+      await qc.cancelQueries({ queryKey: GROUP_SETTINGS_KEY });
+      const prev = qc.getQueryData<GroupSettings>(GROUP_SETTINGS_KEY);
+      if (prev) qc.setQueryData<GroupSettings>(GROUP_SETTINGS_KEY, { ...prev, ...partial });
       return { prev };
     },
-    onSuccess: (server) => {
-      qc.setQueryData<GroupSettings>(queryKey, server);
-      haptic('selection');
-    },
+    onSuccess: () => haptic('selection'),
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) qc.setQueryData<GroupSettings>(queryKey, ctx.prev);
+      if (ctx?.prev) qc.setQueryData<GroupSettings>(GROUP_SETTINGS_KEY, ctx.prev);
       haptic('error');
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: GROUP_SETTINGS_KEY });
     },
   });
 
