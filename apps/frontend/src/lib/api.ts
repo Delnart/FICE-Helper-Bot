@@ -52,12 +52,24 @@ export function getToken(): string | null {
 
 export function clearAuth(): void {
   state = { token: null, userId: null, activeGroupId: null };
+  loginPromise = null;
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(STORAGE.token);
   window.localStorage.removeItem(STORAGE.group);
 }
 
+let loginPromise: Promise<{ token: string; userId: string }> | null = null;
+
 export async function loginWithTelegram(): Promise<{ token: string; userId: string }> {
+  if (loginPromise) return loginPromise;
+  loginPromise = _doLogin().finally(() => {
+    // Reset after 500ms so a future explicit re-login (e.g. after 401) can retry.
+    setTimeout(() => { loginPromise = null; }, 500);
+  });
+  return loginPromise;
+}
+
+async function _doLogin(): Promise<{ token: string; userId: string }> {
   const initData = getInitData();
   if (!initData) throw new Error('Telegram WebApp initData недоступна. Відкрийте цей застосунок через бот.');
   const res = await fetch(`${API_BASE}/auth/telegram`, {

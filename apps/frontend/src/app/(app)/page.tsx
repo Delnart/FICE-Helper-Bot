@@ -524,15 +524,18 @@ function StudentHomePage() {
   const hwPending = useQuery({
     queryKey: ['hw-pending-count'],
     queryFn: () => api<Array<{ _id: string }>>('/homework/my/pending'),
+    staleTime: 30_000,
   });
   const now = useQuery({
     queryKey: ['schedule-now'],
     queryFn: () => api<{ current: NowCard | null; next: NowCard | null }>('/schedule/now'),
     refetchInterval: 60_000,
+    staleTime: 30_000,
   });
   const subjects = useQuery({
     queryKey: ['subjects'],
     queryFn: () => api<SubjectSummary[]>('/subjects'),
+    staleTime: 30_000,
   });
 
   const pendingCount = hwPending.data?.length ?? 0;

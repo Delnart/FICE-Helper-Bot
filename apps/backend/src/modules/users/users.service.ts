@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Role } from '@fice/shared';
+import { Role, ROLE_LEVEL } from '@fice/shared';
 import { User, UserDocument } from './user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
@@ -79,13 +79,23 @@ export class UsersService {
 
   /**
    * Ensure a user has membership in a group with at least the given role.
-   * No-op if the membership already exists; idempotent.
+   * If the user already has a higher or equal role — no-op (idempotent).
+   * If the user has a lower role (e.g. student → deputy_head) — upgrades it.
+   * If the user has no membership yet — adds one.
    */
   async ensureMembership(userId: string, groupId: string, role: Role): Promise<void> {
     const u = await this.users.findById(userId).lean().exec();
     if (!u) return;
-    const has = (u.memberships ?? []).some((m) => String(m.groupId) === groupId);
-    if (has) return;
+    const existing = (u.memberships ?? []).find((m) => String(m.groupId) === groupId);
+    if (existing) {
+      // Already has a higher or equal role — no change needed.
+      if (ROLE_LEVEL[existing.role] >= ROLE_LEVEL[role]) return;
+      // Lower role found — upgrade it by replacing the membership.
+      await this.users.updateOne(
+        { _id: new Types.ObjectId(userId) },
+        { $pull: { memberships: { groupId: new Types.ObjectId(groupId) } } },
+      );
+    }
     await this.users.updateOne(
       { _id: new Types.ObjectId(userId) },
       {

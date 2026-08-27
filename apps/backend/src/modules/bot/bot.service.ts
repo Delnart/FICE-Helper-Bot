@@ -178,7 +178,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         await ctx.answerCallbackQuery({ text: 'Лише в груповому чаті', show_alert: true });
         return;
       }
-      await this.migrateExact(ctx, groupName);
+      const threadId = ctx.callbackQuery.message?.message_thread_id;
+      await this.migrateExact(ctx, groupName, threadId);
       await ctx.answerCallbackQuery();
     });
 
@@ -778,7 +779,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     if (!isPrivate && canManage) {
       lines.push('/verify — привʼязати цей чат до академгрупи');
       lines.push('/verify <Назва> — привʼязати вручну (для адмінів чату або без бази старост)');
-      lines.push('/migrate — перенести привʼязку у новий чат або гілку');
+      lines.push('/migrate — перенести групу в цей чат (надіслати у новому чаті де має бути бот)');
     }
     lines.push('/now — яка зараз пара');
     lines.push('/left — скільки хвилин до кінця пари');

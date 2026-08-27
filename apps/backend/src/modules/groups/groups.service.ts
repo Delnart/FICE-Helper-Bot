@@ -213,12 +213,24 @@ export class GroupsService {
       );
     }
 
-    // 2. The head has an existing group with this academic name — migrate to this chat.
+    // 2. The head has an existing group with this academic name — migrate to this chat,
+    // but only if the group is inactive (bot was removed) or already bound to this same chat.
+    // If it's active in a different chat, refuse and instruct to use /migrate explicitly.
     const byHead = await this.groups
       .findOne({ headUserId: headUser._id, academicName: params.academicName })
       .exec();
     if (byHead) {
+      if (
+        byHead.status === 'active' &&
+        byHead.telegramChatId !== params.telegramChatId
+      ) {
+        throw new BadRequestException(
+          `Група ${params.academicName} вже активна в іншому чаті. ` +
+          `Щоб перенести її сюди — надішліть /migrate у цьому чаті.`,
+        );
+      }
       byHead.telegramChatId = params.telegramChatId;
+      byHead.status = 'active';
       if (params.messageThreadId !== undefined) byHead.messageThreadId = params.messageThreadId;
       if (params.campusGroupId) byHead.campusGroupId = params.campusGroupId;
       await byHead.save();

@@ -49,6 +49,13 @@ export function useCanManage(): boolean {
   return m.role === 'group_head' || m.role === 'deputy_head' || m.role === 'admin';
 }
 
+/** Convenience: true if the user is the group head (not deputy) of the active group. */
+export function useIsHead(): boolean {
+  const m = useActiveMembership();
+  if (!m) return false;
+  return m.role === 'group_head';
+}
+
 /**
  * True when the user's ONLY role in the app is as a teacher (no student /
  * deputy_head / group_head memberships). These users get a dedicated teacher UI.
