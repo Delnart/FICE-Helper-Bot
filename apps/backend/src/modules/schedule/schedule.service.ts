@@ -391,30 +391,31 @@ export class ScheduleService {
 
     const items = await this.campus.getGroupSchedule(group.campusGroupId);
 
-    let upserted = 0;
-    for (const item of items) {
-      await this.lessons.updateOne(
-        {
-          groupId: group._id,
-          dayOfWeek: item.dayOfWeek,
-          lessonNumber: item.lessonNumber,
-          weekType: item.weekType,
-          subjectName: item.subjectName,
-        },
-        {
-          $set: {
-            startTime: item.startTime,
-            endTime: item.endTime,
-            teacherNames: item.teacherNames,
-            type: item.type,
-            room: item.room,
-          },
-        },
-        { upsert: true },
-      );
-      upserted++;
-    }
-    return upserted;
+    // Delete all existing lessons for this group before inserting fresh data.
+    // This prevents stale entries (e.g. from a previous campusGroupId or a
+    // schedule that removed some lessons) from accumulating across syncs.
+    await this.lessons.deleteMany({ groupId: group._id });
+
+    if (items.length === 0) return 0;
+
+    await this.lessons.insertMany(
+      items.map((item) => ({
+        groupId: group._id,
+        dayOfWeek: item.dayOfWeek,
+        lessonNumber: item.lessonNumber,
+        weekType: item.weekType,
+        subjectName: item.subjectName,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        teacherNames: item.teacherNames,
+        type: item.type,
+        room: item.room,
+        isElective: false,
+        electiveStudentIds: [],
+      })),
+    );
+
+    return items.length;
   }
 
   private assertCanManage(user: RequestUser, groupId: string): void {

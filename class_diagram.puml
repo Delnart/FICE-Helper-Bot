@@ -1,0 +1,386 @@
+@startuml ClassDiagram
+
+' ── Глобальні налаштування діаграми ─────────────────────────────
+skinparam classAttributeIconSize 0
+skinparam classFontName "Times New Roman"
+skinparam classFontSize 12
+skinparam linetype ortho
+skinparam shadowing false
+hide circle
+
+' ════════════════════════════════════════════════════════════════
+'  ЕНУМИ (перерахування ролей та статусів)
+' ════════════════════════════════════════════════════════════════
+package "@fice/shared (Enums)" <<Frame>> {
+    enum Role {
+        Student
+        Teacher
+        DeputyHead
+        GroupHead
+    }
+
+    enum QueueStatus {
+        Default
+        Passed
+        Failed
+    }
+
+    enum AttendanceStatus {
+        Present
+        Absent
+        Excused
+        Late
+        Unknown
+    }
+
+    enum TeacherRoleInSubject {
+        Lecturer
+        PracticeTeacher
+        LabTeacher
+    }
+}
+
+' ════════════════════════════════════════════════════════════════
+'  ВКЛАДЕНІ СХЕМИ (Mongoose subdocuments, _id: false)
+' ════════════════════════════════════════════════════════════════
+package "Embedded Schemas" <<Frame>> {
+    class MembershipSub <<Embedded>> {
+        + groupId : ObjectId
+        + role : Role
+        + joinedAt : Date
+    }
+
+    class QueueEntrySub <<Embedded>> {
+        + slotIndex : number
+        + userId : ObjectId
+        + labNumber : number
+        + status : QueueStatus
+        + enrolledAt : Date
+    }
+
+    class QueueRulesSub <<Embedded>> {
+        + allowMultipleEntriesPerUser : boolean
+        + isOpen : boolean
+        + autoOpenAt : Date?
+        + autoCloseAt : Date?
+    }
+
+    class AttendanceEntrySub <<Embedded>> {
+        + userId : ObjectId
+        + status : AttendanceStatus
+        + note : string?
+    }
+
+    class SubjectTeacherSub <<Embedded>> {
+        + teacherUserId : ObjectId
+        + fullName : string
+        + role : TeacherRoleInSubject
+        + externalSource : string?
+    }
+
+    class SubjectLinkSub <<Embedded>> {
+        + label : string
+        + url : string
+        + showInLessonReminder : boolean
+        + lessonReminderType : string?
+    }
+
+    class SubjectSettingsSub <<Embedded>> {
+        + hideHomework : boolean
+        + hideQueue : boolean
+        + hideLinks : boolean
+        + hideTeachers : boolean
+    }
+}
+
+' ════════════════════════════════════════════════════════════════
+'  ДОМЕННІ СУТНОСТІ (колекції MongoDB)
+' ════════════════════════════════════════════════════════════════
+package "MongoDB Collections" <<Database>> {
+    class User <<Schema>> {
+        + telegramId : number <<unique>>
+        + username : string?
+        + usernameHistory : string[]
+        + firstName : string
+        + lastName : string?
+        + fullName : string?
+        + avatarUrl : string?
+        + memberships : MembershipSub[]
+        + campusLecturerId : number?
+        + isBanned : boolean
+        + membershipsValidatedAt : Date?
+    }
+
+    class AcademicGroup <<Schema>> {
+        + academicName : string
+        + telegramChatId : number <<unique>>
+        + messageThreadId : number?
+        + campusGroupId : number?
+        + headUserId : ObjectId?
+        + deputyUserIds : ObjectId[]
+        + notificationsEnabled : boolean
+        + lessonReminderMinutes : number
+        + birthdayAnnouncementsEnabled : boolean
+        + status : "active" | "inactive"
+    }
+
+    class Subject <<Schema>> {
+        + groupId : ObjectId
+        + name : string
+        + shortName : string?
+        + campusSubjectId : number?
+        + teachers : SubjectTeacherSub[]
+        + links : SubjectLinkSub[]
+        + settings : SubjectSettingsSub
+    }
+
+    class Queue <<Schema>> {
+        + subjectId : ObjectId
+        + groupId : ObjectId
+        + title : string
+        + slotsCount : number
+        + rules : QueueRulesSub
+        + entries : QueueEntrySub[]
+    }
+
+    class SwapRequest <<Schema>> {
+        + queueId : ObjectId
+        + fromUserId : ObjectId
+        + toUserId : ObjectId
+        + fromSlotIndex : number
+        + toSlotIndex : number
+        + status : "pending" | "accepted" | "rejected"
+    }
+
+    class Homework <<Schema>> {
+        + subjectId : ObjectId
+        + groupId : ObjectId
+        + title : string
+        + description : string?
+        + deadline : Date
+        + points : number
+        + teamSize : number
+        + attachments : { label, url }[]
+    }
+
+    class ScheduleLesson <<Schema>> {
+        + groupId : ObjectId
+        + subjectId : ObjectId
+        + subjectName : string
+        + teacherNames : string[]
+        + type : "lecture" | "practice" | "lab" | "seminar"
+        + dayOfWeek : 1..7
+        + lessonNumber : 1..8
+        + startTime : string
+        + endTime : string
+        + weekType : 0 | 1 | 2
+        + room : string?
+        + meetingUrl : string?
+        + isElective : boolean
+        + electiveStudentIds : ObjectId[]
+    }
+
+    class AttendanceRecord <<Schema>> {
+        + groupId : ObjectId
+        + scheduleLessonId : ObjectId
+        + date : Date
+        + entries : AttendanceEntrySub[]
+    }
+
+    class ManualStudent <<Schema>> {
+        + groupId : ObjectId
+        + fullName : string
+        + addedByUserId : ObjectId
+    }
+
+    class SupportTicket <<Schema>> {
+        + userTelegramId : number
+        + userMessageId : number
+        + adminMessageIds : number[]
+    }
+
+    class LessonReminderMark <<Schema>> {
+        + groupId : ObjectId
+        + lessonId : ObjectId
+        + date : Date
+    }
+}
+
+' ════════════════════════════════════════════════════════════════
+'  СЕРВІСИ (NestJS @Injectable)
+' ════════════════════════════════════════════════════════════════
+package "Backend Services" <<Frame>> {
+    class AuthService <<Service>> {
+        - users : Model<User>
+        - jwt : JwtService
+        - config : ConfigService
+        - sheets : SheetsService
+        + loginWithTelegram(initData) : AuthResult
+    }
+
+    class UsersService <<Service>> {
+        + findMe(userId) : UserDocument
+        + updateProfile(userId, dto) : UserDocument
+        + upsertFromTelegram(tgUser) : UserDocument
+        + ensureMembership(userId, groupId, role) : void
+        + removeMemberFromGroup(telegramId, groupId) : void
+    }
+
+    class GroupsService <<Service>> {
+        + createGroup(dto) : AcademicGroup
+        + bindTelegramChat(opts) : AcademicGroup
+        + setHead(groupId, userId) : void
+        + markInactive(groupId) : void
+        + findByChat(chatId) : AcademicGroup?
+        + findByHeadTelegramId(tid) : AcademicGroup[]
+    }
+
+    class SubjectsService <<Service>> {
+        + createSubject(groupId, dto) : Subject
+        + syncFromCampus(groupId) : { created, updated }
+    }
+
+    class QueuesService <<Service>> {
+        + createQueue(dto) : Queue
+        + enroll(queueId, userId, slot, lab) : Queue
+        + cancel(queueId, userId, slot) : Queue
+        + updateEntryStatus(queueId, slot, status) : Queue
+    }
+
+    class HomeworkService <<Service>> {
+        + createHomework(dto) : Homework
+        + listByGroup(groupId) : Homework[]
+    }
+
+    class ScheduleService <<Service>> {
+        + importFromCampus(groupId) : { imported }
+        + getCurrentLesson(groupId) : ScheduleLesson?
+        + getNextLesson(groupId) : ScheduleLesson?
+        + nowFor(groupId, userId) : { current, next, weekType }
+    }
+
+    class AttendanceService <<Service>> {
+        + createRecord(dto) : AttendanceRecord
+    }
+
+    class TeachersService <<Service>> {
+        + identify(dto) : IdentifyResult
+    }
+
+    class NotificationsService <<Service>> {
+        + scheduleReminders() : void <<@Cron>>
+    }
+
+    class CampusService <<Service>> {
+        + getSchedule(groupName) : CampusLesson[]
+        + findGroupByName(name) : CampusGroup[]
+        + findLecturer(name) : CampusLecturer[]
+    }
+
+    class SheetsService <<Service>> {
+        - sheets : googleapis.sheets_v4
+        + syncHeads() : SyncResult <<@Cron 12h>>
+        + syncTeachers() : { revoked }
+        + findHeadsByUsername(username) : SheetGroupHead[]
+        + findTeacherByUsername(username) : SheetTeacher?
+    }
+
+    class BotService <<Service>> {
+        - bot : grammy.Bot
+        + handleStart(ctx) : void
+        + handleVerify(ctx) : void
+        + handleNow(ctx) : void
+        + handleLeft(ctx) : void
+        + onMyChatMember(ctx) : void
+        + ensureMember(group, tgUser) : void
+        + revalidateUserMemberships(userId) : { removed }
+    }
+}
+
+' ════════════════════════════════════════════════════════════════
+'  ВЗАЄМОЗВʼЯЗКИ
+' ════════════════════════════════════════════════════════════════
+
+' Агрегація: User містить вкладені MembershipSub
+User "1" o-- "*" MembershipSub : memberships
+
+' Агрегація: AcademicGroup має багато сутностей через groupId
+AcademicGroup "1" --> "*" Subject : groupId
+AcademicGroup "1" --> "*" ScheduleLesson : groupId
+AcademicGroup "1" --> "*" Homework : groupId
+AcademicGroup "1" --> "*" AttendanceRecord : groupId
+AcademicGroup "1" --> "*" Queue : groupId
+AcademicGroup "1" --> "*" ManualStudent : groupId
+
+' Підлеглість через ObjectId
+MembershipSub --> AcademicGroup : refers to
+MembershipSub --> Role : has
+
+' Subject -> Queue, Homework
+Subject "1" --> "*" Queue : subjectId
+Subject "1" --> "*" Homework : subjectId
+Subject "1" o-- "*" SubjectTeacherSub : teachers
+Subject "1" o-- "*" SubjectLinkSub : links
+Subject "1" o-- "1" SubjectSettingsSub : settings
+SubjectTeacherSub --> User : teacherUserId
+SubjectTeacherSub --> TeacherRoleInSubject : role
+
+' Queue -> Entries + Rules + SwapRequest
+Queue "1" o-- "1" QueueRulesSub : rules
+Queue "1" o-- "*" QueueEntrySub : entries
+Queue "1" --> "*" SwapRequest : queueId
+QueueEntrySub --> User : userId
+QueueEntrySub --> QueueStatus : status
+SwapRequest --> User : fromUserId
+SwapRequest --> User : toUserId
+
+' Schedule
+ScheduleLesson --> Subject : subjectId
+AttendanceRecord --> ScheduleLesson : scheduleLessonId
+AttendanceRecord "1" o-- "*" AttendanceEntrySub : entries
+AttendanceEntrySub --> User : userId
+AttendanceEntrySub --> AttendanceStatus : status
+
+' AcademicGroup -> Head + Deputies
+AcademicGroup --> User : headUserId
+AcademicGroup --> User : deputyUserIds
+
+' LessonReminderMark — слугує дедуплікатором нагадувань
+LessonReminderMark --> AcademicGroup : groupId
+LessonReminderMark --> ScheduleLesson : lessonId
+
+' SupportTicket — належить користувачу через telegramId
+SupportTicket --> User : userTelegramId
+
+' ── Сервіси використовують моделі ───────────────────────────────
+AuthService ..> User : <<uses>>
+AuthService ..> SheetsService : <<uses>>
+UsersService ..> User
+GroupsService ..> AcademicGroup
+GroupsService ..> User
+SubjectsService ..> Subject
+SubjectsService ..> CampusService
+QueuesService ..> Queue
+QueuesService ..> SwapRequest
+HomeworkService ..> Homework
+ScheduleService ..> ScheduleLesson
+ScheduleService ..> CampusService
+AttendanceService ..> AttendanceRecord
+TeachersService ..> User
+TeachersService ..> Subject
+TeachersService ..> CampusService
+NotificationsService ..> ScheduleLesson
+NotificationsService ..> AcademicGroup
+NotificationsService ..> LessonReminderMark
+NotificationsService ..> BotService : sendMessage
+BotService ..> AcademicGroup
+BotService ..> User
+BotService ..> SheetsService
+BotService ..> CampusService
+BotService ..> ScheduleService
+BotService ..> SupportTicket
+SheetsService ..> User
+SheetsService ..> AcademicGroup
+SheetsService ..> Subject
+
+@enduml

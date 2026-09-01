@@ -7,6 +7,12 @@ const nextConfig = {
   experimental: {
     typedRoutes: true,
   },
+  // Skip the in-build TS + ESLint passes — they're the heaviest steps of
+  // `next build` (~500 MB peak RAM) and we already run them as separate CI
+  // steps locally (`npx tsc --noEmit` before each push). On a 1 GB VPS this
+  // turns a 3-hour swap-thrashing build into ~5-10 min.
+  typescript: { ignoreBuildErrors: true },
+  eslint: { ignoreDuringBuilds: true },
   async rewrites() {
     return [
       { source: '/api/:path*', destination: `${BACKEND_URL}/api/:path*` },

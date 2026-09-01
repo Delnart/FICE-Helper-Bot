@@ -189,6 +189,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     bot.command('left', async (ctx) => {
       await this.handleNowOrLeft(ctx, 'left');
     });
+    bot.command('today', async (ctx) => {
+      await this.handleDaySchedule(ctx, 'today');
+    });
+    bot.command('tomorrow', async (ctx) => {
+      await this.handleDaySchedule(ctx, 'tomorrow');
+    });
 
     bot.command('refresh_heads', async (ctx) => {
       if (!this.isAdminChat(ctx)) {
@@ -677,6 +683,112 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: this.supportKeyboard });
   }
 
+  // ---------- /today /tomorrow ----------
+
+  private async handleDaySchedule(ctx: Context, kind: 'today' | 'tomorrow'): Promise<void> {
+    // ── Group chat ──────────────────────────────────────────────────────────
+    if (isGroupChat(ctx)) {
+      const group = ctx.chat ? await this.groups.findByChat(ctx.chat.id) : null;
+      if (!group) {
+        await ctx.reply(
+          'Цей чат ще не привʼязано до академгрупи. Надішліть /verify щоб привʼязати.',
+        );
+        return;
+      }
+
+      let text: string;
+      try {
+        const { day, weekType, label } = await this.resolveDayAndWeek(kind);
+        const lessons = await this.schedule.getForGroup(String(group._id), weekType);
+        const dayLessons = lessons
+          .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day)
+          .sort(
+            (a, b) =>
+              (a as { lessonNumber: number }).lessonNumber -
+              (b as { lessonNumber: number }).lessonNumber,
+          );
+        text = formatDaySchedule(group.academicName, label, weekType, dayLessons);
+      } catch {
+        text = 'Розклад ще не імпортовано для цієї групи.';
+      }
+      await ctx.reply(text, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // ── Private chat ────────────────────────────────────────────────────────
+    const from = ctx.from;
+    if (!from) return;
+    const dbUser = await this.users.findByTelegramId(from.id);
+    if (!dbUser || !dbUser.memberships?.length) {
+      await ctx.reply(
+        'Щоб користуватись цією командою, ви маєте бути учасником якоїсь групи. ' +
+          'Попросіть старосту додати бота у ваш груповий чат.',
+        { reply_markup: this.supportKeyboard },
+      );
+      return;
+    }
+
+    const m = dbUser.memberships[0];
+    const groupId = String(m.groupId);
+    const userId = String(dbUser._id);
+    const group = await this.groups.findById(groupId).catch(() => null);
+    const groupName = group?.academicName ?? '—';
+
+    let text: string;
+    try {
+      const { day, weekType, label } = await this.resolveDayAndWeek(kind);
+      const lessons = await this.schedule.getForUser(groupId, userId, weekType);
+      const dayLessons = lessons
+        .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day)
+        .sort(
+          (a, b) =>
+            (a as { lessonNumber: number }).lessonNumber -
+            (b as { lessonNumber: number }).lessonNumber,
+        );
+      text = formatDaySchedule(groupName, label, weekType, dayLessons);
+    } catch {
+      text = 'Розклад ще не імпортовано для вашої групи.';
+    }
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: this.supportKeyboard });
+  }
+
+  /**
+   * Resolve the target day-of-week (Mon=1..Sun=7), the correct week type,
+   * and a Ukrainian day label for /today and /tomorrow commands.
+   *
+   * "Tomorrow" flips the week parity when crossing Sunday→Monday.
+   */
+  private async resolveDayAndWeek(
+    kind: 'today' | 'tomorrow',
+  ): Promise<{ day: number; weekType: 1 | 2; label: string }> {
+    const now = new Date();
+    // JS: 0=Sun..6=Sat  →  internal: Mon=1..Sun=7
+    const todayDow = ((now.getDay() + 6) % 7) + 1;
+
+    let targetDow: number;
+    let weekFlip = false;
+
+    if (kind === 'today') {
+      targetDow = todayDow;
+    } else {
+      if (todayDow === 7) {
+        // Sunday → next Monday, week type flips
+        targetDow = 1;
+        weekFlip = true;
+      } else {
+        targetDow = todayDow + 1;
+      }
+    }
+
+    const currentWeek = await this.campus.refreshWeekParity();
+    const weekType: 1 | 2 = weekFlip ? (currentWeek === 1 ? 2 : 1) : currentWeek;
+
+    const DAY_NAMES = ['', 'Понеділок', 'Вівторок', 'Середа', 'Четвер', 'Пʼятниця', 'Субота', 'Неділя'];
+    const label = DAY_NAMES[targetDow] ?? '';
+
+    return { day: targetDow, weekType, label };
+  }
+
   // ---------- /verify ----------
 
   private async handleVerify(ctx: Context): Promise<void> {
@@ -783,6 +895,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
     lines.push('/now — яка зараз пара');
     lines.push('/left — скільки хвилин до кінця пари');
+    lines.push('/today — розклад на сьогодні');
+    lines.push('/tomorrow — розклад на завтра');
     if (isPrivate) {
       lines.push('/support — написати адміністраторам');
     }
@@ -1291,4 +1405,44 @@ function formatLeft(
     `🟢 <b>${escapeHtml(current.subjectName)}</b>\n` +
     `До кінця: <b>${left} хв</b> (до ${current.endTime})`
   );
+}
+
+function formatDaySchedule(
+  groupName: string,
+  dayLabel: string,
+  weekType: 1 | 2,
+  lessons: Array<Record<string, unknown>>,
+): string {
+  const week = weekType === 1 ? 'I тиждень' : 'II тиждень';
+  const header = `📅 <b>${escapeHtml(groupName)}</b> · ${dayLabel} · ${week}`;
+
+  if (dayLabel === 'Неділя') {
+    return `${header}\n\nНеділя — вихідний 🎉`;
+  }
+
+  if (lessons.length === 0) {
+    return `${header}\n\nПар немає 🎉`;
+  }
+
+  const NUMBERS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣'];
+  const lines: string[] = [header, ''];
+
+  lessons.forEach((l, idx) => {
+    const lesson = l as {
+      lessonNumber: number;
+      subjectName: string;
+      startTime: string;
+      endTime: string;
+      room?: string;
+      meetingUrl?: string;
+    };
+    const num = NUMBERS[idx] ?? `${idx + 1}.`;
+    let line = `${num} <b>${escapeHtml(lesson.subjectName)}</b>`;
+    line += `\n    ${lesson.startTime} — ${lesson.endTime}`;
+    if (lesson.room) line += ` · ${escapeHtml(lesson.room)}`;
+    if (lesson.meetingUrl) line += `\n    🔗 <a href="${lesson.meetingUrl}">Перейти до зустрічі</a>`;
+    lines.push(line);
+  });
+
+  return lines.join('\n');
 }
