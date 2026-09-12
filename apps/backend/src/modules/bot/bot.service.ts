@@ -510,7 +510,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             list,
             '',
             'Як активувати бота для вашої групи:',
-            '1. Додайте мене у груповий чат (без прав адміна можна).',
+            '1. Додайте мене у груповий чат та надайте права адміністратора (це необхідно, щоб бот міг реєструвати студентів у базі та надсилати сповіщення у гілки/топіки).',
             '2. Якщо я вже там — надішліть у чаті команду /verify.',
             heads.length > 1
               ? '3. Якщо ви староста кількох груп — у чаті я запропоную вибір.'
@@ -891,7 +891,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     if (!isPrivate && canManage) {
       lines.push('/verify — привʼязати цей чат до академгрупи');
       lines.push('/verify <Назва> — привʼязати вручну (для адмінів чату або без бази старост)');
-      lines.push('/migrate — перенести групу в цей чат (надіслати у новому чаті де має бути бот)');
+      lines.push('/migrate — перенести групу в цей чат або змінити гілку (надіслати у потрібному чаті/гілці)');
+      lines.push('💡 <i>Рекомендація: надайте боту права адміністратора у чаті для коректної роботи сповіщень у гілках та авто-реєстрації студентів.</i>');
     }
     lines.push('/now — яка зараз пара');
     lines.push('/left — скільки хвилин до кінця пари');
@@ -940,8 +941,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         headLastName: from.last_name,
         skipAuthCheck: opts.skipAuthCheck,
       });
+
+      if (campusGroupId) {
+        void this.schedule.syncGroupSchedule(group).catch((err) => {
+          this.logger.warn(`Auto-sync schedule on bind failed: ${(err as Error).message}`);
+        });
+      }
+
       const campusNote = campusGroupId
-        ? 'Групу знайдено у Кампусі — розклад буде імпортовано.'
+        ? 'Групу знайдено у Кампусі — розклад синхронізовано автоматично (та оновлюється кожні 12 годин).'
         : 'Групу у Кампусі не знайдено — розклад можна буде додати вручну у застосунку.';
       await ctx.reply(
         `Групу <b>${escapeHtml(group.academicName)}</b> привʼязано.\n${campusNote}`,
@@ -992,7 +1000,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     const campusMatches = await this.campus.findGroupByName(head.groupName).catch(() => []);
     const campusGroupId = campusMatches[0]?.id;
-    await this.groups.bindTelegramChat({
+    const group = await this.groups.bindTelegramChat({
       telegramChatId: chatId,
       academicName: head.groupName,
       campusGroupId,
@@ -1001,6 +1009,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       headFirstName: adder.first_name,
       headLastName: adder.last_name,
     });
+    if (campusGroupId) {
+      void this.schedule.syncGroupSchedule(group).catch((err) => {
+        this.logger.warn(`Auto-sync schedule on bindByHead failed: ${(err as Error).message}`);
+      });
+    }
     await this.notifyAdminChat(
       `🔗 Чат <b>${escapeHtml(head.groupName)}</b> привʼязано до бота.\n` +
         `Староста: <b>${escapeHtml(adder.first_name)}${adder.last_name ? ` ${escapeHtml(adder.last_name)}` : ''}</b>` +
