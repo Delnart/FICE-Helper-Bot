@@ -64,7 +64,7 @@ export default function NewHomeworkPage() {
   function submit() {
     setError(null);
     if (!subjectId) {
-      setError('Оберіть предмет');
+      setError('Оберіть дисципліну');
       return;
     }
     if (title.trim().length < 1) {
@@ -97,7 +97,7 @@ export default function NewHomeworkPage() {
 
       <section className="card space-y-3">
         <div>
-          <div className="label">Предмет</div>
+          <div className="label">Дисципліна</div>
           <select
             className="input"
             value={subjectId}

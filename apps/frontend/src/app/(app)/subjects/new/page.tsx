@@ -68,7 +68,7 @@ export default function NewSubjectPage() {
       return;
     }
     if (name.trim().length < 2) {
-      setError('Назва предмета занадто коротка');
+      setError('Назва дисципліни занадто коротка');
       return;
     }
     const cleanTeachers = teachers
@@ -92,7 +92,7 @@ export default function NewSubjectPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Новий предмет" subtitle="Додайте назву, викладачів та корисні посилання" />
+      <PageHeader title="Нова дисципліна" subtitle="Додайте назву, викладачів та корисні посилання" />
 
       <section className="card space-y-3">
         <div>

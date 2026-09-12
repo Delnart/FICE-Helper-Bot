@@ -148,7 +148,7 @@ function TeacherHomePage() {
     ) {
       return (
         <div className="space-y-5">
-          <PageHeader title="Мої предмети" />
+          <PageHeader title="Мої дисципліни" />
           <div className="card flex items-center justify-center py-10">
             <div className="flex flex-col items-center gap-3 text-ink-500">
               <div className="h-8 w-8 rounded-full border-2 border-paper-300 border-t-ink-900 animate-spin" />
@@ -160,15 +160,15 @@ function TeacherHomePage() {
     }
     return (
       <div className="space-y-5">
-        <PageHeader title="Мої предмети" />
+        <PageHeader title="Мої дисципліни" />
 
         <div className="card space-y-4">
           <div>
             <div className="font-semibold text-[16px]">Підключення до Кампус КПІ</div>
             <div className="text-sm text-ink-500 mt-1 leading-relaxed">
               {prefilledFromSheet
-                ? 'Ваше ПІБ автоматично взято з таблиці викладачів. Натисніть «Знайти предмети» — система знайде ваші курси у Кампус КПІ.'
-                : 'Вкажіть ваше ПІБ у форматі «Прізвище Ім\'я По-батькові» — система автоматично знайде ваші предмети в розкладі.'}
+                ? 'Ваше ПІБ автоматично взято з таблиці викладачів. Натисніть «Знайти дисципліни» — система знайде ваші курси у Кампус КПІ.'
+                : 'Вкажіть ваше ПІБ у форматі «Прізвище Ім\'я По-батькові» — система автоматично знайде ваші дисципліни в розкладі.'}
             </div>
           </div>
 
@@ -196,7 +196,7 @@ function TeacherHomePage() {
               identify.mutate({ name: identifyName.trim() });
             }}
           >
-            {identify.isPending && !candidates.length ? 'Пошук…' : 'Знайти предмети'}
+            {identify.isPending && !candidates.length ? 'Пошук…' : 'Знайти дисципліни'}
           </button>
         </div>
 
@@ -232,7 +232,7 @@ function TeacherHomePage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Мої предмети" />
+      <PageHeader title="Мої дисципліни" />
 
       <TeacherNowCard />
 
@@ -240,10 +240,10 @@ function TeacherHomePage() {
         <div className="card text-sm text-ink-500">Завантаження…</div>
       ) : subjects.length === 0 ? (
         <div className="card space-y-2">
-          <div className="font-medium">Предмети не знайдено</div>
+          <div className="font-medium">Дисципліни не знайдено</div>
           <div className="text-sm text-ink-500 leading-relaxed">
-            Старости груп ще не створили предмети або ще не додали вас до них. Як тільки вони
-            це зроблять — предмети з'являться тут автоматично.
+            Старости груп ще не створили дисципліни або ще не додали вас до них. Як тільки вони
+            це зроблять — дисципліни з'являться тут автоматично.
           </div>
         </div>
       ) : (
@@ -415,7 +415,7 @@ function TeacherJoinSection() {
           </div>
           <textarea
             className="input w-full h-20 resize-none text-sm"
-            placeholder="Коротко: який саме предмет / навіщо доступ (необов'язково)…"
+            placeholder="Коротко: яка саме дисципліна / навіщо доступ (необов'язково)…"
             value={note}
             onChange={(e) => setNote(e.target.value)}
           />
@@ -547,7 +547,7 @@ function StudentHomePage() {
         action={
           canManage ? (
             <Link href="/subjects/new" className="btn-primary h-9 px-3 text-sm">
-              + Предмет
+              + Дисципліна
             </Link>
           ) : undefined
         }
@@ -612,7 +612,7 @@ function StudentHomePage() {
 
       {/* Subjects fill the rest */}
       <section>
-        <div className="section-title">Предмети</div>
+        <div className="section-title">Дисципліни</div>
         {subjects.isLoading ? (
           <div className="card text-ink-500 text-sm">Завантаження…</div>
         ) : subjects.data && subjects.data.length ? (
@@ -623,11 +623,11 @@ function StudentHomePage() {
           </div>
         ) : (
           <Empty
-            title="Поки немає предметів"
+            title="Поки немає дисциплін"
             hint={
               canManage
-                ? 'Натисніть «+ Предмет» вгорі, щоб додати'
-                : 'Староста ще не додала жодного предмета'
+                ? 'Натисніть «+ Дисципліна» вгорі, щоб додати'
+                : 'Староста ще не додала жодної дисципліни'
             }
           />
         )}

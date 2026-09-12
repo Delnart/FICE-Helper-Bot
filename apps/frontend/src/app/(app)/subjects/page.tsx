@@ -28,7 +28,7 @@ export default function SubjectsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Предмети"
+        title="Дисципліни"
         action={
           <Link href="/subjects/new" className="btn-primary h-9 px-3 text-sm">
             + Додати
@@ -58,7 +58,7 @@ export default function SubjectsPage() {
           ))}
         </div>
       ) : (
-        <Empty title="Поки немає предметів" hint="Староста може додати їх з розкладу" />
+        <Empty title="Поки немає дисциплін" hint="Староста може додати їх з розкладу" />
       )}
     </div>
   );

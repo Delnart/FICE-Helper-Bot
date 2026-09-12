@@ -85,7 +85,7 @@ export default function SubjectDetailPage() {
             <Link
               href={`/subjects/${id}/edit`}
               className="btn-secondary h-9 px-3 text-sm"
-              aria-label="Редагувати предмет"
+              aria-label="Редагувати дисципліну"
             >
               Редагувати
             </Link>

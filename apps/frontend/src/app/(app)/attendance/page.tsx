@@ -227,7 +227,7 @@ export default function AttendancePage() {
   }
 
   if (autoTeacherSubjectFilter && teacherSubjects.isLoading) {
-    return <div className="card text-sm text-ink-500">Підтягуємо ваші предмети…</div>;
+    return <div className="card text-sm text-ink-500">Підтягуємо ваші дисципліни…</div>;
   }
 
   return (
@@ -299,7 +299,7 @@ export default function AttendancePage() {
       ) : sortedLessons.length === 0 ? (
         <div className="card text-sm text-ink-500">
           {effectiveTeacherSubjectIds
-            ? 'Для ваших предметів на цей тиждень немає занять.'
+            ? 'Для ваших дисциплін на цей тиждень немає занять.'
             : 'У цей тиждень пар немає або розклад не синхронізовано.'}
         </div>
       ) : data.students.length === 0 ? (
