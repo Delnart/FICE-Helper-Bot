@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -87,6 +88,23 @@ export class ScheduleController {
     const target = groupId ?? activeGroupId;
     if (!target) throw new BadRequestException('No group');
     return this.schedule.syncFromCampus(user, target).then((count) => ({ count }));
+  }
+
+  /** All elective lessons for the active group — used by the student electives picker. */
+  @Get('electives')
+  electives(@ActiveGroupId() activeGroupId: string | undefined) {
+    if (!activeGroupId) throw new BadRequestException('No active group');
+    return this.schedule.getElectivesForGroup(activeGroupId);
+  }
+
+  /** Head / deputy: mark or unmark a lesson as an elective discipline. */
+  @Patch('lessons/:lessonId/elective')
+  setElective(
+    @CurrentUser() user: RequestUser,
+    @Param('lessonId') lessonId: string,
+    @Body('isElective') isElective: boolean,
+  ) {
+    return this.schedule.setElective(user, lessonId, isElective).then(() => ({ ok: true }));
   }
 
   @Post('electives/:lessonId/join')

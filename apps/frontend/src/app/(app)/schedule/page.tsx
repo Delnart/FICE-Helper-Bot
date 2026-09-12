@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -9,7 +9,7 @@ import { api } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
 import { cn } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
-import { useIsTeacherOnly } from '../../../hooks/useMe';
+import { useCanManage, useIsTeacherOnly } from '../../../hooks/useMe';
 
 dayjs.locale('uk');
 
@@ -85,6 +85,7 @@ const TYPE_CHIP: Record<string, { label: string; cls: string }> = {
 
 export default function SchedulePage() {
   const isTeacher = useIsTeacherOnly();
+  const canManage = useCanManage();
   const today = Math.min(6, ((dayjs().day() + 6) % 7) + 1);
   // Two top-level views on this page: weekly schedule and the exam (session) one.
   const [view, setView] = useState<'week' | 'sessions'>('week');
@@ -243,7 +244,7 @@ export default function SchedulePage() {
                     </div>
                     {/* Card or empty space */}
                     <div className="flex-1 min-h-[48px]">
-                      {lesson ? <LessonCard l={lesson} /> : null}
+                      {lesson ? <LessonCard l={lesson} canManage={canManage} /> : null}
                     </div>
                   </div>
                 );
@@ -260,11 +261,29 @@ export default function SchedulePage() {
                       </span>
                     </div>
                     <div className="flex-1">
-                      <LessonCard l={l} />
+                      <LessonCard l={l} canManage={canManage} />
                     </div>
                   </div>
                 ))}
             </div>
+          )}
+
+          {/* Electives link — visible to students and heads, not teachers */}
+          {!isTeacher && (
+            <Link
+              href="/schedule/electives"
+              className="flex items-center justify-between card hover:bg-paper-100 transition-colors mt-1"
+            >
+              <div>
+                <div className="font-medium text-sm">Вибіркові дисципліни</div>
+                <div className="text-[12px] text-zinc-500 mt-0.5">
+                  Обери, які вибіркові відображати в розкладі
+                </div>
+              </div>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-zinc-400 flex-shrink-0">
+                <path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </Link>
           )}
         </>
       )}
@@ -402,7 +421,21 @@ function formatMonthLabel(month: string): string {
   return `${m[0].toUpperCase()}${m.slice(1)} ${d.format('YYYY')}`;
 }
 
-function LessonCard({ l }: { l: Lesson }) {
+function LessonCard({ l, canManage }: { l: Lesson; canManage?: boolean }) {
+  const qc = useQueryClient();
+  const toggleElective = useMutation({
+    mutationFn: (isElective: boolean) =>
+      api(`/schedule/lessons/${l._id}/elective`, {
+        method: 'PATCH',
+        json: { isElective },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedule'] });
+      qc.invalidateQueries({ queryKey: ['schedule-electives'] });
+      qc.invalidateQueries({ queryKey: ['schedule-now'] });
+    },
+  });
+
   const chip = TYPE_CHIP[l.type ?? 'other'] ?? TYPE_CHIP.other;
   const linkable = !!l.subjectId;
 
@@ -419,7 +452,7 @@ function LessonCard({ l }: { l: Lesson }) {
           {l.startTime} – {l.endTime}
         </span>
         {l.isElective ? (
-          <span className="chip text-[11px] bg-zinc-200 text-zinc-700">вибіркова</span>
+          <span className="chip text-[11px] bg-accent-soft text-accent">вибіркова</span>
         ) : null}
       </div>
       <div className="font-semibold text-[14px] leading-snug">{l.subjectName}</div>
@@ -454,6 +487,30 @@ function LessonCard({ l }: { l: Lesson }) {
           Перейти до зустрічі ↗
         </a>
       ) : null}
+
+      {/* Head / deputy: toggle elective flag */}
+      {canManage ? (
+        <button
+          type="button"
+          disabled={toggleElective.isPending}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleElective.mutate(!l.isElective);
+          }}
+          className={cn(
+            'mt-1 flex items-center gap-1.5 text-[11px] font-medium transition-colors rounded-md px-2 py-1',
+            l.isElective
+              ? 'bg-accent-soft text-accent hover:bg-accent/20'
+              : 'bg-paper-200 text-zinc-500 hover:bg-zinc-200',
+          )}
+        >
+          <svg viewBox="0 0 24 24" fill={l.isElective ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" className="h-3 w-3">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" strokeLinejoin="round" />
+          </svg>
+          {l.isElective ? 'Вибіркова' : 'Позначити вибірковою'}
+        </button>
+      ) : null}
     </div>
   );
 
@@ -466,4 +523,5 @@ function LessonCard({ l }: { l: Lesson }) {
   }
   return card;
 }
+
 
