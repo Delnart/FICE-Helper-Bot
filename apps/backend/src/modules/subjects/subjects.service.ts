@@ -108,7 +108,10 @@ export class SubjectsService {
     this.assertCanManageGroup(user, groupIdStr);
 
     if (dto.name !== undefined) subject.name = dto.name;
-    if (dto.shortName !== undefined) subject.shortName = dto.shortName;
+    if (dto.shortName !== undefined) {
+      const trimmed = dto.shortName?.trim();
+      subject.shortName = trimmed ? trimmed : undefined;
+    }
     if (dto.teachers) {
       subject.teachers = await this.enrichTeachers(dto.teachers);
       subject.markModified('teachers');

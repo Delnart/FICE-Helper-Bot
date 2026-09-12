@@ -156,7 +156,7 @@ export default function EditSubjectPage() {
       .filter((l) => l.label && l.url);
     update.mutate({
       name: name.trim(),
-      shortName: shortName.trim() || undefined,
+      shortName: shortName.trim(),
       teachers: cleanTeachers,
       links: cleanLinks,
       settings: { hideHomework, hideQueue, hideLinks, hideTeachers },
@@ -169,7 +169,7 @@ export default function EditSubjectPage() {
   if (subject.data && !subject.data.canManage) {
     return (
       <div className="card text-sm text-ink-500">
-        Лише староста або заступник можуть редагувати предмет.
+        Лише староста або заступник можуть редагувати дисципліну.
       </div>
     );
   }
@@ -346,12 +346,12 @@ export default function EditSubjectPage() {
         className="btn-secondary w-full text-danger"
         disabled={remove.isPending}
         onClick={() => {
-          if (window.confirm('Видалити предмет? Цю дію не можна скасувати.')) {
+          if (window.confirm('Видалити дисципліну? Цю дію не можна скасувати.')) {
             remove.mutate();
           }
         }}
       >
-        {remove.isPending ? 'Видалення…' : 'Видалити предмет'}
+        {remove.isPending ? 'Видалення…' : 'Видалити дисципліну'}
       </button>
     </div>
   );
