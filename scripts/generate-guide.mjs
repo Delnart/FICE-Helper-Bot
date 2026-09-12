@@ -1,4 +1,4 @@
-﻿import {
+import {
   Document, Packer, Paragraph, TextRun, HeadingLevel,
   AlignmentType, Table, TableRow, TableCell, WidthType,
   BorderStyle, ShadingType,
@@ -187,4 +187,4 @@ const doc = new Document({ sections: [{ properties: { page: { margin: { top: 108
   imgPlaceholder('команда /support i вiдповiдь'),
 ] }] });
 
-Packer.toBuffer(doc).then((buffer) => { writeFileSync('guide.docx', buffer); console.log('DONE: guide.docx generated successfully'); });
+Packer.toBuffer(doc).then((buffer) => { writeFileSync('docs/guide.docx', buffer); console.log('DONE: docs/guide.docx generated successfully'); });
