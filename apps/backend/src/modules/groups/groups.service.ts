@@ -152,9 +152,7 @@ export class GroupsService {
       }
       group.telegramChatId = params.newTelegramChatId;
     }
-    if (params.messageThreadId !== undefined) {
-      group.messageThreadId = params.messageThreadId;
-    }
+    group.messageThreadId = params.messageThreadId ?? undefined;
     await group.save();
     return group;
   }

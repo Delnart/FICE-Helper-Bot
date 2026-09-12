@@ -85,10 +85,12 @@ export class NotificationsService {
 
     if (dto.broadcastToChat) {
       const group = await this.groups.findById(dto.groupId).exec();
-      if (group) {
+      if (group && group.telegramChatId) {
+        const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
         await this.bot.sendMessage(
           group.telegramChatId,
           `<b>${escapeHtml(dto.title)}</b>\n\n${escapeHtml(dto.body)}`,
+          opts,
         );
         ann.broadcastedToChat = true;
         await ann.save();
@@ -125,9 +127,10 @@ export class NotificationsService {
     minutesLeft: number;
   }): Promise<void> {
     const group = await this.groups.findById(params.groupId).exec();
-    if (!group || !group.notificationsEnabled) return;
+    if (!group || !group.notificationsEnabled || !group.telegramChatId) return;
 
-    await this.bot.sendMessage(group.telegramChatId, this.buildLessonReminderText(params));
+    const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
+    await this.bot.sendMessage(group.telegramChatId, this.buildLessonReminderText(params), opts);
   }
 
   private buildLessonReminderText(params: {
@@ -143,7 +146,7 @@ export class NotificationsService {
     const lines = [
       `🔔 Нагадування про пару через ${params.minutesLeft} хвилин!`,
       '',
-      `📚 Предмет: <b>${escapeHtml(params.subjectName)}</b>`,
+      `📚 Дисципліна: <b>${escapeHtml(params.subjectName)}</b>`,
       `📝 Тип: <b>${escapeHtml(LESSON_TYPE_LABEL[params.lessonType])}</b>`,
       `👨‍🏫 Викладач: ${params.teacherNames.length ? escapeHtml(params.teacherNames.join(', ')) : '—'}`,
       `⏰ Час: <b>${escapeHtml(params.startTime)}</b> — <b>${escapeHtml(params.endTime)}</b>`,
@@ -155,19 +158,23 @@ export class NotificationsService {
 
   async broadcastQueueOpen(params: { groupId: string; subjectName: string; queueTitle: string }): Promise<void> {
     const group = await this.groups.findById(params.groupId).exec();
-    if (!group || !group.notificationsEnabled) return;
+    if (!group || !group.notificationsEnabled || !group.telegramChatId) return;
+    const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
     await this.bot.sendMessage(
       group.telegramChatId,
       `<b>За 5 хв відкриється черга:</b> ${escapeHtml(params.queueTitle)} (${escapeHtml(params.subjectName)})`,
+      opts,
     );
   }
 
   async announceBirthday(groupId: string, fullName: string): Promise<void> {
     const group = await this.groups.findById(groupId).exec();
-    if (!group || !group.birthdayAnnouncementsEnabled) return;
+    if (!group || !group.birthdayAnnouncementsEnabled || !group.telegramChatId) return;
+    const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
     await this.bot.sendMessage(
       group.telegramChatId,
       `Сьогодні день народження у <b>${escapeHtml(fullName)}</b>. Вітаємо!`,
+      opts,
     );
   }
 }
