@@ -10,8 +10,11 @@ import { RequestUser } from '../../common/types/request-user';
 import { GroupAccessService } from '../../common/access/group-access';
 
 /** Fields the list endpoints read — fetched lean with this projection. */
-const LIST_FIELDS = { title: 1, deadline: 1, subjectId: 1, points: 1, teamSize: 1 } as const;
-type HomeworkListRow = Pick<Homework, 'title' | 'deadline' | 'subjectId' | 'points' | 'teamSize'> & {
+const LIST_FIELDS = { title: 1, description: 1, deadline: 1, subjectId: 1, points: 1, teamSize: 1 } as const;
+type HomeworkListRow = Pick<
+  Homework,
+  'title' | 'description' | 'deadline' | 'subjectId' | 'points' | 'teamSize'
+> & {
   _id: Types.ObjectId;
 };
 
@@ -137,12 +140,15 @@ export class HomeworkService {
     return completions.map((c) => ({
       _id: String(c.homework._id),
       title: c.homework.title,
+      description: c.homework.description,
       deadline: c.homework.deadline,
       subjectId: String(c.homework.subjectId),
       subjectName: subjectName.get(String(c.homework.subjectId)) ?? '',
       points: c.homework.points,
       teamSize: c.homework.teamSize ?? 1,
       done: c.done,
+      // Un-marking $sets doneAt: undefined, which Mongoose drops — the old stamp stays.
+      doneAt: c.done ? c.doneAt : undefined,
     }));
   }
 
