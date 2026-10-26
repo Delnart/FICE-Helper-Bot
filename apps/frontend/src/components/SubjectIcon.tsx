@@ -13,6 +13,7 @@ export const SUBJECT_ICONS = [
   'braces',
   'dice',
   'flask',
+  'stack',
   'bookOpen',
   'book',
 ] as const satisfies readonly IconName[];
@@ -29,6 +30,7 @@ export const SUBJECT_ICON_LABELS: Record<SubjectIconName, string> = {
   braces: 'Програмування',
   dice: 'Ймовірності',
   flask: 'Наука',
+  stack: 'Архітектура',
   bookOpen: 'Гуманітарне',
   book: 'Інше',
 };
@@ -38,7 +40,8 @@ const RULES: Array<[RegExp, SubjectIconName]> = [
   [/ймовірн|статист|probab|statist/i, 'dice'],
   [/баз[аи] даних|^бд$|sql|database/i, 'database'],
   [/алгоритм|структур[аи] даних|граф|algorithm/i, 'graph'],
-  [/операційн|архітектур|апаратн|мікропроц|схемотех|електрон|комп.ютерн[аі] систем|cpu|hardware/i, 'cpu'],
+  [/архітектур|апаратн|комп.ютерн[аі] систем|hardware/i, 'stack'],
+  [/операційн|мікропроц|схемотех|електрон|cpu/i, 'cpu'],
   [/мереж|network|інтернет|кібер|cyber|безпек/i, 'globe'],
   [/обʼєктн|об'єктн|об’єктн|^ооп$|oop|java|c\+\+|c#|python|програмуванн/i, 'braces'],
   [/веб|web|розробк|програмн|software|тестуванн|devops|front|back/i, 'code'],

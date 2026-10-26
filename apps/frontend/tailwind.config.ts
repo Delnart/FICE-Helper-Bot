@@ -41,6 +41,16 @@ const config: Config = {
         card: 'var(--shadow)',
         bar: 'var(--shadow-bar)',
       },
+      // Size only: line-height comes from the type classes (.h1/.h3/.small…) or the body,
+      // so `h3 text-base` doesn't silently swap .h3's 1.35 for Tailwind's 1.5rem.
+      fontSize: {
+        xs: '0.75rem',
+        sm: '0.875rem',
+        base: '1rem',
+        lg: '1.125rem',
+        xl: '1.25rem',
+        '2xl': '1.5rem',
+      },
       fontFamily: {
         sans: ['var(--font-body)'],
         display: ['var(--font-display)'],

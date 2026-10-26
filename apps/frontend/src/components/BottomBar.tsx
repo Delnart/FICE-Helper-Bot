@@ -68,7 +68,7 @@ export function BottomBar() {
   const items = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
 
   return (
-    <nav className="tabbar fixed inset-x-0 bottom-0 z-40 mx-auto max-w-xl" aria-label="Основна навігація">
+    <nav className="tabbar fixed inset-x-0 bottom-0 z-40 mx-auto max-w-xl" aria-label={isTeacher ? 'Навігація викладача' : 'Основна навігація'}>
       {items.map((it) => {
         const active = isActive(it, path);
         const count = it.badge === 'homework' ? pending : 0;

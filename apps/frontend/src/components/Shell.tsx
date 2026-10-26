@@ -11,6 +11,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useActiveGroup, useIsTeacherOnly, useMe } from '../hooks/useMe';
 import { setActiveGroup } from '../lib/api';
 import { cn } from '../lib/cn';
+import { vocative } from '../lib/name';
 import { getWebApp, haptic } from '../lib/telegram';
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -48,7 +49,9 @@ export function Shell({ children }: { children: ReactNode }) {
       (!!active && memberIds.includes(active)) ||
       pathname === '/select-group');
   const ready = auth.ready && !auth.error && !noAccess && groupReady;
-  const showTabBar = ready && !isTabBarHidden(pathname);
+  // A teacher not yet linked to Кампус sees the onboarding on "/" — no tab bar there (mockup 20).
+  const teacherOnboarding = isTeacherOnly && !me.data?.campusLecturerId && pathname === '/';
+  const showTabBar = ready && !isTabBarHidden(pathname) && !teacherOnboarding;
 
   return (
     <div className="min-h-[100dvh] bg-bg text-ink">
@@ -81,7 +84,12 @@ export function Shell({ children }: { children: ReactNode }) {
             </button>
           </div>
         ) : noAccess ? (
-          <NoAccessScreen firstName={me.data?.firstName} onRetry={() => me.refetch()} retrying={me.isFetching} />
+          <NoAccessScreen
+            firstName={me.data?.firstName}
+            botUsername={me.data?.botUsername}
+            onRetry={() => me.refetch()}
+            retrying={me.isFetching}
+          />
         ) : !ready ? (
           <Loading />
         ) : (
@@ -93,24 +101,22 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-const STEPS: Array<{ title: string; body: ReactNode }> = [
+// Step 1 names the bot by @username when /users/me knows it, so the head can find it in search.
+const steps = (botUsername?: string): Array<{ title: string; body: ReactNode; command?: string }> => [
   {
     title: 'Староста додає бота в чат групи',
     body: (
       <>
-        Попросіть старосту додати бота <span className="font-semibold text-ink">FICE Helper</span> у груповий
-        чат.
+        Попросіть старосту додати {botUsername ? null : 'бота '}
+        <span className="font-semibold text-ink">{botUsername ? `@${botUsername}` : 'FICE Helper'}</span> у
+        груповий чат.
       </>
     ),
   },
   {
     title: 'Виконує команду в чаті',
-    body: (
-      <>
-        <span className="chip mb-1.5 flex h-7 w-fit font-mono">/verify</span>
-        <span className="block">Бот знайде групу в Кампус КПІ та підтягне розклад.</span>
-      </>
-    ),
+    command: '/verify',
+    body: 'Бот знайде групу в Кампус КПІ та підтягне розклад.',
   },
   {
     title: 'Напишіть будь-що в чаті',
@@ -120,10 +126,12 @@ const STEPS: Array<{ title: string; body: ReactNode }> = [
 
 function NoAccessScreen({
   firstName,
+  botUsername,
   onRetry,
   retrying,
 }: {
   firstName?: string;
+  botUsername?: string;
   onRetry: () => void;
   retrying: boolean;
 }) {
@@ -134,8 +142,8 @@ function NoAccessScreen({
           <Logo size={36} />
           <span className="eyebrow text-ink-2">FICE Helper</span>
         </div>
-        <h1 className="h1 text-2xl">
-          {firstName ? `Привіт, ${firstName}! ` : 'Привіт! '}Вашої групи тут ще немає
+        <h1 className="h1 text-[24px]">
+          {firstName ? `Привіт, ${vocative(firstName)}! ` : 'Привіт! '}Вашої групи тут ще немає
         </h1>
         <p className="leading-normal text-ink-2">
           Застосунок працює для груп, які підключив староста. Це займає хвилину — ось що потрібно зробити.
@@ -143,11 +151,12 @@ function NoAccessScreen({
       </header>
 
       <section aria-label="Кроки підключення" className="flex flex-col gap-2.5">
-        {STEPS.map((s, i) => (
+        {steps(botUsername).map((s, i) => (
           <div key={s.title} className="card-flat flex items-start gap-3.5">
             <span className="num w-8 flex-shrink-0 text-[26px] leading-none text-accent-text">{i + 1}</span>
-            <div className="flex flex-col gap-1">
-              <span className="h3 text-base">{s.title}</span>
+            <div className={cn('flex flex-col', s.command ? 'gap-1.5' : 'gap-1')}>
+              <span className="h3 text-[16px]">{s.title}</span>
+              {s.command ? <span className="chip h-7 self-start font-mono">{s.command}</span> : null}
               <span className="small muted">{s.body}</span>
             </div>
           </div>
@@ -157,8 +166,8 @@ function NoAccessScreen({
       <section className="card-soft flex flex-col gap-2.5">
         <span className="h3">Ви староста або викладач, і вас не пускає?</span>
         <span className="small muted">
-          Вашого тегу ще немає в адміністративній таблиці. Надішліть боту <span className="font-mono">/support</span>{' '}
-          — адміни додадуть вас і одразу відкриють доступ.
+          Вашого тегу ще немає в адміністративній таблиці. Напишіть у підтримку — адміни додадуть вас і одразу
+          відкриють доступ.
         </span>
       </section>
 
@@ -168,10 +177,12 @@ function NoAccessScreen({
           className="btn btn-primary btn-block"
           onClick={() => {
             haptic('light');
-            getWebApp()?.close();
+            // The bot chat, where /support reaches the admins; without its name, close back to Telegram.
+            if (botUsername) getWebApp()?.openTelegramLink(`https://t.me/${botUsername}`);
+            else getWebApp()?.close();
           }}
         >
-          <Icon name="send" />
+          <Icon name="send" size={18} />
           Написати в підтримку
         </button>
         <button type="button" className="btn btn-secondary btn-block" onClick={onRetry} disabled={retrying}>
