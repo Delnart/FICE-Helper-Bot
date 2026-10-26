@@ -293,7 +293,7 @@ export class UsersService {
   }
 
   async listGroupMembersForUi(groupId: string): Promise<
-    Array<{ _id: string; fullName: string; role: Role; username?: string }>
+    Array<{ _id: string; fullName: string; role: Role; username?: string; avatarUrl?: string }>
   > {
     const members = await this.listGroupStudents(groupId);
     return members.map((u) => {
@@ -303,6 +303,7 @@ export class UsersService {
         _id: String(u._id),
         fullName: display || u.username || 'Без імені',
         username: u.username,
+        avatarUrl: u.avatarUrl,
         role: m?.role ?? Role.Student,
       };
     });

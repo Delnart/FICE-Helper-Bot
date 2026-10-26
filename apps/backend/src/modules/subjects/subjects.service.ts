@@ -6,6 +6,7 @@ import type { SubjectLinkReminderType } from '@fice/shared';
 import { Subject, SubjectDocument } from './subject.schema';
 import { AttendanceSession, AttendanceSessionDocument } from './attendance.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
+import { User, UserDocument } from '../users/user.schema';
 import { CreateSubjectDto, SubjectLinkDto, SubjectTeacherDto, UpdateSubjectDto } from './dto/subject.dto';
 import { SheetsService } from '../sheets/sheets.service';
 import { UsersService } from '../users/users.service';
@@ -20,6 +21,7 @@ export class SubjectsService {
     @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
     @InjectModel(AttendanceSession.name) private readonly attendance: Model<AttendanceSessionDocument>,
     @InjectModel(AcademicGroup.name) private readonly groups: Model<AcademicGroupDocument>,
+    @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly sheets: SheetsService,
     private readonly usersService: UsersService,
     private readonly campus: CampusService,
@@ -73,6 +75,12 @@ export class SubjectsService {
     const isTeacher =
       (level >= ROLE_LEVEL[Role.Teacher] && level < ROLE_LEVEL[Role.DeputyHead]) ||
       (isInSubjectTeachers && !canManage);
+    // One batched lookup for linked teachers' avatars (not per teacher).
+    const teacherUserIds = subject.teachers.flatMap((t) => (t.teacherUserId ? [t.teacherUserId] : []));
+    const avatars = teacherUserIds.length
+      ? await this.users.find({ _id: { $in: teacherUserIds } }, { avatarUrl: 1 }).lean().exec()
+      : [];
+    const avatarOf = new Map(avatars.map((u) => [String(u._id), u.avatarUrl]));
     return {
       _id: String(subject._id),
       groupId: groupIdStr,
@@ -87,6 +95,7 @@ export class SubjectsService {
         role: t.role,
         externalSource: t.externalSource,
         roleInSubject: t.role,
+        avatarUrl: t.teacherUserId ? avatarOf.get(String(t.teacherUserId)) : undefined,
       })),
       links: subject.links.map((l) => ({
         label: l.label,
@@ -317,6 +326,7 @@ export class SubjectsService {
       fullName: u.fullName,
       username: u.username,
       telegramId: u.telegramId,
+      avatarUrl: u.avatarUrl,
     }));
   }
 
