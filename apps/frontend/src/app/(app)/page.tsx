@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import type { Route } from 'next';
-import { focusManager, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { focusManager, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import dayjs from 'dayjs';
@@ -13,10 +13,18 @@ import { Empty, ErrorState, Loading } from '../../components/Empty';
 import { Section } from '../../components/ui/Section';
 import { Icon, Logo, type IconName } from '../../components/icons';
 import { SubjectTile } from '../../components/SubjectIcon';
+import { UserAvatar, myAvatarUrl } from '../../components/UserAvatar';
+import {
+  isQueueOpen,
+  queueBySubject,
+  takenSlots,
+  type RawQueue,
+} from '../../components/subjects/helpers';
 import { cn } from '../../lib/cn';
-import { initials, shortenName } from '../../lib/name';
+import { shortenName, subjectAcronym, vocative } from '../../lib/name';
 import { useActiveMembership, useCanManage, useIsTeacherOnly, useMe } from '../../hooks/useMe';
-import { haptic } from '../../lib/telegram';
+import { getWebApp, haptic } from '../../lib/telegram';
+import { timeAgo } from '../../lib/time';
 
 interface MySubject {
   _id: string;
@@ -25,6 +33,8 @@ interface MySubject {
   icon?: string;
   groupId: string;
   groupName: string;
+  groupStudentCount?: number;
+  activeHomework?: number;
 }
 
 interface GroupOption {
@@ -111,6 +121,14 @@ const TYPE_LABEL: Record<string, string> = {
   lab: 'Лабораторна',
   seminar: 'Семінар',
   other: 'Інше',
+};
+
+/** What the teacher does in a subject, by the lesson types they hold (mockup 21). */
+const KIND_LABEL: Record<string, string> = {
+  lecture: 'Лектор',
+  lab: 'Лабораторні',
+  practice: 'Практики',
+  seminar: 'Семінари',
 };
 
 const ATT_CHIP: Partial<Record<AttStatus, { label: string; cls: string }>> = {
@@ -222,14 +240,39 @@ function TeacherHomePage() {
 
   const subjects = useMemo(() => mySubjects.data ?? [], [mySubjects.data]);
   const byGroup = useMemo(() => {
-    const map = new Map<string, { groupName: string; items: MySubject[] }>();
+    const map = new Map<string, { groupName: string; students?: number; items: MySubject[] }>();
     for (const s of subjects) {
-      const g = map.get(s.groupId) ?? { groupName: s.groupName, items: [] };
+      const g = map.get(s.groupId) ?? { groupName: s.groupName, students: s.groupStudentCount, items: [] };
       g.items.push(s);
       map.set(s.groupId, g);
     }
     return [...map.entries()];
   }, [subjects]);
+
+  // Queue state per subject (open / opens on / how many waiting): one GET /queues per group.
+  const groupQueues = useQueries({
+    queries: byGroup.map(([groupId]) => ({
+      queryKey: ['teacher-queues', groupId],
+      queryFn: () => api<RawQueue[]>('/queues', { query: { groupId } }),
+      retry: 0,
+    })),
+  });
+  const queueOf = new Map<string, RawQueue>();
+  for (const q of groupQueues) for (const [id, v] of queueBySubject(q.data)) queueOf.set(id, v);
+
+  // «Лектор · Лабораторні» per subject: lesson kinds from both weeks (same cache as Розклад).
+  const weeks = useQueries({
+    queries: ([1, 2] as const).map((week) => ({
+      queryKey: ['schedule', week, true],
+      queryFn: () => api<Lesson[]>('/schedule/lecturer/week', { query: { week } }),
+      enabled: !!me.data?.campusLecturerId,
+      retry: 0,
+    })),
+  });
+  const kindsOf = new Map<string, Set<string>>();
+  for (const w of weeks)
+    for (const l of w.data ?? [])
+      if (l.subjectId && l.type) kindsOf.set(l.subjectId, (kindsOf.get(l.subjectId) ?? new Set()).add(l.type));
 
   // ── Identification screen ──────────────────────────────────────────────────
   if (!me.data?.campusLecturerId) {
@@ -238,10 +281,10 @@ function TeacherHomePage() {
     // a clean loader instead of the "fill ПІБ" form.
     const autoIdentifying = prefilledFromSheet && identify.isPending && candidates.length === 0;
     return (
-      <div className="flex flex-col gap-5 pt-2.5">
+      <div className="flex min-h-[calc(100dvh-42px)] flex-col gap-5 pt-2.5">
         <header className="flex flex-col gap-3.5">
           <div className="flex items-center gap-2.5">
-            <Logo size={28} />
+            <Logo size={36} />
             <span className="eyebrow text-ink-2">FICE Helper · для викладачів</span>
           </div>
           <h1 className="h1 text-[24px]">Підключимо ваші дисципліни з Кампус КПІ</h1>
@@ -273,7 +316,7 @@ function TeacherHomePage() {
                 <div className="hint">Прізвище Імʼя По-батькові, без скорочень</div>
               </div>
 
-              {identifyError ? <div className="small text-bad">{identifyError}</div> : null}
+              {identifyError && !candidates.length ? <div className="small text-bad">{identifyError}</div> : null}
 
               <button
                 type="button"
@@ -295,36 +338,38 @@ function TeacherHomePage() {
                 title={`Знайдено ${candidates.length} ${pluralUk(candidates.length, ['профіль', 'профілі', 'профілів'])}`}
                 aside={<span className="tiny faint">оберіть свій</span>}
               >
-                <div>
-                  {candidates.map((c, i) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className={cn('row w-full justify-between text-left', i === 0 && 'border-accent')}
-                      disabled={identify.isPending}
-                      onClick={() => {
-                        setCandidates([]);
-                        setIdentifyError('');
-                        identify.mutate({ lecturerId: c.id });
-                      }}
-                    >
-                      <span className="flex min-w-0 items-center gap-3">
-                        <span className={cn('avatar', i === 0 && 'bg-accent-soft text-accent-text')}>
-                          {initials(c.name)}
-                        </span>
-                        <span className="h3 min-w-0">{c.name}</span>
-                      </span>
-                      <span className={cn('chip flex-shrink-0', i === 0 && 'chip-accent')}>Це я</span>
-                    </button>
-                  ))}
-                </div>
+                {candidates.map((c, i) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={cn('row w-full justify-between text-left', i === 0 && 'border-accent')}
+                    disabled={identify.isPending}
+                    onClick={() => {
+                      setCandidates([]);
+                      setIdentifyError('');
+                      identify.mutate({ lecturerId: c.id });
+                    }}
+                  >
+                    <span className="flex min-w-0 items-center gap-3">
+                      <UserAvatar name={c.name} className={cn(i === 0 && 'bg-accent-soft text-accent-text')} />
+                      <span className="h3 min-w-0">{c.name}</span>
+                    </span>
+                    <span className={cn('chip flex-shrink-0', i === 0 && 'chip-accent')}>Це я</span>
+                  </button>
+                ))}
               </Section>
             ) : null}
 
-            <p className="small muted px-3 pt-2 text-center">
-              Не бачите себе? Староста групи ще могла не додати вас до дисципліни — або напишіть боту{' '}
-              <span className="font-mono">/support</span>.
-            </p>
+            <div className="mt-auto flex flex-col items-center gap-2.5 px-3 pt-2 text-center">
+              <span className="small muted">
+                Не бачите себе? Староста групи ще могла не додати вас до дисципліни — або напишіть у
+                підтримку.
+              </span>
+              {/* /support lives in the bot chat: closing the Mini App lands the user there. */}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => getWebApp()?.close()}>
+                Написати в підтримку · /support
+              </button>
+            </div>
           </>
         )}
       </div>
@@ -337,6 +382,9 @@ function TeacherHomePage() {
   const currentSubject = current?.subjectId
     ? subjects.find((s) => s._id === current.subjectId)
     : undefined;
+  const currentQueue = currentSubject ? queueOf.get(currentSubject._id) : undefined;
+  const inQueue = currentQueue && isQueueOpen(currentQueue) ? waitingCount(currentQueue) : 0;
+  const nextSubject = next?.subjectId ? subjects.find((s) => s._id === next.subjectId) : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -355,6 +403,7 @@ function TeacherHomePage() {
             current.groupName,
             current.type ? TYPE_LABEL[current.type] : null,
             current.room ? `ауд. ${current.room}` : null,
+            inQueue ? `у черзі ${inQueue}` : null,
           ])}
           actions={
             <>
@@ -362,14 +411,14 @@ function TeacherHomePage() {
                 <>
                   <button
                     type="button"
-                    className="btn btn-now min-w-[40%] flex-[1.2]"
+                    className="btn btn-now min-w-max flex-[1.2]"
                     onClick={() => openIn(currentSubject, `/subjects/${currentSubject._id}/queue`)}
                   >
                     Черга на захист
                   </button>
                   <button
                     type="button"
-                    className="btn btn-now-ghost min-w-[40%] flex-1"
+                    className="btn btn-now-ghost min-w-max flex-1"
                     onClick={() => openIn(currentSubject, journalHref(currentSubject))}
                   >
                     Журнал
@@ -381,7 +430,7 @@ function TeacherHomePage() {
                   href={current.meetingUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="btn btn-now-ghost min-w-[40%] flex-1"
+                  className="btn btn-now-ghost min-w-max flex-1"
                 >
                   <Icon name="video" strokeWidth={1.9} />
                   Приєднатись
@@ -392,7 +441,18 @@ function TeacherHomePage() {
         />
       ) : null}
 
-      {next ? <NextRow lesson={next} nowMin={nowMin} /> : null}
+      {next ? (
+        <NextRow
+          nowMin={nowMin}
+          lesson={next}
+          title={joinParts([
+            nextSubject?.shortName || subjectAcronym(next.subjectName),
+            next.type ? TYPE_LABEL[next.type]?.toLowerCase() : null,
+            next.groupName,
+          ])}
+          parts={[next.room]}
+        />
+      ) : null}
 
       {mySubjects.isLoading ? (
         <Loading />
@@ -416,29 +476,42 @@ function TeacherHomePage() {
           {byGroup.map(([groupId, g]) => (
             <div key={groupId} className="card-flat flex flex-col px-3.5 py-1">
               <div className="row-plain min-h-10 pt-2.5">
-                <span className="eyebrow">{g.groupName}</span>
+                <span className="eyebrow">
+                  {g.groupName}
+                  {g.students ? ` · ${g.students} ${pluralUk(g.students, ['студент', 'студенти', 'студентів'])}` : ''}
+                </span>
               </div>
-              {g.items.map((s, i) => (
-                <Fragment key={s._id}>
-                  {i > 0 ? <div className="divider" /> : null}
-                  <button
-                    type="button"
-                    className="row-plain w-full justify-between text-left"
-                    onClick={() => openSubject(s)}
-                  >
-                    <span className="flex min-w-0 items-center gap-3">
-                      <SubjectTile name={s.name} icon={s.icon} />
-                      <span className="flex min-w-0 flex-col">
-                        <span className="h3 truncate">{s.shortName ?? s.name}</span>
-                        {s.shortName && s.name !== s.shortName ? (
-                          <span className="tiny faint truncate">{s.name}</span>
-                        ) : null}
+              {g.items.map((s, i) => {
+                const kinds = kindsOf.get(s._id);
+                const sub = joinParts([
+                  ...Object.keys(KIND_LABEL)
+                    .filter((k) => kinds?.has(k))
+                    .map((k) => KIND_LABEL[k]),
+                  queueLine(queueOf.get(s._id)),
+                  s.activeHomework
+                    ? `${s.activeHomework} ${pluralUk(s.activeHomework, ['завдання активне', 'завдання активні', 'завдань активних'])}`
+                    : null,
+                ]);
+                return (
+                  <Fragment key={s._id}>
+                    {i > 0 ? <div className="divider" /> : null}
+                    <button
+                      type="button"
+                      className="row-plain w-full justify-between text-left"
+                      onClick={() => openSubject(s)}
+                    >
+                      <span className="flex min-w-0 items-center gap-3">
+                        <SubjectTile name={s.name} icon={s.icon} />
+                        <span className="flex min-w-0 flex-col">
+                          <span className="h3 truncate">{s.name}</span>
+                          {sub ? <span className="tiny faint line-clamp-2">{sub}</span> : null}
+                        </span>
                       </span>
-                    </span>
-                    <Icon name="chevronRight" className="chev" />
-                  </button>
-                </Fragment>
-              ))}
+                      <Icon name="chevronRight" className="chev" />
+                    </button>
+                  </Fragment>
+                );
+              })}
             </div>
           ))}
         </Section>
@@ -681,6 +754,21 @@ function StudentHomePage() {
     queryFn: () => api<GroupJoinRequest[]>('/teachers/join-requests', { query: { groupId } }),
     enabled: canManage && !!groupId,
   });
+  // Same caches as the Предмети tab / electives / group settings screens.
+  const queues = useQuery({
+    queryKey: ['queues-all'],
+    queryFn: () => api<RawQueue[]>('/queues'),
+  });
+  const electives = useQuery({
+    queryKey: ['schedule-electives'],
+    queryFn: () => api<unknown[]>('/schedule/electives'),
+    enabled: canManage,
+  });
+  const groupSettings = useQuery({
+    queryKey: ['group-settings'],
+    queryFn: () => api<{ campusGroupId?: string; scheduleSyncedAt?: string }>('/groups/current/settings'),
+    enabled: canManage,
+  });
 
   const complete = useMutation({
     mutationFn: (id: string) =>
@@ -743,6 +831,36 @@ function StudentHomePage() {
       ? (`/subjects/${current.subjectId}/queue` as Route)
       : null;
 
+  const myId = me.data?._id;
+  const queueMap = useMemo(() => queueBySubject(queues.data), [queues.data]);
+  const currentQueue = current?.subjectId ? queueMap.get(current.subjectId) : undefined;
+  const currentSpot = currentQueue && myId ? queueSpot(currentQueue, myId) : null;
+  const queueLabel = !currentQueue
+    ? 'Черга'
+    : canManage
+      ? `Черга ${takenSlots(currentQueue)}/${currentQueue.slotsCount}`
+      : currentSpot
+        ? `Черга · ви ${currentSpot.place}-й`
+        : isQueueOpen(currentQueue)
+          ? `Черга · ${takenSlots(currentQueue)}/${currentQueue.slotsCount}`
+          : 'Черга';
+  // Quick tile: the queue I'm waiting in (the current lesson's first, else the nearest turn).
+  const { myQueue, openQueues } = useMemo(() => {
+    const mine: Array<{ subjectId: string; name: string; slot: number; place: number }> = [];
+    let open = 0;
+    for (const [subjectId, q] of queueMap) {
+      const s = subjects.data?.find((x) => x._id === subjectId);
+      if (s?.settings?.hideQueue) continue;
+      if (isQueueOpen(q)) open++;
+      const spot = myId ? queueSpot(q, myId) : null;
+      if (spot) mine.push({ subjectId, name: s?.shortName || subjectAcronym(s?.name ?? ''), ...spot });
+    }
+    const isNow = (x: { subjectId: string }) => Number(x.subjectId === current?.subjectId);
+    mine.sort((a, b) => isNow(b) - isNow(a) || a.place - b.place);
+    return { myQueue: mine[0] ?? null, openQueues: open };
+  }, [queueMap, subjects.data, myId, current?.subjectId]);
+  const queuesFailed = queues.isError && !queues.data;
+
   const studentsCount = grid.data?.students.length ?? 0;
   const lessonStats = (id: string) => grid.data?.perLessonWeek[id];
   const presence = useMemo(() => {
@@ -761,7 +879,7 @@ function StudentHomePage() {
   return (
     <div className="flex flex-col gap-4">
       <HomeHeader
-        title={firstName ? `Привіт, ${firstName}` : 'Привіт'}
+        title={firstName ? `Привіт, ${vocative(firstName)}` : 'Привіт'}
         weekType={week}
         label={canManage ? ROLE_LABEL[membership?.role ?? ''] ?? '' : membership?.groupName ?? ''}
         accentLabel={canManage}
@@ -786,8 +904,8 @@ function StudentHomePage() {
           actions={
             <>
               {canManage ? (
-                <Link href="/attendance/mark" className="btn btn-now min-w-[40%] flex-[1.3]">
-                  <Icon name="checkSquare" strokeWidth={1.9} />
+                <Link href="/attendance/mark" className="btn btn-now min-w-max flex-[1.3]">
+                  <Icon name="checkSquare" />
                   Відмітити присутніх
                 </Link>
               ) : null}
@@ -796,15 +914,21 @@ function StudentHomePage() {
                   href={joinUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className={cn('btn min-w-[40%] flex-1', canManage ? 'btn-now-ghost' : 'btn-now')}
+                  className={cn('btn min-w-max flex-1', canManage ? 'btn-now-ghost' : 'btn-now')}
                 >
                   <Icon name="video" strokeWidth={1.9} />
                   Приєднатись
                 </a>
               ) : null}
               {queueHref ? (
-                <Link href={queueHref} className="btn btn-now-ghost min-w-[40%] flex-1">
-                  Черга
+                <Link
+                  href={queueHref}
+                  className={cn(
+                    'btn min-w-max flex-1',
+                    canManage || joinUrl ? 'btn-now-ghost' : 'btn-now',
+                  )}
+                >
+                  {queueLabel}
                 </Link>
               ) : null}
             </>
@@ -812,7 +936,17 @@ function StudentHomePage() {
         />
       ) : null}
 
-      {next ? <NextRow lesson={next} nowMin={nowMin} /> : null}
+      {next ? (
+        <NextRow
+          nowMin={nowMin}
+          lesson={next}
+          title={next.subjectName}
+          parts={[
+            next.type ? TYPE_LABEL[next.type] : null,
+            next.room && !canManage ? `ауд. ${next.room}` : next.room,
+          ]}
+        />
+      ) : null}
 
       {canManage ? (
         <Section
@@ -835,36 +969,70 @@ function StudentHomePage() {
               title="Журнал"
               hint={presence !== null ? `цього тижня ${presence}% присутності` : 'Відвідуваність групи'}
             />
-            {requests.length ? (
-              <ManageTile
-                href="/settings/group"
-                icon="users"
-                title="Запити викладачів"
-                hint={`${requests.length} ${pluralUk(requests.length, ['новий', 'нові', 'нових'])} · ${shortenName(requests[0].fullName)}`}
-                badge={requests.length}
-              />
-            ) : null}
-            <ManageTile href="/schedule/electives" icon="star" title="Вибіркові" hint="Дисципліни за вибором" />
-            <ManageTile href="/settings/group" icon="sliders" title="Налаштування" hint="Група, Кампус, учасники" />
+            <ManageTile
+              href="/settings/group"
+              icon="users"
+              title="Запити викладачів"
+              hint={
+                requests.length
+                  ? `${requests.length} ${pluralUk(requests.length, ['новий', 'нові', 'нових'])} · ${shortenName(requests[0].fullName)}`
+                  : 'нових немає'
+              }
+              badge={requests.length}
+            />
+            <ManageTile
+              href="/schedule/electives"
+              icon="star"
+              title="Вибіркові"
+              hint={
+                electives.data?.length
+                  ? `${electives.data.length} ${pluralUk(electives.data.length, ['дисципліна', 'дисципліни', 'дисциплін'])}`
+                  : 'Дисципліни за вибором'
+              }
+            />
+            <ManageTile
+              href="/settings/group"
+              icon="sliders"
+              title="Налаштування"
+              hint={
+                groupSettings.data
+                  ? groupSettings.data.campusGroupId
+                    ? groupSettings.data.scheduleSyncedAt
+                      ? `Кампус синхр. ${timeAgo(groupSettings.data.scheduleSyncedAt)}`
+                      : 'Кампус підключено'
+                    : 'Кампус не підключено'
+                  : 'Група, Кампус, учасники'
+              }
+            />
           </div>
           <div className="flex gap-2">
             <Link href="/homework/new" className="btn btn-secondary btn-md flex-1">
-              <Icon name="plus" />
+              <Icon name="plus" size={18} strokeWidth={2.2} />
               Завдання
             </Link>
             <Link href="/subjects/new" className="btn btn-secondary btn-md flex-1">
-              <Icon name="plus" />
+              <Icon name="plus" size={18} strokeWidth={2.2} />
               Дисципліна
             </Link>
           </div>
         </Section>
       ) : (
-        <section aria-label="Швидкі дії" className="grid grid-cols-2 gap-2.5">
+        <section aria-label="Швидкі дії" className="grid grid-cols-3 gap-2.5">
           <QuickTile
             href="/homework"
-            icon="checkSquare"
+            icon="task"
             value={hwPending.isLoading ? '…' : hwFailed ? '—' : String(pendingCount)}
             label={pluralUk(pendingCount, ['завдання', 'завдання', 'завдань'])}
+          />
+          <QuickTile
+            href={myQueue ? (`/subjects/${myQueue.subjectId}/queue` as Route) : '/subjects'}
+            icon="list"
+            value={queues.isLoading ? '…' : queuesFailed ? '—' : myQueue ? `№${myQueue.slot}` : String(openQueues)}
+            label={
+              myQueue
+                ? `черга ${myQueue.name}`
+                : pluralUk(openQueues, ['відкрита черга', 'відкриті черги', 'відкритих черг'])
+            }
           />
           <QuickTile
             href="/schedule"
@@ -905,14 +1073,14 @@ function StudentHomePage() {
                 if (state === 'next') chip = <span className="chip">о {l.startTime}</span>;
                 else if (stats)
                   chip = (
-                    <span className="chip chip-ok num">
+                    <span className="chip chip-ok">
                       {stats.present + stats.late}
                       {studentsCount ? ` / ${studentsCount}` : ''}
                     </span>
                   );
                 else if (grid.data)
                   chip = (
-                    <Link href="/attendance/mark" className="chip chip-warn chip-btn">
+                    <Link href={`/attendance/mark?lessonId=${l._id}` as Route} className="chip chip-warn chip-btn">
                       Відмітити
                     </Link>
                   );
@@ -965,9 +1133,9 @@ function StudentHomePage() {
         ) : hwFailed ? (
           <ErrorState error={hwPending.error} onRetry={() => hwPending.refetch()} />
         ) : deadlines.length === 0 ? (
-          <Empty icon="checkSquare" title="Усе виконано" hint="Невиконаних завдань немає." />
+          <Empty icon="task" title="Усе виконано" hint="Невиконаних завдань немає." />
         ) : (
-          <div>
+          <div className="flex flex-col gap-2">
             {deadlines.map((h) => {
               const ticking = complete.isPending && complete.variables === h._id;
               return (
@@ -1042,7 +1210,7 @@ function HomeHeader({
               {label}
             </span>
           ) : null}
-          <span className="avatar tile-accent h-9 w-9 text-[12px]">{initials(name)}</span>
+          <UserAvatar name={name} src={myAvatarUrl(me.data)} className="tile-accent h-9 w-9 text-[12px]" />
         </Link>
       }
     />
@@ -1069,7 +1237,7 @@ function NowCard({
     <section className="now flex flex-col gap-3.5" aria-label="Зараз триває">
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="num now-accent whitespace-nowrap text-[26px] leading-none">
+          <div className="num now-accent min-w-0 text-[26px] leading-none">
             {lesson.startTime}–{lesson.endTime}
           </div>
           <span className="chip flex-shrink-0 gap-1.5 bg-now-accent text-now-accent-ink">
@@ -1088,19 +1256,28 @@ function NowCard({
   );
 }
 
-function NextRow({ lesson, nowMin }: { lesson: Lesson; nowMin: number }) {
+/** «Далі: …» row; `parts` is the meta line, «через N хв» is appended. */
+function NextRow({
+  lesson,
+  nowMin,
+  title,
+  parts,
+}: {
+  lesson: Lesson;
+  nowMin: number;
+  title: string;
+  parts: Array<string | null | undefined>;
+}) {
   const inMin = toMin(lesson.startTime) - nowMin;
   return (
     <Link href="/schedule" className="row justify-between">
       <span className="flex min-w-0 items-center gap-3">
         <span className="num text-[14px] text-accent-text">{lesson.startTime}</span>
         <span className="flex min-w-0 flex-col">
-          <span className="h3 truncate">Далі: {lesson.subjectName}</span>
+          <span className="h3 truncate">Далі: {title}</span>
           <span className="tiny faint truncate">
             {joinParts([
-              lesson.type ? TYPE_LABEL[lesson.type] : null,
-              lesson.groupName,
-              lesson.room ? `ауд. ${lesson.room}` : null,
+              ...parts,
               inMin > 0 ? `через ${inMin < 60 ? `${inMin} хв` : `${Math.floor(inMin / 60)} год${inMin % 60 ? ` ${inMin % 60} хв` : ''}`}` : null,
             ])}
           </span>
@@ -1127,9 +1304,9 @@ function QuickTile({
       <span className="tile tile-soft h-9 w-9 rounded-[12px]">
         <Icon name={icon} size={18} />
       </span>
-      <span className="flex flex-col gap-0.5">
+      <span className="flex min-w-0 flex-col gap-0.5">
         <span className="num text-[20px] leading-none">{value}</span>
-        <span className="tiny muted">{label}</span>
+        <span className="tiny muted truncate">{label}</span>
       </span>
     </Link>
   );
@@ -1171,7 +1348,7 @@ function DeadlineChip({ deadline }: { deadline?: string }) {
   const days = d.startOf('day').diff(dayjs().startOf('day'), 'day');
   if (days === 0) return <span className="chip chip-warn flex-shrink-0">сьогодні</span>;
   if (days === 1) return <span className="chip chip-warn flex-shrink-0">завтра</span>;
-  return <span className="chip flex-shrink-0">{d.format('dd, D MMM')}</span>;
+  return <span className="chip flex-shrink-0">{d.format('dd, D MMM')}.</span>;
 }
 
 /**
@@ -1203,6 +1380,37 @@ function useNowMinutes(): number {
     return () => clearInterval(t);
   }, []);
   return now.getHours() * 60 + now.getMinutes();
+}
+
+/** Entries still waiting for their turn (passed / missed / failed are done). */
+const WAITING = new Set(['default', 'preparing', 'passing']);
+const isWaiting = (e: { status?: string }) => WAITING.has(e.status ?? 'default');
+
+/**
+ * My spot in a queue: `slot` is the number the queue screen shows, `place` my real turn —
+ * only slots above me that still wait count, so it moves up as people hand in their labs.
+ */
+function queueSpot(q: RawQueue, userId: string): { slot: number; place: number } | null {
+  const entries = (q.entries ?? []).filter(isWaiting);
+  const mine = entries.filter((e) => String(e.userId) === userId).map((e) => e.slotIndex);
+  if (!mine.length) return null;
+  const slot = Math.min(...mine);
+  const ahead = new Set(entries.filter((e) => e.slotIndex < slot).map((e) => e.slotIndex));
+  return { slot, place: ahead.size + 1 };
+}
+
+function waitingCount(q: RawQueue): number {
+  return (q.entries ?? []).filter(isWaiting).length;
+}
+
+/** Teacher row meta: «черга відкрита» / «черга відкриється ср» / «черга закрита» (count lives on the now card). */
+function queueLine(q: RawQueue | undefined): string | null {
+  if (!q) return null;
+  if (isQueueOpen(q)) return 'черга відкрита';
+  const at = q.rules?.autoOpenAt ? dayjs(q.rules.autoOpenAt) : null;
+  if (at?.isAfter(dayjs()))
+    return `черга відкриється ${at.locale('uk').format(at.diff(dayjs(), 'day') < 6 ? 'dd' : 'D MMM.')}`;
+  return 'черга закрита';
 }
 
 function toMin(hhmm: string): number {
