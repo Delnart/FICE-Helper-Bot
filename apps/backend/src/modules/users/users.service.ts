@@ -1,4 +1,5 @@
 import { forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Role, ROLE_LEVEL } from '@fice/shared';
@@ -28,6 +29,7 @@ export class UsersService {
     @Inject(forwardRef(() => BotService))
     private readonly bot: BotService,
     private readonly sheets: SheetsService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -244,6 +246,9 @@ export class UsersService {
       memberships,
       accessReason,
       campusLecturerId: user.campusLecturerId,
+      // Frontend builds t.me links from it; env may carry a leading '@'.
+      botUsername:
+        this.config.get<string>('app.telegram.botUsername')?.replace(/^@+/, '') || undefined,
     };
   }
 
