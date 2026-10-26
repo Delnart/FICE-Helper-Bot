@@ -10,6 +10,9 @@ export class NotificationPrefs {
   @Prop({ default: true }) dmNextInQueue!: boolean;
   @Prop({ default: true }) dmDeadlineTomorrow!: boolean;
   @Prop({ default: true }) dmSwapRequests!: boolean;
+  // Opt-in (unlike the above): only `true` in the DB sends, a missing field never does.
+  @Prop({ default: false }) dmMorningDigest!: boolean;
+  @Prop({ default: false }) dmLessonReminder!: boolean;
 }
 
 export type NotificationPrefsDocument = HydratedDocument<NotificationPrefs>;

@@ -2,7 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { LessonReminder, NotificationsService } from './notifications.service';
+import { Role } from '@fice/shared';
+import {
+  buildLessonRemindersText,
+  buildMorningDigestText,
+  LessonReminder,
+  NotificationsService,
+} from './notifications.service';
 import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
 import { Queue, QueueDocument } from '../queues/queue.schema';
 import { Homework, HomeworkDocument } from '../homework/homework.schema';
@@ -12,6 +18,7 @@ import { User, UserDocument } from '../users/user.schema';
 import { CampusService } from '../campus/campus.service';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminder-mark.schema';
+import { NotificationPrefs, NotificationPrefsDocument } from './notification-prefs.schema';
 
 @Injectable()
 export class SchedulerService {
@@ -19,6 +26,7 @@ export class SchedulerService {
   /** Queue-open broadcast key -> when it was sent (pruned every tick). */
   private readonly sentMarks = new Map<string, number>();
   private lessonTickRunning = false;
+  private digestRunning = false;
 
   constructor(
     private readonly notifications: NotificationsService,
@@ -32,6 +40,7 @@ export class SchedulerService {
     @InjectModel(LessonReminderMark.name)
     private readonly reminderMarks: Model<LessonReminderMarkDocument>,
     private readonly campus: CampusService,
+    @InjectModel(NotificationPrefs.name) private readonly prefs: Model<NotificationPrefsDocument>,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -45,11 +54,13 @@ export class SchedulerService {
       const week = await this.campus.refreshWeekParity();
       const groups = await this.groups
         // Inactive = bot was removed from the chat; sends there only fail.
-        .find({ notificationsEnabled: true, status: { $ne: 'inactive' } }, { lessonReminderMinutes: 1 })
+        .find({ status: { $ne: 'inactive' } }, { notificationsEnabled: 1, lessonReminderMinutes: 1 })
         .lean()
         .exec();
       if (groups.length === 0) return;
       const minutesByGroup = new Map(groups.map((g) => [String(g._id), g.lessonReminderMinutes]));
+      // The chat switch only gates the chat message; personal DMs are each user's own opt-in.
+      const chatGroups = new Set(groups.filter((g) => g.notificationsEnabled === true).map((g) => String(g._id)));
 
       // One lean query for every group's lessons today, instead of two full
       // queries (lessons + subjects) per group every minute.
@@ -66,7 +77,13 @@ export class SchedulerService {
       if (due.length === 0) return;
 
       // Dedupe as strings (ObjectIds compare by reference), query as ObjectIds.
-      const dueGroupIds = [...new Set(due.map((l) => String(l.groupId)))].map((id) => new Types.ObjectId(id));
+      const toIds = (ls: typeof due) =>
+        [...new Set(ls.map((l) => String(l.groupId)))].map((id) => new Types.ObjectId(id));
+      const dmRecipients = await this.lessonDmRecipients(toIds(due));
+      // Nobody to tell → don't claim, so a group with chat off and no opted-in members costs nothing.
+      const wanted = due.filter((l) => chatGroups.has(String(l.groupId)) || dmRecipients.has(String(l.groupId)));
+      if (wanted.length === 0) return;
+      const dueGroupIds = toIds(wanted);
       const subjects = await this.subjects
         .find(
           { groupId: { $in: dueGroupIds } },
@@ -78,9 +95,9 @@ export class SchedulerService {
       // One chat message per group, however many lessons (subgroups,
       // electives) start at that minute. Claims stay per lesson, so a lesson
       // is never announced twice even if two ticks overlap.
-      const byGroup = new Map<string, LessonReminder[]>();
+      const byGroup = new Map<string, Array<{ lesson: (typeof due)[number]; reminder: LessonReminder }>>();
       const lookups = new Map<string, ReturnType<SchedulerService['buildSubjectLookup']>>();
-      for (const l of due) {
+      for (const l of wanted) {
         const groupId = String(l.groupId);
         const claimed = await this.claimLessonReminder(groupId, String(l._id), reminderDate);
         if (!claimed) continue;
@@ -96,23 +113,142 @@ export class SchedulerService {
         byGroup.set(groupId, [
           ...(byGroup.get(groupId) ?? []),
           {
-            subjectName: l.subjectName,
-            lessonType: l.type,
-            teacherNames: l.teacherNames,
-            startTime: l.startTime,
-            endTime: l.endTime,
-            room: l.room,
-            link: this.pickReminderLink(subject, l),
+            lesson: l,
+            reminder: {
+              subjectName: l.subjectName,
+              lessonType: l.type,
+              teacherNames: l.teacherNames,
+              startTime: l.startTime,
+              endTime: l.endTime,
+              room: l.room,
+              link: this.pickReminderLink(subject, l),
+            },
           },
         ]);
       }
+      // Every chat first: personal DMs must not delay the group reminders that existed before them.
       for (const [groupId, list] of byGroup) {
-        await this.notifications.broadcastLessonReminders(groupId, minutesByGroup.get(groupId) ?? 0, list);
+        if (chatGroups.has(groupId)) {
+          await this.notifications.broadcastLessonReminders(
+            groupId,
+            minutesByGroup.get(groupId) ?? 0,
+            list.map((x) => x.reminder),
+          );
+        }
+      }
+      // ponytail: DMs are sent serially inside the tick; if a peak minute ever takes >60s the guard
+      // skips the next tick — move DMs to a background send chain then.
+      for (const [groupId, list] of byGroup) {
+        const minutes = minutesByGroup.get(groupId) ?? 0;
+        for (const u of dmRecipients.get(groupId) ?? []) {
+          const mine = list.filter((x) => attendsLesson(x.lesson, u.id)).map((x) => x.reminder);
+          if (mine.length) await this.safeDm(u.telegramId, buildLessonRemindersText(minutes, mine));
+        }
       }
     } catch (err) {
       this.logger.error(`tickLessonReminders: ${(err as Error).message}`);
     } finally {
       this.lessonTickRunning = false;
+    }
+  }
+
+  @Cron('0 0 8 * * *')
+  async tickMorningDigest(): Promise<void> {
+    if (this.digestRunning) return;
+    this.digestRunning = true;
+    try {
+      const now = new Date();
+      const prefs = await this.prefs.find({ dmMorningDigest: true }, { userId: 1 }).lean().exec();
+      if (prefs.length === 0) return;
+      const rows = await this.users
+        // Banned users can't open settings to switch it off.
+        .find({ _id: { $in: prefs.map((p) => p.userId) }, isBanned: { $ne: true } }, { telegramId: 1, memberships: 1 })
+        .lean()
+        .exec();
+      const users = rows
+        .map((u) => ({ id: String(u._id), telegramId: u.telegramId, groupIds: studentGroupIds(u) }))
+        .filter((u) => u.groupIds.length > 0);
+      if (users.length === 0) return;
+      const groupIds = [...new Set(users.flatMap((u) => u.groupIds))].map((id) => new Types.ObjectId(id));
+
+      const day = ((now.getDay() + 6) % 7) + 1;
+      const week = await this.campus.refreshWeekParity();
+      // Rest of the local (Kyiv, TZ is set in production) day: a cut-off that already passed this morning is no news.
+      const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const [groups, lessons, homework] = await Promise.all([
+        this.groups.find({ _id: { $in: groupIds } }, { academicName: 1 }).lean().exec(),
+        this.lessons
+          .find(
+            { groupId: { $in: groupIds }, dayOfWeek: day, weekType: { $in: [0, week] } },
+            {
+              groupId: 1,
+              subjectName: 1,
+              type: 1,
+              startTime: 1,
+              endTime: 1,
+              room: 1,
+              isElective: 1,
+              electiveStudentIds: 1,
+            },
+          )
+          .lean()
+          .exec(),
+        this.homework
+          .find(
+            { groupId: { $in: groupIds }, deadline: { $gte: now, $lt: dayEnd }, teamSize: { $ne: 0 } },
+            { groupId: 1, subjectId: 1, title: 1, deadline: 1 },
+          )
+          .lean()
+          .exec(),
+      ]);
+      const [subjects, done] = await Promise.all([
+        this.subjects.find({ _id: { $in: homework.map((h) => h.subjectId) } }, { name: 1 }).lean().exec(),
+        this.completions
+          .find(
+            {
+              homeworkId: { $in: homework.map((h) => h._id) },
+              userId: { $in: users.map((u) => new Types.ObjectId(u.id)) },
+              done: true,
+            },
+            { homeworkId: 1, userId: 1 },
+          )
+          .lean()
+          .exec(),
+      ]);
+
+      const groupName = new Map(groups.map((g) => [String(g._id), g.academicName]));
+      const subjectName = new Map(subjects.map((s) => [String(s._id), s.name]));
+      const doneKeys = new Set(done.map((c) => `${c.homeworkId}:${c.userId}`));
+      for (const u of users) {
+        const mine = new Set(u.groupIds);
+        const label = (groupId: unknown) => (u.groupIds.length > 1 ? groupName.get(String(groupId)) : undefined);
+        const text = buildMorningDigestText(
+          now,
+          lessons
+            .filter((l) => mine.has(String(l.groupId)) && attendsLesson(l, u.id))
+            .map((l) => ({
+              groupName: label(l.groupId),
+              subjectName: l.subjectName,
+              lessonType: l.type,
+              startTime: l.startTime,
+              endTime: l.endTime,
+              room: l.room,
+            })),
+          homework
+            .filter((h) => mine.has(String(h.groupId)) && !doneKeys.has(`${h._id}:${u.id}`))
+            .map((h) => ({
+              groupName: label(h.groupId),
+              title: h.title,
+              subjectName: subjectName.get(String(h.subjectId)),
+              deadline: h.deadline!,
+            })),
+        );
+        if (text) await this.safeDm(u.telegramId, text);
+      }
+    } catch (err) {
+      this.logger.error(`tickMorningDigest: ${(err as Error).message}`);
+    } finally {
+      this.digestRunning = false;
     }
   }
 
@@ -188,6 +324,38 @@ export class SchedulerService {
     }
   }
 
+  /** Opted-in (dmLessonReminder) members of the given groups, keyed by group id. */
+  private async lessonDmRecipients(
+    groupIds: Types.ObjectId[],
+  ): Promise<Map<string, Array<{ id: string; telegramId: number }>>> {
+    const byGroup = new Map<string, Array<{ id: string; telegramId: number }>>();
+    // Strictly opt-in: a prefs row without the field never matches `true`.
+    const prefs = await this.prefs.find({ dmLessonReminder: true }, { userId: 1 }).lean().exec();
+    if (prefs.length === 0) return byGroup;
+    const users = await this.users
+      .find(
+        { _id: { $in: prefs.map((p) => p.userId) }, 'memberships.groupId': { $in: groupIds }, isBanned: { $ne: true } },
+        { telegramId: 1, memberships: 1 },
+      )
+      .lean()
+      .exec();
+    for (const u of users) {
+      for (const groupId of studentGroupIds(u)) {
+        byGroup.set(groupId, [...(byGroup.get(groupId) ?? []), { id: String(u._id), telegramId: u.telegramId }]);
+      }
+    }
+    return byGroup;
+  }
+
+  /** One failed DM (user blocked the bot, …) must not stop the rest of the batch. */
+  private async safeDm(telegramId: number, text: string): Promise<void> {
+    try {
+      await this.notifications.sendDirect(telegramId, text);
+    } catch (err) {
+      this.logger.warn(`DM to ${telegramId} failed: ${(err as Error).message}`);
+    }
+  }
+
   private buildSubjectLookup(subjects: ReminderSubject[]): {
     byId: Map<string, ReminderSubject>;
     byName: Map<string, ReminderSubject>;
@@ -251,6 +419,16 @@ export class SchedulerService {
 }
 
 type ReminderSubject = Pick<Subject, 'name' | 'shortName' | 'links'> & { _id: unknown };
+
+/** Groups whose lessons are the user's own — a teacher membership isn't their timetable. */
+function studentGroupIds(u: Pick<User, 'memberships'>): string[] {
+  return [...new Set((u.memberships ?? []).filter((m) => m.role !== Role.Teacher).map((m) => String(m.groupId)))];
+}
+
+/** Same rule as the personal schedule: electives only for the students who picked them. */
+function attendsLesson(l: Pick<ScheduleLesson, 'isElective' | 'electiveStudentIds'>, userId: string): boolean {
+  return !l.isElective || (l.electiveStudentIds ?? []).some((id) => String(id) === userId);
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

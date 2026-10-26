@@ -70,7 +70,7 @@ export class NotificationsService {
     // approach could (rarely) lose recent writes if two PATCH requests landed
     // on overlapping document instances — that's now impossible.
     // `upsert: true` handles first-call-ever, `setDefaultsOnInsert` writes the
-    // schema defaults (`true` for every flag) on initial creation.
+    // schema defaults (opt-out flags `true`, opt-in ones `false`) on creation.
     const oid = new Types.ObjectId(userId);
     const prefs = await this.prefs
       .findOneAndUpdate(
@@ -132,6 +132,11 @@ export class NotificationsService {
     const user = await this.users.findById(userId, { telegramId: 1 }).lean().exec();
     if (!user) return;
     await this.bot.sendMessage(user.telegramId, text);
+  }
+
+  /** For opt-in DMs whose recipients the caller already selected by prefs; send failures are logged by BotService. */
+  async sendDirect(telegramId: number, text: string): Promise<void> {
+    await this.bot.sendMessage(telegramId, text);
   }
 
   /**
@@ -230,4 +235,69 @@ export function buildLessonRemindersText(minutesLeft: number, lessons: LessonRem
 function formatReminderLink(link: ReminderLink): string {
   const label = link.label.trim() || link.url;
   return `<a href="${escapeHtmlAttr(link.url)}">${escapeHtml(label)}</a>`;
+}
+
+export interface DigestLesson {
+  /** Set only when the user is in several groups. */
+  groupName?: string;
+  subjectName: string;
+  lessonType: LessonType;
+  startTime: string;
+  endTime: string;
+  room?: string;
+}
+
+export interface DigestDeadline {
+  groupName?: string;
+  title: string;
+  subjectName?: string;
+  deadline: Date;
+}
+
+/** 08:00 DM: today's lessons and deadlines; null when there is nothing to say. */
+export function buildMorningDigestText(
+  today: Date,
+  lessons: DigestLesson[],
+  deadlines: DigestDeadline[],
+): string | null {
+  if (lessons.length === 0 && deadlines.length === 0) return null;
+  const prefix = (groupName?: string) => (groupName ? `<i>${escapeHtml(groupName)}</i> · ` : '');
+  const date = today.toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'long' });
+
+  const headers = ['📚 <b>Пари</b>', '⏳ <b>Дедлайни сьогодні</b>'];
+
+  const lines = [`☀️ Доброго ранку! Сьогодні ${escapeHtml(date)}`];
+  if (lessons.length) {
+    lines.push('', headers[0]);
+    for (const l of [...lessons].sort((a, b) => a.startTime.localeCompare(b.startTime))) {
+      const parts = [
+        `<b>${escapeHtml(l.startTime)}–${escapeHtml(l.endTime)}</b>`,
+        `${prefix(l.groupName)}${escapeHtml(l.subjectName)}`,
+        escapeHtml(LESSON_TYPE_LABEL[l.lessonType]),
+      ];
+      if (l.room?.trim()) parts.push(`📍 ${escapeHtml(l.room.trim())}`);
+      lines.push(parts.join(' · '));
+    }
+  }
+  if (deadlines.length) {
+    lines.push('', headers[1]);
+    for (const d of [...deadlines].sort((a, b) => a.deadline.getTime() - b.deadline.getTime())) {
+      const parts = [`• ${prefix(d.groupName)}<b>${escapeHtml(d.title)}</b>`];
+      if (d.subjectName) parts.push(escapeHtml(d.subjectName));
+      const hh = d.deadline.getHours();
+      const mm = d.deadline.getMinutes();
+      // 23:59 is the "end of day" default — only a real cut-off time is worth showing.
+      if (hh !== 23 || mm !== 59) parts.push(`до ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
+      lines.push(parts.join(' · '));
+    }
+  }
+
+  let text = lines[0];
+  for (let i = 1; i < lines.length; i++) {
+    if (text.length + lines[i].length + 1 > MAX_REMINDER_CHARS) {
+      return `${text}\n…і ще ${lines.slice(i).filter((x) => x && !headers.includes(x)).length}`;
+    }
+    text += `\n${lines[i]}`;
+  }
+  return text;
 }

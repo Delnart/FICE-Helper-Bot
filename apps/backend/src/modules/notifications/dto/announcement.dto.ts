@@ -12,4 +12,6 @@ export class UpdatePrefsDto {
   @IsOptional() @IsBoolean() dmNextInQueue?: boolean;
   @IsOptional() @IsBoolean() dmDeadlineTomorrow?: boolean;
   @IsOptional() @IsBoolean() dmSwapRequests?: boolean;
+  @IsOptional() @IsBoolean() dmMorningDigest?: boolean;
+  @IsOptional() @IsBoolean() dmLessonReminder?: boolean;
 }
