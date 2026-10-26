@@ -21,28 +21,15 @@ x-logging: &logging
     max-size: '10m'
     max-file: '3'
 
+# The database is MongoDB Atlas (MONGO_URI in .env), so no local mongo runs
+# here — it only took RAM on the 1 GB VPS. For a self-hosted DB use
+# docker-compose.yml, which still has a mongo service.
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    # WiredTiger's default cache is 50% of (RAM - 1 GB) but never below 256 MB;
-    # pin it so Mongo can't grow into the Node processes' share.
-    command: ['--wiredTigerCacheSizeGB', '0.25']
-    mem_limit: 512m
-    logging: *logging
-    volumes:
-      - mongo_data:/data/db
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-change-me}
-
   backend:
     image: ghcr.io/delnart/fice-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so the app shuts down cleanly on deploy.
     init: true
-    depends_on:
-      - mongo
     mem_limit: 384m
     logging: *logging
     environment:
@@ -84,6 +71,3 @@ services:
       # NEXT_PUBLIC_API_BASE is baked into the bundle at build time (CI build arg).
     ports:
       - '3001:3001'
-
-volumes:
-  mongo_data:

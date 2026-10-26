@@ -65,21 +65,19 @@ sysctl vm.swappiness=10 && echo 'vm.swappiness=10' >> /etc/sysctl.conf
 знаходять) і дублікати (через них індекси не будуються). Це виправляє скрипт `dist/scripts/migrate-data.js`; запустіть
 його одразу після деплою.
 
-1. **Спершу бекап** (`-T`, бо вивід бінарний):
+1. **Спершу бекап** бази з Atlas (`MONGO_URI` береться з `.env`; безкоштовний M0 не має снапшотів, тож через `mongodump`
+   у тимчасовому контейнері):
 
    ```bash
-   docker compose -f docker/docker-compose.prod.yml --env-file .env exec -T mongo \
-     sh -c 'mongodump --archive --gzip -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' \
-     > mongo-backup-$(date +%F).gz
+   docker run --rm -e MONGO_URI="$(grep '^MONGO_URI=' .env | cut -d= -f2-)" mongo:7 \
+     sh -c 'mongodump --uri "$MONGO_URI" --archive --gzip' > mongo-backup-$(date +%F).gz
    ```
 
-   Для Atlas — `mongodump --uri "<MONGO_URI>" --archive=mongo-backup.gz --gzip` або snapshot у консолі Atlas.
    Відновлення, якщо щось пішло не так (`--drop` замінює колекції на ті, що в бекапі):
 
    ```bash
-   docker compose -f docker/docker-compose.prod.yml --env-file .env exec -T mongo \
-     sh -c 'mongorestore --archive --gzip --drop -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' \
-     < mongo-backup-YYYY-MM-DD.gz
+   docker run --rm -i -e MONGO_URI="$(grep '^MONGO_URI=' .env | cut -d= -f2-)" mongo:7 \
+     sh -c 'mongorestore --uri "$MONGO_URI" --archive --gzip --drop' < mongo-backup-YYYY-MM-DD.gz
    ```
 
 2. **Пробний прогін** — лише читає й показує, що знайдено (кількість і приклади `_id`):
@@ -117,9 +115,12 @@ sysctl vm.swappiness=10 && echo 'vm.swappiness=10' >> /etc/sysctl.conf
 
 ## Памʼять
 
-Ліміти в [docker-compose.prod.yml](../docker/docker-compose.prod.yml): Mongo — кеш WiredTiger 256 МБ і `mem_limit` 512m,
-бекенд — heap 256 МБ / 384m, фронтенд (Next standalone) — heap 128 МБ / 192m. Якщо процес упирається в ліміт, Docker
-перезапускає саме його (`restart: unless-stopped`), а не весь сервер повільно йде у swap.
+Ліміти в [docker-compose.prod.yml](../docker/docker-compose.prod.yml): бекенд — heap 256 МБ / 384m, фронтенд (Next
+standalone) — heap 128 МБ / 192m. База живе в MongoDB Atlas, тож локального `mongo` у прод-compose немає. Якщо процес
+упирається в ліміт, Docker перезапускає саме його (`restart: unless-stopped`), а не весь сервер повільно йде у swap.
+
+Перший деплой після цієї зміни видаляє старий контейнер `docker-mongo-1` (`--remove-orphans`); том `docker_mongo_data`
+лишається на диску. Коли переконаєтесь, що там немає потрібних даних, його можна прибрати: `docker volume rm docker_mongo_data`.
 
 Подивитися фактичне споживання:
 
