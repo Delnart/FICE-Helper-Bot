@@ -4,6 +4,7 @@ import { Onest, Unbounded } from 'next/font/google';
 import type { ReactNode } from 'react';
 import '../styles/globals.css';
 import { Providers } from '../components/Providers';
+import { THEME_KEY } from '../lib/telegram';
 
 const onest = Onest({
   subsets: ['latin', 'cyrillic', 'cyrillic-ext'],
@@ -28,7 +29,10 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: '#F3F4F9',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#F3F4F9' },
+    { media: '(prefers-color-scheme: dark)', color: '#0B0E1A' },
+  ],
   viewportFit: 'cover',
 };
 
@@ -37,9 +41,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="uk" className={`${onest.variable} ${unbounded.variable}`} suppressHydrationWarning>
       <head>
         <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
-        {/* Apply the Telegram theme before first paint to avoid a light→dark flash. */}
+        {/* Apply the theme before first paint to avoid a light→dark flash. Same order as
+            syncTheme(): stored override, then Telegram, then the OS preference. */}
         <Script id="theme-init" strategy="beforeInteractive">
-          {`try{var w=window.Telegram&&window.Telegram.WebApp;var d=w&&w.platform!=='unknown'?w.colorScheme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;if(d)document.documentElement.classList.add('dark')}catch(e){}`}
+          {`try{var t=null;try{t=localStorage.getItem('${THEME_KEY}')}catch(e){}var w=window.Telegram&&window.Telegram.WebApp;var d=t==='dark'||t!=='light'&&(w&&w.platform!=='unknown'?w.colorScheme==='dark':matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark')}catch(e){}`}
         </Script>
       </head>
       <body>

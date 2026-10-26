@@ -84,17 +84,32 @@ export function haptic(kind: 'light' | 'medium' | 'success' | 'error' | 'selecti
   }
 }
 
+/** localStorage key of the profile's «Вигляд» override ('light' | 'dark'); absent = follow Telegram. */
+export const THEME_KEY = 'fice_theme';
+
+function themeOverride(): 'light' | 'dark' | null {
+  try {
+    const t = window.localStorage.getItem(THEME_KEY);
+    return t === 'light' || t === 'dark' ? t : null;
+  } catch {
+    return null; // storage blocked
+  }
+}
+
 /**
- * Mirror Telegram's color scheme onto `html.dark` and paint Telegram's own
+ * Mirror the color scheme onto `html.dark` and paint Telegram's own
  * header/background in the app's `--bg`. Returns an unsubscribe function.
- * Outside Telegram (platform "unknown") follows the OS preference.
+ * Order: the stored override, then Telegram's scheme, then (outside Telegram,
+ * platform "unknown") the OS preference.
  */
 export function syncTheme(): () => void {
   const wa = getWebApp();
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   const inTelegram = !!wa && wa.platform !== 'unknown';
   const apply = () => {
-    const dark = inTelegram ? wa!.colorScheme === 'dark' : media.matches;
+    // Read on every apply, so a themeChanged / OS change is a no-op while an override is set.
+    const override = themeOverride();
+    const dark = override ? override === 'dark' : inTelegram ? wa!.colorScheme === 'dark' : media.matches;
     document.documentElement.classList.toggle('dark', dark);
     if (!inTelegram) return;
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
