@@ -25,6 +25,8 @@ export interface Me {
   memberships: MeMembership[];
   accessReason: AccessReason;
   campusLecturerId?: string;
+  /** The bot's @username (without "@") for support links; absent if the server doesn't know it. */
+  botUsername?: string;
 }
 
 export function useMe() {

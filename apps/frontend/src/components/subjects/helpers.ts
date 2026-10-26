@@ -22,6 +22,7 @@ export interface NowLesson {
   startTime: string;
   endTime: string;
   room?: string;
+  meetingUrl?: string;
   type?: string;
 }
 
