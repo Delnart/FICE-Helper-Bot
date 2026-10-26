@@ -75,6 +75,10 @@ export class CampusService implements OnModuleInit {
   private weekParityCache: { value: 1 | 2; fetchedAt: number } | null = null;
   private readonly weekParityTtlMs = 30 * 60 * 1000; // 30 min — week parity changes max once per week
 
+  private readonly campusCache = new Map<string, { at: number; data: unknown[] }>();
+  private readonly campusInflight = new Map<string, Promise<unknown[]>>();
+  private readonly campusCacheTtlMs = 30 * 60 * 1000;
+
   constructor(private readonly config: ConfigService) {
     this.http = axios.create({
       baseURL: this.config.get<string>('CAMPUS_API_BASE') ?? 'https://api.campus.kpi.ua',
@@ -99,14 +103,10 @@ export class CampusService implements OnModuleInit {
     return index.filter((g) => normalizeName(g.name).includes(needle)).slice(0, 20);
   }
 
+  /** Best-effort: any failure → []. Fine for suggestions, NOT for syncing (use fetchGroupSchedule). */
   async getGroupSchedule(campusGroupId: string): Promise<CampusScheduleItem[]> {
     try {
-      const { data } = await this.http.get('/schedule/lessons', {
-        params: { groupId: campusGroupId },
-      });
-      const items = normaliseSchedule(data);
-      this.logger.log(`Campus schedule for ${campusGroupId}: ${items.length} lessons`);
-      return items;
+      return await this.fetchGroupSchedule(campusGroupId);
     } catch (err) {
       this.logger.warn(`Failed to fetch schedule for ${campusGroupId}: ${(err as Error).message}`);
       return [];
@@ -114,25 +114,33 @@ export class CampusService implements OnModuleInit {
   }
 
   /**
+   * Same as {@link getGroupSchedule} but throws on HTTP failure, so the sync can
+   * tell "Campus is down" apart from "the group has no lessons".
+   */
+  async fetchGroupSchedule(campusGroupId: string): Promise<CampusScheduleItem[]> {
+    const { data } = await this.http.get('/schedule/lessons', {
+      params: { groupId: campusGroupId },
+    });
+    const items = normaliseSchedule(data);
+    this.logger.log(`Campus schedule for ${campusGroupId}: ${items.length} lessons`);
+    return items;
+  }
+
+  /**
    * Session (exam) schedule for a group from Campus.
    * Endpoint: `/schedule/exams/group?groupId=…` — returns one entry per exam:
    * subject name, exam date, type (іспит/залік), room.
-   * On any failure returns an empty array — UI shows an empty state.
+   * Cached (see `cached`); on failure serves the stale copy, else [] — UI shows an empty state.
    */
   async getGroupSessionSchedule(campusGroupId: string): Promise<CampusSessionItem[]> {
-    try {
+    return this.cached(`exams:${campusGroupId}`, async () => {
       const { data } = await this.http.get('/schedule/exams/group', {
         params: { groupId: campusGroupId },
       });
       const items = normaliseSessions(data);
       this.logger.log(`Campus exams for ${campusGroupId}: ${items.length} entries`);
       return items;
-    } catch (err) {
-      this.logger.warn(
-        `Failed to fetch exam schedule for ${campusGroupId}: ${(err as Error).message}`,
-      );
-      return [];
-    }
+    });
   }
 
   /**
@@ -260,20 +268,15 @@ export class CampusService implements OnModuleInit {
 
   /**
    * Fetch a lecturer's schedule and return one entry per (group, subject) pair
-   * across both calendar weeks.
+   * across both calendar weeks. Cached — /schedule/lecturer/now polls this every minute.
    */
   async getLecturerLessons(lecturerId: string): Promise<LecturerLesson[]> {
-    try {
+    return this.cached(`lect:${lecturerId}`, async () => {
       const { data } = await this.http.get('/schedule/lecturer', {
         params: { lecturerId },
       });
       return parseLecturerSchedule(data);
-    } catch (err) {
-      this.logger.warn(
-        `Failed to fetch lecturer schedule for ${lecturerId}: ${(err as Error).message}`,
-      );
-      return [];
-    }
+    });
   }
 
   /**
@@ -301,6 +304,33 @@ export class CampusService implements OnModuleInit {
   async getTeacherRating(userIdentifier: string) {
     const { data } = await this.http.get(`/intellect/v2/persons/${userIdentifier}/rating`);
     return data;
+  }
+
+  /**
+   * In-memory TTL cache for per-id Campus lookups. Concurrent callers share one
+   * in-flight request; a failed fetch serves the stale entry if any, else [].
+   * The returned array is shared — callers must not mutate it.
+   */
+  private async cached<T>(key: string, fetch: () => Promise<T[]>): Promise<T[]> {
+    const hit = this.campusCache.get(key);
+    if (hit && Date.now() - hit.at < this.campusCacheTtlMs) return hit.data as T[];
+    const pending = this.campusInflight.get(key);
+    if (pending) return pending as Promise<T[]>;
+
+    const p = fetch()
+      .then((data) => {
+        // ponytail: wholesale clear instead of LRU — a few hundred ids at most; switch to LRU if that grows.
+        if (this.campusCache.size >= 500) this.campusCache.clear();
+        this.campusCache.set(key, { at: Date.now(), data });
+        return data;
+      })
+      .catch((err) => {
+        this.logger.warn(`Campus fetch ${key} failed: ${(err as Error).message}`);
+        return (hit?.data as T[] | undefined) ?? [];
+      })
+      .finally(() => this.campusInflight.delete(key));
+    this.campusInflight.set(key, p);
+    return p;
   }
 
   private async ensureGroupIndex(): Promise<CampusGroupSummary[]> {

@@ -1,10 +1,17 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { AnyBulkWriteOperation, Model, Types } from 'mongoose';
 import { Role, ROLE_LEVEL } from '@fice/shared';
 import { ScheduleLesson, ScheduleLessonDocument } from './schedule.schema';
-import { CampusService } from '../campus/campus.service';
+import { CampusScheduleItem, CampusService } from '../campus/campus.service';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
@@ -13,6 +20,7 @@ import { RequestUser } from '../../common/types/request-user';
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
+  private readonly syncInflight = new Map<string, Promise<number>>();
 
   constructor(
     @InjectModel(ScheduleLesson.name) private readonly lessons: Model<ScheduleLessonDocument>,
@@ -46,18 +54,18 @@ export class ScheduleService {
     userId: string,
     weekType?: 1 | 2,
   ): Promise<Array<Record<string, unknown>>> {
+    // Resolve the week first so Mongo filters it (polled every 60s by /schedule/now).
+    const week = weekType ?? (await this.campus.refreshWeekParity());
     const [all, subjectMap] = await Promise.all([
-      this.lessons.find({ groupId: new Types.ObjectId(groupId) }).exec(),
+      this.lessons
+        .find({ groupId: new Types.ObjectId(groupId), weekType: { $in: [0, week] } })
+        .lean()
+        .exec(),
       this.buildSubjectMap(groupId),
     ]);
-    const userObjectId = new Types.ObjectId(userId);
-    const week = weekType ?? (await this.campus.refreshWeekParity());
     return all
-      .filter((l) => {
-        if (l.isElective && !l.electiveStudentIds.some((id) => id.equals(userObjectId))) return false;
-        if (l.weekType !== 0 && l.weekType !== week) return false;
-        return true;
-      })
+      // String compare: lean returns stored values as-is, and a legacy string id has no .equals().
+      .filter((l) => !l.isElective || l.electiveStudentIds.some((id) => String(id) === userId))
       .map((l) => {
         const subjectId =
           (l.subjectId ? String(l.subjectId) : undefined) ??
@@ -80,21 +88,23 @@ export class ScheduleService {
       });
   }
 
-  async getRawForGroup(groupId: string): Promise<ScheduleLessonDocument[]> {
-    return this.lessons.find({ groupId: new Types.ObjectId(groupId) }).exec();
+  async getRawForGroup(groupId: string) {
+    return this.lessons.find({ groupId: new Types.ObjectId(groupId) }).lean().exec();
   }
 
   async getForGroup(
     groupId: string,
     weekType?: 1 | 2,
   ): Promise<Array<Record<string, unknown>>> {
+    const week = weekType ?? (await this.campus.refreshWeekParity());
     const [all, subjectMap] = await Promise.all([
-      this.lessons.find({ groupId: new Types.ObjectId(groupId) }).exec(),
+      this.lessons
+        .find({ groupId: new Types.ObjectId(groupId), weekType: { $in: [0, week] } })
+        .lean()
+        .exec(),
       this.buildSubjectMap(groupId),
     ]);
-    const week = weekType ?? (await this.campus.refreshWeekParity());
     return all
-      .filter((l) => l.weekType === 0 || l.weekType === week)
       .map((l) => {
         const subjectId =
           (l.subjectId ? String(l.subjectId) : undefined) ??
@@ -377,17 +387,24 @@ export class ScheduleService {
     return map;
   }
 
-  async chooseElective(userId: string, lessonId: string, add: boolean): Promise<void> {
-    const lesson = await this.lessons.findById(lessonId).exec();
+  async chooseElective(user: RequestUser, lessonId: string, add: boolean): Promise<void> {
+    const lesson = await this.lessons.findById(lessonId, { groupId: 1, subjectName: 1 }).lean().exec();
     if (!lesson) throw new NotFoundException('Lesson not found');
+    // Members only — subject teachers pass GroupAccessService but don't enroll.
+    if (!user.memberships.some((m) => m.groupId === String(lesson.groupId))) {
+      throw new ForbiddenException('Тільки учасники групи можуть обирати вибіркові');
+    }
 
     const targetNorm = normaliseName(lesson.subjectName);
-    const allGroupLessons = await this.lessons.find({ groupId: lesson.groupId }).exec();
+    const allGroupLessons = await this.lessons
+      .find({ groupId: lesson.groupId }, { subjectName: 1 })
+      .lean()
+      .exec();
     const matchingIds = allGroupLessons
       .filter((l) => normaliseName(l.subjectName) === targetNorm)
       .map((l) => l._id);
 
-    const userObjectId = new Types.ObjectId(userId);
+    const userObjectId = new Types.ObjectId(user.userId);
     if (matchingIds.length > 0) {
       if (add) {
         await this.lessons.updateMany(
@@ -404,83 +421,150 @@ export class ScheduleService {
   }
 
   /**
-   * Sync schedule from Campus for a specific group, preserving any elective
-   * designations and student enrollments across syncs by normalized subject name.
+   * Sync schedule from Campus for a specific group. Lessons are upserted in place
+   * so their `_id`s stay stable — attendance records and reminder marks reference
+   * them — and app-owned fields (subjectId, meetingUrl, elective flags/students)
+   * survive. Lessons gone from Campus are deleted; new ones inherit elective
+   * status/students by normalized subject name.
    */
-  async syncGroupSchedule(group: AcademicGroupDocument): Promise<number> {
+  async syncGroupSchedule(group: { _id: Types.ObjectId; campusGroupId?: string }): Promise<number> {
     if (!group.campusGroupId) return 0;
-    const items = await this.campus.getGroupSchedule(group.campusGroupId);
+    // Bind-time sync, manual sync and the cron can overlap; two concurrent runs
+    // would both insert the same new lessons. Later callers join the running one.
+    // ponytail: in-process only — fine for the single backend container.
+    const key = String(group._id);
+    const running = this.syncInflight.get(key);
+    if (running) return running;
+    const p = this.runGroupSync({ _id: group._id, campusGroupId: group.campusGroupId }).finally(
+      () => this.syncInflight.delete(key),
+    );
+    this.syncInflight.set(key, p);
+    return p;
+  }
 
-    // Collect existing electives and their enrolled students mapped by normalized subject name
-    const existingElectives = await this.lessons.find({
-      groupId: group._id,
-      isElective: true,
-    }).exec();
+  private async runGroupSync(group: { _id: Types.ObjectId; campusGroupId: string }): Promise<number> {
+    let items: CampusScheduleItem[];
+    try {
+      items = await this.campus.fetchGroupSchedule(group.campusGroupId);
+    } catch (err) {
+      // Campus down / timeout must never touch the stored schedule.
+      this.logger.warn(`Campus schedule fetch for ${group.campusGroupId} failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('Кампус КПІ не відповідає — розклад не оновлено, спробуйте пізніше.');
+    }
+    if (items.length === 0) {
+      // Could be a semester gap or a Campus format change — not worth wiping
+      // lessons (and the attendance/elective data hanging off them) for.
+      this.logger.warn(`Campus returned 0 lessons for ${group.campusGroupId}; keeping stored schedule`);
+      return 0;
+    }
 
+    const existing = await this.lessons.find({ groupId: group._id }).lean().exec();
+
+    // Elective students by normalized subject name, for lessons that are new this sync.
     const electiveMap = new Map<string, Set<string>>();
-    for (const l of existingElectives) {
+    for (const l of existing) {
+      if (!l.isElective) continue;
       const norm = normaliseName(l.subjectName);
-      let set = electiveMap.get(norm);
-      if (!set) {
-        set = new Set<string>();
-        electiveMap.set(norm, set);
-      }
-      for (const sId of l.electiveStudentIds) {
-        set.add(String(sId));
+      const set = electiveMap.get(norm) ?? new Set<string>();
+      for (const sId of l.electiveStudentIds) set.add(String(sId));
+      electiveMap.set(norm, set);
+    }
+
+    // Campus may return several rows per slot (subgroups: other teacher/room), so
+    // match one-to-one, strongest matches first (teacher+room, teacher, room, any)
+    // so a weaker greedy pick can't take a lesson another row matches better.
+    const buckets = new Map<string, typeof existing>();
+    for (const l of existing) {
+      const k = lessonKey(l);
+      buckets.set(k, [...(buckets.get(k) ?? []), l]);
+    }
+    const matched = new Map<CampusScheduleItem, (typeof existing)[number]>();
+    for (const minScore of [3, 2, 1, 0]) {
+      for (const item of items) {
+        if (matched.has(item)) continue;
+        const bucket = buckets.get(lessonKey(item));
+        if (!bucket?.length) continue;
+        let best = 0;
+        for (let i = 1; i < bucket.length; i++) {
+          if (matchScore(bucket[i], item) > matchScore(bucket[best], item)) best = i;
+        }
+        if (matchScore(bucket[best], item) < minScore) continue;
+        matched.set(item, bucket.splice(best, 1)[0]);
       }
     }
 
-    // Delete existing lessons for this group before inserting fresh data.
-    // Stale lessons are removed, but elective status/students are preserved.
-    await this.lessons.deleteMany({ groupId: group._id });
-    if (items.length === 0) return 0;
-
-    await this.lessons.insertMany(
-      items.map((item) => {
-        const norm = normaliseName(item.subjectName);
-        const preservedStudents = electiveMap.get(norm);
-        const isElective = preservedStudents !== undefined;
-        const electiveStudentIds = preservedStudents
-          ? Array.from(preservedStudents).map((id) => new Types.ObjectId(id))
-          : [];
-        return {
-          groupId: group._id,
-          dayOfWeek: item.dayOfWeek,
-          lessonNumber: item.lessonNumber,
-          weekType: item.weekType,
+    const ops: AnyBulkWriteOperation[] = [];
+    const leftover = [...buckets.values()].flat().map((l) => l._id);
+    if (leftover.length) ops.push({ deleteMany: { filter: { _id: { $in: leftover } } } });
+    for (const item of items) {
+      const prev = matched.get(item);
+      if (prev) {
+        const fields = {
           subjectName: item.subjectName,
           startTime: item.startTime,
           endTime: item.endTime,
           teacherNames: item.teacherNames,
-          type: item.type,
           room: item.room,
-          isElective,
-          electiveStudentIds,
         };
-      }),
-    );
+        const unchanged = (Object.keys(fields) as Array<keyof typeof fields>).every(
+          (k) => JSON.stringify(fields[k]) === JSON.stringify(prev[k]),
+        );
+        if (unchanged) continue;
+        const { room, ...rest } = fields;
+        ops.push({
+          updateOne: {
+            filter: { _id: prev._id },
+            update: room === undefined ? { $set: rest, $unset: { room: 1 } } : { $set: fields },
+          },
+        });
+        continue;
+      }
+      const preservedStudents = electiveMap.get(normaliseName(item.subjectName));
+      ops.push({
+        insertOne: {
+          document: {
+            groupId: group._id,
+            dayOfWeek: item.dayOfWeek,
+            lessonNumber: item.lessonNumber,
+            weekType: item.weekType,
+            subjectName: item.subjectName,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            teacherNames: item.teacherNames,
+            type: item.type,
+            room: item.room,
+            isElective: preservedStudents !== undefined,
+            electiveStudentIds: preservedStudents
+              ? Array.from(preservedStudents).map((id) => new Types.ObjectId(id))
+              : [],
+          },
+        },
+      });
+    }
+    if (ops.length) await this.lessons.bulkWrite(ops);
 
     return items.length;
   }
 
   async syncFromCampus(user: RequestUser, groupId: string): Promise<number> {
     this.assertCanManage(user, groupId);
-    const group = await this.groups.findById(groupId).exec();
+    const group = await this.groups.findById(groupId, { campusGroupId: 1 }).lean().exec();
     if (!group) throw new NotFoundException('Group not found');
     if (!group.campusGroupId) throw new NotFoundException('Group has no campusGroupId');
     return this.syncGroupSchedule(group);
   }
 
   /**
-   * Automated background sync: runs every 12 hours for all active groups
-   * linked to Campus KPI.
+   * Automated background sync: twice a day for all groups linked to Campus KPI.
+   * 03:30/15:30 — off the lunch peak and staggered before the Sheets (:40) and bot (:50) jobs.
    */
-  @Cron(CronExpression.EVERY_12_HOURS)
+  @Cron('0 30 3,15 * * *')
   async autoSyncAllGroups(): Promise<void> {
     this.logger.log('Starting 12h automated schedule sync for all groups...');
     try {
       const groups = await this.groups
-        .find({ campusGroupId: { $exists: true, $ne: null } })
+        .find({ campusGroupId: { $exists: true, $ne: null } }, { campusGroupId: 1, academicName: 1 })
+        .lean()
         .exec();
       for (const group of groups) {
         try {
@@ -502,12 +586,15 @@ export class ScheduleService {
    * (e.g. lectures, practices, and labs are treated as 1 discipline).
    */
   async setElective(user: RequestUser, lessonId: string, isElective: boolean): Promise<void> {
-    const lesson = await this.lessons.findById(lessonId).exec();
+    const lesson = await this.lessons.findById(lessonId, { groupId: 1, subjectName: 1 }).lean().exec();
     if (!lesson) throw new NotFoundException('Lesson not found');
     this.assertCanManage(user, String(lesson.groupId));
 
     const targetNorm = normaliseName(lesson.subjectName);
-    const allGroupLessons = await this.lessons.find({ groupId: lesson.groupId }).exec();
+    const allGroupLessons = await this.lessons
+      .find({ groupId: lesson.groupId }, { subjectName: 1 })
+      .lean()
+      .exec();
     const matchingIds = allGroupLessons
       .filter((l) => normaliseName(l.subjectName) === targetNorm)
       .map((l) => l._id);
@@ -533,7 +620,7 @@ export class ScheduleService {
    */
   async getElectivesForGroup(groupId: string): Promise<Array<Record<string, unknown>>> {
     const [all, subjectMap] = await Promise.all([
-      this.lessons.find({ groupId: new Types.ObjectId(groupId), isElective: true }).exec(),
+      this.lessons.find({ groupId: new Types.ObjectId(groupId), isElective: true }).lean().exec(),
       this.buildSubjectMap(groupId),
     ]);
 
@@ -611,6 +698,19 @@ export class ScheduleService {
       throw new ForbiddenException();
     }
   }
+}
+
+/** Natural identity of a lesson slot, shared by Campus items and stored lessons. */
+function lessonKey(l: Pick<ScheduleLesson, 'dayOfWeek' | 'lessonNumber' | 'type' | 'subjectName'> & { weekType: number }): string {
+  return `${l.dayOfWeek}|${l.lessonNumber}|${l.weekType}|${l.type}|${normaliseName(l.subjectName)}`;
+}
+
+/** 3 = same teachers and room, 2 = same teachers, 1 = same room, 0 = neither. */
+function matchScore(l: Pick<ScheduleLesson, 'teacherNames' | 'room'>, item: CampusScheduleItem): number {
+  return (
+    (JSON.stringify(l.teacherNames) === JSON.stringify(item.teacherNames) ? 2 : 0) +
+    ((l.room ?? '') === (item.room ?? '') ? 1 : 0)
+  );
 }
 
 /** Normalise a subject name for fuzzy lookup: lower-case, strip whitespace/punct. */
