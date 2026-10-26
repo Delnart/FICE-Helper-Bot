@@ -1,10 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 import { Role } from '@fice/shared';
 
 @Schema({ _id: false })
 export class MembershipSub {
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true })
   groupId!: Types.ObjectId;
 
   @Prop({ type: String, enum: Object.values(Role), required: true })

@@ -1,12 +1,12 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'schedule_lessons' })
 export class ScheduleLesson {
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'Subject' })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Subject' })
   subjectId?: Types.ObjectId;
 
   @Prop({ required: true }) subjectName!: string;
@@ -30,7 +30,7 @@ export class ScheduleLesson {
   @Prop({ default: false }) isElective!: boolean;
   @Prop() electiveTrack?: string;
 
-  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  @Prop({ type: [{ type: SchemaTypes.ObjectId, ref: 'User' }], default: [] })
   electiveStudentIds!: Types.ObjectId[];
 }
 

@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 /**
  * A "placeholder" student in a group's journal — added manually by the head
@@ -9,12 +9,12 @@ import { HydratedDocument, Types } from 'mongoose';
  */
 @Schema({ timestamps: true, collection: 'manual_students' })
 export class ManualStudent {
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
   @Prop({ required: true, trim: true }) fullName!: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   createdBy!: Types.ObjectId;
 }
 

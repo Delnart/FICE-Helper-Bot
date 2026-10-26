@@ -1,12 +1,12 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'homework' })
 export class Homework {
-  @Prop({ type: Types.ObjectId, ref: 'Subject', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Subject', required: true, index: true })
   subjectId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
   @Prop({ required: true }) title!: string;
@@ -18,7 +18,7 @@ export class Homework {
   @Prop({ type: [{ label: String, url: String }], default: [] })
   attachments!: Array<{ label: string; url: string }>;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   createdBy!: Types.ObjectId;
 }
 

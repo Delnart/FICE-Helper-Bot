@@ -1,11 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 import { QueueStatus } from '@fice/shared';
 
 @Schema({ _id: false })
 export class QueueEntrySub {
   @Prop({ required: true }) slotIndex!: number;
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true }) userId!: Types.ObjectId;
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true }) userId!: Types.ObjectId;
   @Prop({ required: true, min: 0 }) labNumber!: number;
   @Prop({ type: String, enum: Object.values(QueueStatus), default: QueueStatus.Default })
   status!: QueueStatus;
@@ -23,12 +23,15 @@ export class QueueRulesSub {
 }
 const QueueRulesSubSchema = SchemaFactory.createForClass(QueueRulesSub);
 
-@Schema({ timestamps: true, collection: 'queues' })
+// optimisticConcurrency: every save() is a compare-and-swap on __v, so
+// concurrent load-check-save writers (QueuesService.mutateQueue) can't
+// silently overwrite each other.
+@Schema({ timestamps: true, collection: 'queues', optimisticConcurrency: true })
 export class Queue {
-  @Prop({ type: Types.ObjectId, ref: 'Subject', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Subject', required: true, index: true })
   subjectId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
   @Prop({ required: true }) title!: string;
@@ -41,8 +44,14 @@ export class Queue {
   @Prop({ type: [QueueEntrySubSchema], default: [] })
   entries!: QueueEntrySub[];
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true }) createdBy!: Types.ObjectId;
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true }) createdBy!: Types.ObjectId;
 }
 
 export type QueueDocument = HydratedDocument<Queue>;
 export const QueueSchema = SchemaFactory.createForClass(Queue);
+// Scheduler polls 'rules.autoOpenAt' every minute; most queues never set it.
+QueueSchema.index({ 'rules.autoOpenAt': 1 }, { sparse: true });
+// One queue per subject: closes findOrCreateForSubject's find-then-create race.
+// Existing duplicates must be removed first (the migration script dedupes them),
+// otherwise the index build fails on startup.
+QueueSchema.index({ subjectId: 1, groupId: 1 }, { unique: true });

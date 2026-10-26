@@ -1,19 +1,19 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'attendance_sessions' })
 export class AttendanceSession {
-  @Prop({ type: Types.ObjectId, ref: 'Subject', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Subject', required: true, index: true })
   subjectId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   teacherUserId!: Types.ObjectId;
 
   @Prop({ required: true }) date!: Date;
   @Prop() lessonNumber?: number;
   @Prop() note?: string;
 
-  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  @Prop({ type: [{ type: SchemaTypes.ObjectId, ref: 'User' }], default: [] })
   presentStudentIds!: Types.ObjectId[];
 }
 

@@ -1,23 +1,23 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'teacher_applications' })
 export class TeacherApplication {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   teacherUserId!: Types.ObjectId;
 
   /**
    * For subject-level applications (teacher wants to be linked to a specific subject).
    * Mutually exclusive with `groupId`.
    */
-  @Prop({ type: Types.ObjectId, ref: 'Subject' })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Subject' })
   subjectId?: Types.ObjectId;
 
   /**
    * For group-level join requests (teacher wants access to the group to view queue / journal).
    * Mutually exclusive with `subjectId`.
    */
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup' })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup' })
   groupId?: Types.ObjectId;
 
   @Prop({ type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' })
@@ -26,7 +26,7 @@ export class TeacherApplication {
   /** Optional message the teacher writes to the head. */
   @Prop() note?: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'User' })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User' })
   decidedBy?: Types.ObjectId;
 }
 

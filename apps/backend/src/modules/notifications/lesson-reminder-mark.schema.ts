@@ -1,12 +1,12 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'lesson_reminder_marks' })
 export class LessonReminderMark {
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'ScheduleLesson', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'ScheduleLesson', required: true, index: true })
   lessonId!: Types.ObjectId;
 
   @Prop({ required: true, index: true })

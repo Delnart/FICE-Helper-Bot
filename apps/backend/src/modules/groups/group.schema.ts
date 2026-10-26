@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 @Schema({ timestamps: true, collection: 'academic_groups' })
 export class AcademicGroup {
@@ -14,10 +14,10 @@ export class AcademicGroup {
 
   @Prop() campusGroupId?: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'User' })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User' })
   headUserId?: Types.ObjectId;
 
-  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  @Prop({ type: [{ type: SchemaTypes.ObjectId, ref: 'User' }], default: [] })
   deputyUserIds!: Types.ObjectId[];
 
   @Prop({ default: true }) notificationsEnabled!: boolean;

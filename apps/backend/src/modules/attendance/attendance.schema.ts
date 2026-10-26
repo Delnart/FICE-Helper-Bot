@@ -1,10 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 import { AttendanceStatus } from '@fice/shared';
 
 @Schema({ _id: false })
 export class AttendanceEntrySub {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   userId!: Types.ObjectId;
 
   @Prop({ type: String, enum: Object.values(AttendanceStatus), default: AttendanceStatus.Unknown })
@@ -16,10 +16,10 @@ const AttendanceEntrySubSchema = SchemaFactory.createForClass(AttendanceEntrySub
 
 @Schema({ timestamps: true, collection: 'attendance_records' })
 export class AttendanceRecord {
-  @Prop({ type: Types.ObjectId, ref: 'AcademicGroup', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'AcademicGroup', required: true, index: true })
   groupId!: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'ScheduleLesson', required: true, index: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'ScheduleLesson', required: true, index: true })
   scheduleLessonId!: Types.ObjectId;
 
   @Prop({ required: true, type: Date, index: true })
@@ -28,7 +28,7 @@ export class AttendanceRecord {
   @Prop({ type: [AttendanceEntrySubSchema], default: [] })
   entries!: AttendanceEntrySub[];
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   createdBy!: Types.ObjectId;
 }
 
