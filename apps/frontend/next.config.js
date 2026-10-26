@@ -1,11 +1,17 @@
+const path = require('path');
+
 /** @type {import('next').NextConfig} */
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:3000';
 
 const nextConfig = {
   reactStrictMode: true,
+  // Self-contained server (`node server.js`) with only the traced deps — see docker/frontend.Dockerfile.
+  output: 'standalone',
   transpilePackages: ['@fice/shared'],
   experimental: {
     typedRoutes: true,
+    // Monorepo: trace from the repo root so hoisted node_modules are included.
+    outputFileTracingRoot: path.join(__dirname, '../..'),
   },
   // Skip the in-build TS + ESLint passes — they're the heaviest steps of
   // `next build` (~500 MB peak RAM) and we already run them as separate CI
