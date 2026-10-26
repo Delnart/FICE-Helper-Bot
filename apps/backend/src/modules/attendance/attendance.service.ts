@@ -241,10 +241,11 @@ export class AttendanceService {
     await retryOnDuplicate(async () => {
       const res = await this.records.updateOne(
         { ...filter, 'entries.userId': userObjectId },
-        // Missing note clears the old one, as the previous save() did.
+        // No note in the request keeps the saved one: the journal grid changes only the
+        // status and must not wipe a note written on the mark screen.
         params.note !== undefined
           ? { $set: { 'entries.$.status': params.status, 'entries.$.note': params.note } }
-          : { $set: { 'entries.$.status': params.status }, $unset: { 'entries.$.note': 1 } },
+          : { $set: { 'entries.$.status': params.status } },
       );
       if (res.matchedCount > 0) return;
       // No entry for this user yet (or no record at all) → push, creating the
