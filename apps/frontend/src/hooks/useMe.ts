@@ -1,7 +1,8 @@
 'use client';
 
+import { useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api, getActiveGroup } from '../lib/api';
+import { api, getActiveGroup, subscribeActiveGroup } from '../lib/api';
 
 export type AccessReason = 'member' | 'teacher' | 'none';
 
@@ -30,14 +31,26 @@ export function useMe() {
   return useQuery({
     queryKey: ['me'],
     queryFn: () => api<Me>('/users/me'),
+    // Roles come from here; every /users/me also triggers a server-side
+    // membership re-check, so don't refetch it on every navigation. Mutations
+    // that change roles invalidate ['me'] explicitly.
+    staleTime: 5 * 60_000,
+    retry: 3,
   });
+}
+
+/**
+ * Reactive id of the active group. Use this instead of calling getActiveGroup()
+ * during render — that read never re-renders when Shell / select-group switch it.
+ */
+export function useActiveGroup(): string | null {
+  return useSyncExternalStore(subscribeActiveGroup, getActiveGroup, () => null);
 }
 
 /** Membership of the currently active group, or undefined if none chosen / none in app. */
 export function useActiveMembership(): MeMembership | undefined {
   const me = useMe();
-  if (typeof window === 'undefined') return undefined;
-  const active = getActiveGroup();
+  const active = useActiveGroup();
   if (!active || !me.data) return undefined;
   return me.data.memberships.find((m) => m.groupId === active);
 }

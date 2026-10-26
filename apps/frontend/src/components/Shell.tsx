@@ -4,113 +4,179 @@ import type { ReactNode } from 'react';
 import type { Route } from 'next';
 import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
-import { BottomBar } from './BottomBar';
+import { BottomBar, isTabBarHidden } from './BottomBar';
+import { Loading } from './Empty';
+import { Icon, Logo } from './icons';
 import { useAuth } from '../hooks/useAuth';
-import { useIsTeacherOnly } from '../hooks/useMe';
-import { api, getActiveGroup, setActiveGroup } from '../lib/api';
-
-interface MeDto {
-  firstName?: string;
-  fullName?: string;
-  username?: string;
-  memberships: Array<{ groupId: string; groupName?: string; role: string }>;
-  accessReason?: 'member' | 'teacher' | 'none';
-}
+import { useActiveGroup, useIsTeacherOnly, useMe } from '../hooks/useMe';
+import { setActiveGroup } from '../lib/api';
+import { cn } from '../lib/cn';
+import { getWebApp, haptic } from '../lib/telegram';
 
 export function Shell({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = usePathname() ?? '/';
+  const me = useMe();
+  const active = useActiveGroup();
   const isTeacherOnly = useIsTeacherOnly();
-  const me = useQuery({
-    queryKey: ['me'],
-    queryFn: () => api<MeDto>('/users/me'),
-    enabled: auth.ready && !auth.error,
-  });
+  const memberIds = me.data?.memberships.map((m) => m.groupId) ?? [];
 
   useEffect(() => {
     if (!me.data) return;
     // Teachers have their own group selection on the home page — skip this flow.
     if (isTeacherOnly) return;
-    const active = getActiveGroup();
-    const memberIds = me.data.memberships.map((m) => m.groupId);
-    const count = memberIds.length;
-    // localStorage is per-browser, so an `activeGroupId` from a previous
-    // logged-in account can leak through. If the cached id isn't in this
-    // user's memberships → drop it before evaluating auto-select / redirect.
-    let effectiveActive = active;
-    if (active && !memberIds.includes(active)) {
-      setActiveGroup(null);
-      effectiveActive = null;
+    const ids = me.data.memberships.map((m) => m.groupId);
+    // Keep a valid choice, auto-select a single group, otherwise ask. localStorage
+    // is per-browser, so a cached id from another account / a group the user
+    // left is dropped here. One setActiveGroup call → one refetch round.
+    const next = active && ids.includes(active) ? active : ids.length === 1 ? ids[0] : null;
+    if (next !== active) setActiveGroup(next);
+    if (!next && ids.length > 1 && pathname !== '/select-group') {
+      router.replace(`/select-group?next=${encodeURIComponent(pathname)}` as Route);
     }
-    // Exactly one group → auto-select
-    if (count === 1 && effectiveActive !== memberIds[0]) {
-      setActiveGroup(memberIds[0]);
-      return;
-    }
-    // Multiple groups, none chosen → prompt
-    if (count > 1 && !effectiveActive && pathname !== '/select-group') {
-      router.replace(`/select-group?next=${encodeURIComponent(pathname || '/')}` as Route);
-    }
-  }, [me.data, isTeacherOnly, pathname, router]);
+  }, [me.data, isTeacherOnly, active, pathname, router]);
 
-  const noAccess =
-    auth.ready && !auth.error && me.data && me.data.accessReason === 'none';
+  const noAccess = !!me.data && me.data.accessReason === 'none';
+  // Pages render only once the profile and the active group are known: their
+  // queries carry the group in the x-group-id header, and anything fetched
+  // before that came back empty / 400 and looked like "nothing loads".
+  const groupReady =
+    !!me.data &&
+    (isTeacherOnly ||
+      memberIds.length === 0 ||
+      (!!active && memberIds.includes(active)) ||
+      pathname === '/select-group');
+  const ready = auth.ready && !auth.error && !noAccess && groupReady;
+  const showTabBar = ready && !isTabBarHidden(pathname);
 
   return (
-    <div className="min-h-[100dvh] bg-paper-100 text-ink-900">
-      <main className="mx-auto max-w-xl px-4 pt-5 app-scroll">
+    <div className="min-h-[100dvh] bg-bg text-ink">
+      <main
+        className={cn(
+          'mx-auto max-w-xl px-4 pt-[18px]',
+          showTabBar ? 'pb-[calc(var(--safe-bottom)+104px)]' : 'pb-6',
+        )}
+      >
         {!auth.ready ? (
-          <div className="flex flex-col items-center justify-center py-24 text-ink-500">
-            <div className="h-8 w-8 rounded-full border-2 border-paper-300 border-t-ink-900 animate-spin" />
-            <div className="mt-3 text-sm">Авторизація…</div>
-          </div>
+          <Loading label="Авторизація…" />
         ) : auth.error ? (
-          <div className="card border-danger/40 text-danger">
-            <div className="font-semibold mb-1">Помилка авторизації</div>
-            <div className="text-sm opacity-80">{auth.error}</div>
+          <div className="card-flat flex flex-col items-start gap-3 border-bad">
+            <div className="flex flex-col gap-1">
+              <div className="h3 text-bad">Помилка авторизації</div>
+              <div className="small muted">{auth.error}</div>
+            </div>
+            <button type="button" className="btn btn-secondary btn-md" onClick={auth.retry}>
+              Спробувати ще раз
+            </button>
+          </div>
+        ) : me.isError && !me.data ? (
+          <div className="card-flat flex flex-col items-start gap-3">
+            <div className="flex flex-col gap-1">
+              <div className="h3">Не вдалося завантажити профіль</div>
+              <div className="small muted">{(me.error as Error).message}</div>
+            </div>
+            <button type="button" className="btn btn-secondary btn-md" onClick={() => me.refetch()} disabled={me.isFetching}>
+              {me.isFetching ? 'Пробую…' : 'Спробувати ще раз'}
+            </button>
           </div>
         ) : noAccess ? (
-          <NoAccessScreen firstName={me.data?.firstName} fullName={me.data?.fullName} />
+          <NoAccessScreen firstName={me.data?.firstName} onRetry={() => me.refetch()} retrying={me.isFetching} />
+        ) : !ready ? (
+          <Loading />
         ) : (
           children
         )}
       </main>
-      {auth.ready && !auth.error && !noAccess ? <BottomBar /> : null}
+      {showTabBar ? <BottomBar /> : null}
     </div>
   );
 }
 
-function NoAccessScreen({ firstName }: { firstName?: string; fullName?: string }) {
+const STEPS: Array<{ title: string; body: ReactNode }> = [
+  {
+    title: 'Староста додає бота в чат групи',
+    body: (
+      <>
+        Попросіть старосту додати бота <span className="font-semibold text-ink">FICE Helper</span> у груповий
+        чат.
+      </>
+    ),
+  },
+  {
+    title: 'Виконує команду в чаті',
+    body: (
+      <>
+        <span className="chip mb-1.5 flex h-7 w-fit font-mono">/verify</span>
+        <span className="block">Бот знайде групу в Кампус КПІ та підтягне розклад.</span>
+      </>
+    ),
+  },
+  {
+    title: 'Напишіть будь-що в чаті',
+    body: 'Після цього застосунок відкриється сам — перезапускати нічого не треба.',
+  },
+];
+
+function NoAccessScreen({
+  firstName,
+  onRetry,
+  retrying,
+}: {
+  firstName?: string;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
   return (
-    <div className="space-y-4 py-6">
-      <div className="card space-y-3">
-        <div className="text-[20px] font-semibold leading-tight">
-          {firstName ? `Вітаю, ${firstName}!` : 'Вітаю!'}
+    <div className="flex min-h-[calc(100dvh-42px)] flex-col gap-[18px] pt-2.5">
+      <header className="flex flex-col gap-3.5">
+        <div className="flex items-center gap-2.5">
+          <Logo size={36} />
+          <span className="eyebrow text-ink-2">FICE Helper</span>
         </div>
-        <div className="text-sm text-ink-700 leading-relaxed">
-          У нашій базі поки немає вашої академічної групи. Щоб користуватись застосунком,
-          попросіть старосту вашої групи додати бота{' '}
-          <span className="font-semibold">FICE Helper</span> у груповий чат і виконати команду{' '}
-          <code className="px-1 py-0.5 rounded bg-paper-200">/verify</code>.
-        </div>
-      </div>
+        <h1 className="h1 text-2xl">
+          {firstName ? `Привіт, ${firstName}! ` : 'Привіт! '}Вашої групи тут ще немає
+        </h1>
+        <p className="leading-normal text-ink-2">
+          Застосунок працює для груп, які підключив староста. Це займає хвилину — ось що потрібно зробити.
+        </p>
+      </header>
 
-      <div className="card text-sm text-ink-500">
-        Коли староста привʼяже чат і ви напишете в ньому будь-яке повідомлення — застосунок одразу
-        запрацює. Перезапускати нічого не потрібно.
-      </div>
+      <section aria-label="Кроки підключення" className="flex flex-col gap-2.5">
+        {STEPS.map((s, i) => (
+          <div key={s.title} className="card-flat flex items-start gap-3.5">
+            <span className="num w-8 flex-shrink-0 text-[26px] leading-none text-accent-text">{i + 1}</span>
+            <div className="flex flex-col gap-1">
+              <span className="h3 text-base">{s.title}</span>
+              <span className="small muted">{s.body}</span>
+            </div>
+          </div>
+        ))}
+      </section>
 
-      <div className="card space-y-2">
-        <div className="font-semibold text-sm">Староста або викладач і вас не пускає?</div>
-        <div className="text-sm text-ink-700 leading-relaxed">
-          Це означає, що вашого тегу ще немає в адміністративній таблиці.
-          Напишіть боту команду{' '}
-          <code className="px-1 py-0.5 rounded bg-paper-200">/support</code>{' '}
-          або натисніть «📨 Підтримка» в чаті з ботом — адміни додадуть вас і зразу
-          відкриють доступ.
-        </div>
+      <section className="card-soft flex flex-col gap-2.5">
+        <span className="h3">Ви староста або викладач, і вас не пускає?</span>
+        <span className="small muted">
+          Вашого тегу ще немає в адміністративній таблиці. Надішліть боту <span className="font-mono">/support</span>{' '}
+          — адміни додадуть вас і одразу відкриють доступ.
+        </span>
+      </section>
+
+      <div className="mt-auto flex flex-col gap-2">
+        <button
+          type="button"
+          className="btn btn-primary btn-block"
+          onClick={() => {
+            haptic('light');
+            getWebApp()?.close();
+          }}
+        >
+          <Icon name="send" />
+          Написати в підтримку
+        </button>
+        <button type="button" className="btn btn-secondary btn-block" onClick={onRetry} disabled={retrying}>
+          {retrying ? 'Перевіряю…' : 'Перевірити доступ ще раз'}
+        </button>
       </div>
     </div>
   );

@@ -1,60 +1,64 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { loginWithTelegram, getToken, getActiveGroup, setActiveGroup } from '../lib/api';
+import { useCallback, useEffect, useState } from 'react';
+import { ApiError, loginWithTelegram, getToken } from '../lib/api';
 import { getWebApp } from '../lib/telegram';
 
 export interface AuthStatus {
   ready: boolean;
   error: string | null;
-  userId: string | null;
-  activeGroupId: string | null;
-  setActiveGroup: (groupId: string | null) => void;
+  /** Try logging in again after an error. */
+  retry: () => void;
 }
 
 export function useAuth(): AuthStatus {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [activeGroupId, setActiveGroupState] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    let cancelled = false;
     const wa = getWebApp();
     wa?.ready();
     wa?.expand();
-    const existing = getToken();
-    if (existing) {
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // A stored token may be expired — api() re-logs in transparently on 401.
+    if (getToken()) {
       setReady(true);
-      setActiveGroupState(getActiveGroup());
       return;
     }
     (async () => {
-      try {
-        const r = await loginWithTelegram();
-        if (cancelled) return;
-        setUserId(r.userId);
-        setActiveGroupState(getActiveGroup());
-        setReady(true);
-      } catch (e) {
-        if (cancelled) return;
-        setError((e as Error).message);
-        setReady(true);
+      // The backend may be mid-restart (deploy, memory-limit restart): retry a
+      // couple of times before showing an error. Bad initData (4xx) is final.
+      for (let i = 0; ; i++) {
+        try {
+          await loginWithTelegram();
+          break;
+        } catch (e) {
+          const final = i >= 2 || !(e instanceof ApiError) || (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429);
+          if (cancelled) return;
+          if (final) {
+            setError((e as Error).message);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+          if (cancelled) return;
+        }
       }
+      if (!cancelled) setReady(true);
     })();
     return () => {
       cancelled = true;
     };
+  }, [attempt]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setReady(false);
+    setAttempt((a) => a + 1);
   }, []);
 
-  return {
-    ready,
-    error,
-    userId,
-    activeGroupId,
-    setActiveGroup: (g) => {
-      setActiveGroup(g);
-      setActiveGroupState(g);
-    },
-  };
+  return { ready, error, retry };
 }
