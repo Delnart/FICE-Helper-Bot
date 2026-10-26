@@ -32,6 +32,8 @@ export interface WeekGridLesson {
   endTime: string;
   date: string; // ISO date for this concrete instance in the week
   weekType: 0 | 1 | 2;
+  /** The discipline's short name set by the head (Subject.shortName), when there is one. */
+  subjectShortName?: string;
 }
 
 export interface WeekGridStudent {
@@ -40,6 +42,8 @@ export interface WeekGridStudent {
   username?: string;
   /** True for placeholder entries added manually by the head — not a real Telegram user. */
   isManual?: boolean;
+  /** Telegram photo saved at login. */
+  avatarUrl?: string;
 }
 
 export interface WeekGridMark {
@@ -58,6 +62,24 @@ export interface WeekGridResponse {
   perStudentWeek: Record<string, { absent: number; excused: number; late: number }>;
   perStudentTotal: Record<string, { absent: number; excused: number; late: number }>;
   perLessonWeek: Record<string, { present: number; absent: number; excused: number; late: number }>;
+}
+
+export interface StatusCounts {
+  present: number;
+  absent: number;
+  excused: number;
+  late: number;
+}
+
+/** Month / semester view of the journal: marks summed per student per discipline. */
+export interface PeriodGridResponse {
+  from: string;
+  to: string;
+  /** Columns: the group's disciplines in schedule order (keyed by subjectName, like the week grid). */
+  subjects: Array<{ subjectId?: string; subjectName: string; subjectShortName?: string }>;
+  students: WeekGridStudent[];
+  /** studentId → subjectName → counts over [from, to). */
+  cells: Record<string, Record<string, StatusCounts>>;
 }
 
 @Injectable()
@@ -89,6 +111,7 @@ export class AttendanceService {
     const weekLessons = lessonsRaw.filter(
       (l) => l.weekType === 0 || l.weekType === weekType,
     );
+    const shortNameOf = await this.shortNames(groupId);
     const lessons: WeekGridLesson[] = weekLessons.map((l) => {
       const date = new Date(start);
       date.setUTCDate(date.getUTCDate() + (l.dayOfWeek - 1));
@@ -103,33 +126,11 @@ export class AttendanceService {
         endTime: l.endTime,
         date: date.toISOString(),
         weekType: l.weekType,
+        subjectShortName: shortNameOf(l),
       };
     });
 
-    // Real Telegram members + manual placeholder entries the head added by hand.
-    const [members, manualDocs] = await Promise.all([
-      this.users.listGroupMembersForUi(groupId),
-      this.manualStudents.listForGroup(groupId),
-    ]);
-    // Index real members by normalised name → username, so a manual entry with
-    // a matching name can surface that user's @handle as a hint.
-    const usernameByName = new Map<string, string>();
-    for (const m of members) {
-      if (m.username) usernameByName.set(normaliseName(m.fullName), m.username);
-    }
-    const students: WeekGridStudent[] = [
-      ...members.map((m) => ({
-        _id: m._id,
-        fullName: m.fullName,
-        username: m.username,
-      })),
-      ...manualDocs.map((d) => ({
-        _id: String(d._id),
-        fullName: d.fullName,
-        username: usernameByName.get(normaliseName(d.fullName)),
-        isManual: true,
-      })),
-    ].sort(bySurname);
+    const students = await this.groupStudents(groupId);
 
     // Marks for this week
     const records = await this.records
@@ -208,6 +209,93 @@ export class AttendanceService {
       perStudentTotal,
       perLessonWeek,
     };
+  }
+
+  async periodGrid(groupId: string, from: Date, to: Date): Promise<PeriodGridResponse> {
+    const gid = new Types.ObjectId(groupId);
+    const [lessonsRaw, shortNameOf, students, records] = await Promise.all([
+      this.lessons
+        .find({ groupId: gid }, { subjectId: 1, subjectName: 1 })
+        .sort({ dayOfWeek: 1, startTime: 1 })
+        .lean()
+        .exec(),
+      this.shortNames(groupId),
+      this.groupStudents(groupId),
+      this.records
+        .find({ groupId: gid, date: { $gte: from, $lt: to } }, { scheduleLessonId: 1, entries: 1 })
+        .lean()
+        .exec(),
+    ]);
+
+    const subjects = new Map<string, PeriodGridResponse['subjects'][number]>();
+    const subjectOfLesson = new Map<string, string>();
+    for (const l of lessonsRaw) {
+      subjectOfLesson.set(String(l._id), l.subjectName);
+      if (!subjects.has(l.subjectName)) {
+        subjects.set(l.subjectName, {
+          subjectId: l.subjectId ? String(l.subjectId) : undefined,
+          subjectName: l.subjectName,
+          subjectShortName: shortNameOf(l),
+        });
+      }
+    }
+
+    const cells: PeriodGridResponse['cells'] = {};
+    for (const r of records) {
+      // Lessons dropped by a schedule re-sync take their marks with them (the week grid can't show them either).
+      const subjectName = subjectOfLesson.get(String(r.scheduleLessonId));
+      if (!subjectName) continue;
+      for (const e of r.entries) {
+        if (e.status === AttendanceStatus.Unknown) continue;
+        const row = (cells[String(e.userId)] ??= {});
+        const c = (row[subjectName] ??= { present: 0, absent: 0, excused: 0, late: 0 });
+        c[e.status] += 1;
+      }
+    }
+
+    return { from: from.toISOString(), to: to.toISOString(), subjects: [...subjects.values()], students, cells };
+  }
+
+  /** Real Telegram members + manual placeholder entries the head added by hand, by surname. */
+  private async groupStudents(groupId: string): Promise<WeekGridStudent[]> {
+    const [members, manualDocs] = await Promise.all([
+      this.users.listGroupMembersForUi(groupId),
+      this.manualStudents.listForGroup(groupId),
+    ]);
+    // Index real members by normalised name → username, so a manual entry with
+    // a matching name can surface that user's @handle as a hint.
+    const usernameByName = new Map<string, string>();
+    for (const m of members) {
+      if (m.username) usernameByName.set(normaliseName(m.fullName), m.username);
+    }
+    return [
+      ...members.map((m) => ({
+        _id: m._id,
+        fullName: m.fullName,
+        username: m.username,
+        avatarUrl: m.avatarUrl || undefined,
+      })),
+      ...manualDocs.map((d) => ({
+        _id: String(d._id),
+        fullName: d.fullName,
+        username: usernameByName.get(normaliseName(d.fullName)),
+        isManual: true,
+      })),
+    ].sort(bySurname);
+  }
+
+  /** Lesson → the head's short name for its discipline (by subjectId, else by name). */
+  private async shortNames(
+    groupId: string,
+  ): Promise<(l: { subjectId?: unknown; subjectName?: string }) => string | undefined> {
+    const subs = await this.subjects
+      .find({ groupId: new Types.ObjectId(groupId), shortName: { $nin: [null, ''] } }, { name: 1, shortName: 1 })
+      .lean()
+      .exec();
+    const byId = new Map(subs.map((s) => [String(s._id), s.shortName]));
+    const byName = new Map(subs.map((s) => [normaliseName(s.name), s.shortName]));
+    return (l) =>
+      (l.subjectId ? byId.get(String(l.subjectId)) : undefined) ?? byName.get(normaliseName(l.subjectName ?? ''));
   }
 
   async upsertEntry(
@@ -359,11 +447,15 @@ export class AttendanceService {
       .exec();
   }
 
-  async statsForUser(groupId: string, userId: string): Promise<UserAttendanceStats> {
+  async statsForUser(groupId: string, userId: string, subjectId?: string): Promise<UserAttendanceStats> {
     // :userId comes from the URL; a malformed one made new ObjectId() throw a 500.
     if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid userId');
+    if (subjectId && !Types.ObjectId.isValid(subjectId)) throw new BadRequestException('Invalid subjectId');
+    const gid = new Types.ObjectId(groupId);
+    const match: Record<string, unknown> = { groupId: gid };
+    if (subjectId) match.scheduleLessonId = { $in: await this.subjectLessonIds(gid, subjectId) };
     const pipeline = [
-      { $match: { groupId: new Types.ObjectId(groupId) } },
+      { $match: match },
       { $unwind: '$entries' },
       { $match: { 'entries.userId': new Types.ObjectId(userId) } },
       {
@@ -399,6 +491,29 @@ export class AttendanceService {
       if (r._id === AttendanceStatus.Late) stats.late = r.count;
     }
     return stats;
+  }
+
+  /**
+   * The group's lessons of one subject, matched like the journal grid: subjectId,
+   * else name/short name. A subject from another group matches nothing (zero stats).
+   */
+  private async subjectLessonIds(gid: Types.ObjectId, subjectId: string): Promise<Types.ObjectId[]> {
+    const [subject, lessons] = await Promise.all([
+      this.subjects
+        .findOne({ _id: new Types.ObjectId(subjectId), groupId: gid }, { name: 1, shortName: 1 })
+        .lean()
+        .exec(),
+      this.lessons.find({ groupId: gid }, { subjectId: 1, subjectName: 1 }).lean().exec(),
+    ]);
+    if (!subject) return [];
+    const names = [subject.name, subject.shortName].filter((n): n is string => !!n).map(normaliseName);
+    return lessons
+      .filter(
+        (l) =>
+          (!!l.subjectId && String(l.subjectId) === String(subject._id)) ||
+          names.includes(normaliseName(l.subjectName ?? '')),
+      )
+      .map((l) => l._id);
   }
 
   /**

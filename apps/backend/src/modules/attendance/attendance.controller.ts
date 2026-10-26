@@ -49,9 +49,10 @@ export class AttendanceController {
   myStats(
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
+    @Query('subjectId') subjectId?: string,
   ) {
     if (!activeGroupId) throw new BadRequestException('No active group');
-    return this.attendance.statsForUser(activeGroupId, user.userId);
+    return this.attendance.statsForUser(activeGroupId, user.userId, subjectId);
   }
 
   @Get('week')
@@ -76,6 +77,26 @@ export class AttendanceController {
   ) {
     const groupId = await this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
     return this.attendance.weekGrid(groupId, weekStart ? new Date(weekStart) : undefined);
+  }
+
+  /** Month / semester journal: marks per student per discipline over [from, to). */
+  @Get('period')
+  async period(
+    @CurrentUser() user: RequestUser,
+    @ActiveGroupId() activeGroupId: string | undefined,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('groupId') groupIdQuery?: string,
+    @Query('subjectIds') subjectIdsQuery?: string,
+  ) {
+    const start = new Date(from);
+    const end = new Date(to);
+    const span = end.getTime() - start.getTime();
+    if (!from || !to || !(span > 0) || span > 400 * 86400000) {
+      throw new BadRequestException('from/to must be dates, from < to, at most 400 days apart');
+    }
+    const groupId = await this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
+    return this.attendance.periodGrid(groupId, start, end);
   }
 
   @Patch('entry')
