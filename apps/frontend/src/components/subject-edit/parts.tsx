@@ -5,19 +5,23 @@ import type { SubjectLink, SubjectLinkReminderType } from '@fice/shared';
 import { cn } from '../../lib/cn';
 import { haptic } from '../../lib/telegram';
 import { Icon, type IconName } from '../icons';
-import { SUBJECT_ICONS, SUBJECT_ICON_LABELS, subjectIcon } from '../SubjectIcon';
+import { SUBJECT_ICONS, SUBJECT_ICON_LABELS, subjectIcon, type SubjectIconName } from '../SubjectIcon';
 import { Sheet } from '../ui/Sheet';
 import { Section } from '../ui/Section';
 import { Toggle } from '../ui/Toggle';
 import {
-  CampusTeacherSuggestions,
   mergeTeacherRows,
   ROLE_LABEL,
   TEACHER_ROLES,
   teacherKey,
+  useCampusSuggestions,
+  type CampusSuggestion,
   type TeacherRoleId,
   type TeacherRow,
 } from '../CampusTeacherSuggestions';
+
+/** Icons shown before "…" expands the picker (the mockup fits one row of six). */
+const ICONS_COLLAPSED = 6;
 
 /* ── Basics: name, short name, icon ─────────────────────────────────── */
 
@@ -39,6 +43,14 @@ export function SubjectBasicsCard({
 }) {
   const auto = subjectIcon(name);
   const selected = subjectIcon(name, icon);
+  const [allIcons, setAllIcons] = useState(false);
+  const head = SUBJECT_ICONS.slice(0, ICONS_COLLAPSED);
+  // Collapsed, the current pick always stays visible (first, like in the mockup).
+  const shown: readonly SubjectIconName[] = allIcons
+    ? SUBJECT_ICONS
+    : head.includes(selected)
+      ? head
+      : [selected, ...head.slice(0, ICONS_COLLAPSED - 1)];
   return (
     <section className="card-flat flex flex-col gap-3.5">
       <div className="flex gap-2.5">
@@ -78,7 +90,7 @@ export function SubjectBasicsCard({
       <div className="flex flex-col gap-2">
         <span className="label mb-0">Іконка</span>
         <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Іконка дисципліни">
-          {SUBJECT_ICONS.map((ic) => {
+          {shown.map((ic) => {
             const on = ic === selected;
             return (
               <button
@@ -97,6 +109,16 @@ export function SubjectBasicsCard({
               </button>
             );
           })}
+          {allIcons ? null : (
+            <button
+              type="button"
+              className="subj border border-dashed border-line-2 bg-transparent text-ink-3"
+              aria-label="Ще іконки"
+              onClick={() => setAllIcons(true)}
+            >
+              <Icon name="more" />
+            </button>
+          )}
         </div>
         {icon ? (
           <div className="flex items-center justify-between gap-2">
@@ -136,6 +158,66 @@ function groupTeachers(rows: TeacherRow[]): Array<TeacherDraft & { key: string }
 
 const tgLabel = (u?: string) => (u ? `@${u.replace(/^@/, '')}` : 'Telegram не вказано');
 
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+const toggleRole = (roles: TeacherRoleId[], r: TeacherRoleId) =>
+  roles.includes(r) ? roles.filter((x) => x !== r) : [...roles, r];
+
+function RoleChips({ roles, onToggle }: { roles: TeacherRoleId[]; onToggle: (r: TeacherRoleId) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Ролі в дисципліні">
+      {TEACHER_ROLES.map((r) => {
+        const on = roles.includes(r);
+        return (
+          <button
+            key={r}
+            type="button"
+            aria-pressed={on}
+            className={cn('chip chip-btn', on && 'chip-accent')}
+            onClick={() => onToggle(r)}
+          >
+            {ROLE_LABEL[r]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A Campus lecturer not on the list yet: same card as a teacher, dashed, with "Додати". */
+function SuggestionCard({ s, onAdd }: { s: CampusSuggestion; onAdd: (rows: TeacherRow[]) => void }) {
+  const [roles, setRoles] = useState(s.roles);
+  return (
+    <div className="card-flat flex flex-col gap-3 border-dashed">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="h3 break-words">{s.fullName}</span>
+          <span className="tiny faint truncate">З розкладу · {tgLabel(s.telegramUsername)}</span>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm flex-shrink-0"
+          disabled={!roles.length}
+          onClick={() => {
+            haptic('selection');
+            onAdd(
+              TEACHER_ROLES.filter((r) => roles.includes(r)).map((role) => ({
+                fullName: s.fullName,
+                telegramUsername: s.telegramUsername,
+                role,
+              })),
+            );
+          }}
+        >
+          <Icon name="plus" size={16} strokeWidth={2.2} />
+          Додати
+        </button>
+      </div>
+      <RoleChips roles={roles} onToggle={(r) => setRoles(toggleRole(roles, r))} />
+    </div>
+  );
+}
+
 export function TeachersEditor({
   groupId,
   subjectName,
@@ -149,6 +231,9 @@ export function TeachersEditor({
 }) {
   const [sheet, setSheet] = useState<{ key: string | null; draft: TeacherDraft } | null>(null);
   const groups = groupTeachers(teachers);
+  const campus = useCampusSuggestions(groupId, subjectName);
+  // People already on the list are edited on their own card — don't show them twice.
+  const fresh = campus.filter((s) => !teachers.some((t) => sameName(t.fullName, s.fullName)));
 
   /** Replace the rows of one person (key) — or append a new one (key = null) — keeping list order. */
   function putGroup(key: string | null, d: TeacherDraft) {
@@ -172,8 +257,11 @@ export function TeachersEditor({
   }
 
   return (
-    <Section title="Викладачі">
-      {groups.length === 0 ? (
+    <Section
+      title="Викладачі"
+      aside={campus.length ? <span className="tiny faint">підказки з Кампус КПІ</span> : undefined}
+    >
+      {groups.length === 0 && fresh.length === 0 ? (
         <div className="card-soft small muted">Поки немає викладачів.</div>
       ) : null}
       {groups.map((g) => (
@@ -181,19 +269,16 @@ export function TeachersEditor({
           <div className="flex items-start justify-between gap-2">
             <button
               type="button"
-              className="flex min-h-11 min-w-0 flex-col gap-0.5 text-left"
+              className="-my-[3px] flex min-w-0 flex-col gap-0.5 py-[3px] text-left"
               aria-label={`Редагувати: ${g.fullName}`}
               onClick={() => setSheet({ key: g.key, draft: g })}
             >
-              <span className="h3 flex min-w-0 items-center gap-1.5">
-                <span className="truncate">{g.fullName}</span>
-                <Icon name="edit" size={14} className="flex-shrink-0 text-ink-3" />
-              </span>
+              <span className="h3 break-words">{g.fullName}</span>
               <span className="tiny faint truncate">{tgLabel(g.telegramUsername)}</span>
             </button>
             <button
               type="button"
-              className="icon-btn-plain -mr-2.5 -mt-2.5"
+              className="icon-btn-plain -mr-3 -mt-2.5"
               aria-label="Прибрати викладача"
               onClick={() =>
                 onChange(teachers.filter((t) => teacherKey(t.fullName, t.telegramUsername) !== g.key))
@@ -202,39 +287,25 @@ export function TeachersEditor({
               <Icon name="close" size={18} />
             </button>
           </div>
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Ролі в дисципліні">
-            {TEACHER_ROLES.map((r) => {
-              const on = g.roles.includes(r);
-              return (
-                <button
-                  key={r}
-                  type="button"
-                  aria-pressed={on}
-                  className={cn('chip chip-btn', on && 'chip-accent')}
-                  onClick={() => {
-                    // A person keeps at least one role; remove them with ✕ instead.
-                    if (on && g.roles.length === 1) return haptic('error');
-                    haptic('selection');
-                    putGroup(g.key, {
-                      ...g,
-                      roles: on ? g.roles.filter((x) => x !== r) : [...g.roles, r],
-                    });
-                  }}
-                >
-                  {ROLE_LABEL[r]}
-                </button>
-              );
-            })}
-          </div>
+          <RoleChips
+            roles={g.roles}
+            onToggle={(r) => {
+              // A person keeps at least one role; remove them with ✕ instead.
+              if (g.roles.length === 1 && g.roles[0] === r) return haptic('error');
+              haptic('selection');
+              putGroup(g.key, { ...g, roles: toggleRole(g.roles, r) });
+            }}
+          />
         </div>
       ))}
 
-      <CampusTeacherSuggestions
-        groupId={groupId}
-        subjectName={subjectName}
-        existing={teachers}
-        onAdd={(rows) => onChange(mergeTeacherRows([...teachers, ...rows]))}
-      />
+      {fresh.map((s) => (
+        <SuggestionCard
+          key={teacherKey(s.fullName, s.telegramUsername)}
+          s={s}
+          onAdd={(rows) => onChange(mergeTeacherRows([...teachers, ...rows]))}
+        />
+      ))}
 
       <button
         type="button"
@@ -319,24 +390,7 @@ function TeacherSheet({
       </div>
       <div>
         <span className="label">Ролі</span>
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Ролі в дисципліні">
-          {TEACHER_ROLES.map((r) => {
-            const on = d.roles.includes(r);
-            return (
-              <button
-                key={r}
-                type="button"
-                aria-pressed={on}
-                className={cn('chip chip-btn', on && 'chip-accent')}
-                onClick={() =>
-                  setD({ ...d, roles: on ? d.roles.filter((x) => x !== r) : [...d.roles, r] })
-                }
-              >
-                {ROLE_LABEL[r]}
-              </button>
-            );
-          })}
-        </div>
+        <RoleChips roles={d.roles} onToggle={(r) => setD({ ...d, roles: toggleRole(d.roles, r) })} />
       </div>
       {err ? <div className="small text-bad">{err}</div> : null}
       <div className="flex gap-2">
