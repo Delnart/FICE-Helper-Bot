@@ -28,7 +28,8 @@ export default function SelectGroupPage() {
   }
 
   const memberships = me.data?.memberships ?? [];
-  const chosenId = selected ?? active;
+  // Like the mockup, a choice is always pre-filled (the first group when none is active yet).
+  const chosenId = selected ?? active ?? memberships[0]?.groupId;
   const chosen = memberships.find((m) => m.groupId === chosenId);
 
   return (
@@ -54,6 +55,13 @@ export default function SelectGroupPage() {
           <section role="radiogroup" aria-label="Групи" className="flex flex-col gap-2.5">
             {memberships.map((m) => {
               const on = chosenId === m.groupId;
+              const sub = [
+                active === m.groupId && 'Активна зараз',
+                m.role === 'teacher' && 'Перегляд черг і журналу',
+                m.joinedAt && `у групі з ${new Date(m.joinedAt).toLocaleDateString('uk-UA')}`,
+              ]
+                .filter(Boolean)
+                .join(' · ');
               return (
                 <button
                   key={m.groupId}
@@ -75,7 +83,7 @@ export default function SelectGroupPage() {
                   </span>
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="h3 text-[16px]">{m.groupName ?? m.groupId}</span>
-                    {active === m.groupId ? <span className="tiny faint">Активна зараз</span> : null}
+                    {sub ? <span className="tiny faint">{sub}</span> : null}
                   </div>
                   <span className={cn('chip', roleChip(m.role))}>{roleLabel(m.role)}</span>
                 </button>
@@ -83,7 +91,7 @@ export default function SelectGroupPage() {
             })}
           </section>
 
-          <div className="action-bar mt-auto flex-col items-stretch">
+          <div className="action-bar mt-auto flex-col items-stretch gap-2.5 border-t-0">
             <button
               type="button"
               className="btn btn-primary btn-block"

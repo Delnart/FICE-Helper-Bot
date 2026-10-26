@@ -32,7 +32,7 @@ interface ElectiveDiscipline {
   lessons: LessonPart[];
 }
 
-const DAY_NAMES = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const DAY_NAMES = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
 const WEEK_LABEL: Record<number, string> = { 0: 'щотижня', 1: 'I тижд.', 2: 'II тижд.' };
 const TYPE_LABEL: Record<string, string> = {
   lecture: 'Лекція',
@@ -45,6 +45,48 @@ const TYPE_LABEL: Record<string, string> = {
 /** 1 заняття, 3 заняття, 5 занять. */
 const lessonsWord = (n: number) =>
   n % 10 >= 1 && n % 10 <= 4 && !(n % 100 >= 11 && n % 100 <= 14) ? 'заняття' : 'занять';
+
+/** "2 заняття на тиждень" / "1–2 заняття на тиждень" (I and II weeks differ). */
+function perWeek(lessons: LessonPart[]): string {
+  const w1 = lessons.filter((l) => l.weekType !== 2).length;
+  const w2 = lessons.filter((l) => l.weekType !== 1).length;
+  const lo = Math.min(w1, w2);
+  const hi = Math.max(w1, w2);
+  if (!hi) return '';
+  return `${lo === hi ? hi : `${lo}–${hi}`} ${lessonsWord(hi)} на тиждень`;
+}
+
+/**
+ * "Пн · Лекція · щотижня" chips: the same day/time/type in both weeks becomes
+ * "щотижня"; slots with the same label merge (times and rooms go to the title).
+ */
+function slotChips(lessons: LessonPart[]) {
+  const slots = new Map<string, { l: LessonPart; weeks: Set<number> }>();
+  for (const l of lessons) {
+    const key = `${l.dayOfWeek}|${l.startTime}|${l.type ?? ''}`;
+    const s = slots.get(key) ?? { l, weeks: new Set<number>() };
+    s.weeks.add(l.weekType ?? 0);
+    slots.set(key, s);
+  }
+  const chips = new Map<string, { key: string; label: string; title: string }>();
+  [...slots.values()]
+    .sort((a, b) => a.l.dayOfWeek - b.l.dayOfWeek || a.l.startTime.localeCompare(b.l.startTime))
+    .forEach(({ l, weeks }) => {
+      const label = [
+        DAY_NAMES[l.dayOfWeek] ?? '',
+        TYPE_LABEL[l.type ?? 'other'] ?? 'Заняття',
+        WEEK_LABEL[weeks.size > 1 || weeks.has(0) ? 0 : [...weeks][0]],
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const title = [`${l.startTime}–${l.endTime}`, l.room ? `ауд. ${l.room}` : '']
+        .filter(Boolean)
+        .join(' · ');
+      const c = chips.get(label);
+      chips.set(label, c ? { ...c, title: `${c.title}; ${title}` } : { key: l._id, label, title });
+    });
+  return [...chips.values()];
+}
 
 export default function ElectivesPage() {
   const me = useMe();
@@ -143,11 +185,12 @@ export default function ElectivesPage() {
             const teachers = [...new Set(lessons.flatMap((l) => l.teacherNames ?? []))]
               .map(shortenName)
               .join(', ');
+            const chips = slotChips(lessons);
 
             return (
               <div
                 key={item._id}
-                className={cn('card-flat flex flex-col gap-1', enrolled && 'border-accent')}
+                className={cn('card-flat flex flex-col gap-2', enrolled && 'border-accent')}
               >
                 {/* Student enrollment: the whole card body is the checkbox. */}
                 <button
@@ -166,35 +209,17 @@ export default function ElectivesPage() {
                     {enrolled ? <Icon name="check" size={16} strokeWidth={3} /> : null}
                   </span>
                   <div className="flex min-w-0 flex-1 flex-col gap-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex min-w-0 flex-col gap-0.5">
-                        <span className="h3 text-[16px]">{item.subjectName}</span>
-                        <span className="tiny faint">
-                          {[teachers, `${lessons.length} ${lessonsWord(lessons.length)}`]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </span>
-                      </div>
-                      {enrolled ? (
-                        <span className="chip chip-accent flex-shrink-0">обрано</span>
-                      ) : null}
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="h3 text-[16px]">{item.subjectName}</span>
+                      <span className="tiny faint">
+                        {[teachers, perWeek(lessons)].filter(Boolean).join(' · ')}
+                      </span>
                     </div>
-                    {lessons.length > 0 ? (
+                    {chips.length > 0 ? (
                       <div className="meta">
-                        {lessons.map((l, idx) => (
-                          <span
-                            key={l._id || idx}
-                            className="chip h-auto min-h-6 whitespace-normal py-1 leading-tight"
-                          >
-                            {[
-                              DAY_NAMES[l.dayOfWeek] ?? '',
-                              `${l.startTime}–${l.endTime}`,
-                              TYPE_LABEL[l.type ?? 'other'] ?? 'Заняття',
-                              WEEK_LABEL[l.weekType ?? 0],
-                              l.room,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
+                        {chips.map((c) => (
+                          <span key={c.key} className="chip" title={c.title}>
+                            {c.label}
                           </span>
                         ))}
                       </div>
@@ -203,7 +228,7 @@ export default function ElectivesPage() {
                 </button>
 
                 {actionError?.id === targetId ? (
-                  <div role="alert" className="small ml-8 text-bad">
+                  <div role="alert" className="small ml-9 text-bad">
                     {actionError.message}
                   </div>
                 ) : null}
@@ -222,12 +247,10 @@ export default function ElectivesPage() {
                         removeElective.mutate(targetId);
                       }
                     }}
-                    className="btn btn-ghost btn-sm ml-8 self-start px-1 text-ink-3"
+                    className="btn btn-ghost btn-sm ml-9 self-start px-1 text-ink-3"
                     title="Вилучити дисципліну з вибіркових"
-                    aria-label="Вилучити з вибіркових"
                   >
-                    <Icon name="trash" size={16} />
-                    Вилучити з вибіркових
+                    Вилучити з вибіркових · староста
                   </button>
                 )}
               </div>

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import type { Route } from 'next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
@@ -12,6 +13,12 @@ import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Section } from '../../../components/ui/Section';
 import { cn } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
+import {
+  isQueueOpen,
+  queueBySubject,
+  takenSlots,
+  type RawQueue,
+} from '../../../components/subjects/helpers';
 import {
   useActiveMembership,
   useCanManage,
@@ -64,6 +71,48 @@ interface ElectiveSummary {
   electiveStudentIds: string[];
 }
 
+/** GET /subjects — only the fields the lesson cards need. */
+interface SubjectInfo {
+  _id: string;
+  links?: Array<{ url: string; showInLessonReminder?: boolean; lessonReminderType?: string }>;
+  settings?: { hideQueue?: boolean; hideHomework?: boolean };
+}
+
+type AttStatus = 'present' | 'absent' | 'late' | 'excused' | 'unknown';
+
+/** Extras for the in-progress lesson card. */
+interface LiveInfo {
+  /** Minutes left and % elapsed. */
+  left: number;
+  progress: number;
+  queue?: { href: string; label: string };
+  hw?: { href: string; count: number };
+}
+
+const ATT_CHIP: Partial<Record<AttStatus, { label: string; title: string; cls: string }>> = {
+  present: { label: 'П', title: 'Присутність', cls: 'chip-ok' },
+  late: { label: 'Зап', title: 'Запізнення', cls: 'chip-info' },
+  excused: { label: 'Пов', title: 'Поважна причина', cls: 'chip-warn' },
+  absent: { label: 'Н', title: 'Відсутність', cls: 'chip-bad' },
+};
+
+/** Entries still waiting for their turn (passed / missed / failed are done). */
+const WAITING = new Set(['default', 'preparing', 'passing']);
+
+/** Same label as the Сьогодні card: heads see slots, students their turn. */
+function queueLabel(q: RawQueue | undefined, userId: string, canManage: boolean): string {
+  if (!q) return 'Черга';
+  if (canManage) return `Черга ${takenSlots(q)}/${q.slotsCount}`;
+  const waiting = (q.entries ?? []).filter((e) => WAITING.has(e.status ?? 'default'));
+  const mine = waiting.filter((e) => String(e.userId) === userId).map((e) => e.slotIndex);
+  if (mine.length) {
+    const slot = Math.min(...mine);
+    const ahead = new Set(waiting.filter((e) => e.slotIndex < slot).map((e) => e.slotIndex));
+    return `Черга · ви ${ahead.size + 1}-й`;
+  }
+  return isQueueOpen(q) ? `Черга · ${takenSlots(q)}/${q.slotsCount}` : 'Черга';
+}
+
 const SESSION_TYPE_LABEL: Record<SessionItem['type'], string> = {
   exam: 'Іспит',
   credit: 'Залік',
@@ -75,7 +124,7 @@ const SESSION_TYPE_TONE: Record<SessionItem['type'], string> = {
   other: '',
 };
 
-const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
 
 // Source: https://api.campus.kpi.ua/schedule/lessons/slots
 const KPI_PAIRS = [
@@ -122,7 +171,7 @@ export default function SchedulePage() {
   const canManage = useCanManage();
   const membership = useActiveMembership();
   const me = useMe();
-  const today = Math.min(6, ((dayjs().day() + 6) % 7) + 1);
+  const today = ((dayjs().day() + 6) % 7) + 1; // Mon=1..Sun=7
   // Two top-level views on this page: weekly schedule and the exam (session) one.
   const [view, setView] = useState<'week' | 'sessions'>('week');
   // Teachers use the lecturer endpoints (live from Campus, no active group);
@@ -191,8 +240,68 @@ export default function SchedulePage() {
     .add(now.data && week !== currentWeek ? 7 : 0, 'day');
   const selectedDate = monday.add(day - 1, 'day');
 
-  const isLiveDay = !!now.data && week === currentWeek && clock.day() === day;
+  const isLiveDay = !!now.data && week === currentWeek && ((clock.day() + 6) % 7) + 1 === day;
   const nowMin = clock.hour() * 60 + clock.minute();
+  const liveLesson = isLiveDay
+    ? dayLessons.find((l) => toMin(l.startTime) <= nowMin && nowMin < toMin(l.endTime))
+    : undefined;
+  const liveSubjectId = isTeacher ? undefined : liveLesson?.subjectId;
+
+  // Card extras (students/heads only): own marks this week, the subject's
+  // reminder link / queue / homework. Same cache keys as Сьогодні and Предмети.
+  const marks = useQuery({
+    queryKey: ['attendance', 'my'],
+    queryFn: () => api<Array<{ lessonId: string; status: AttStatus }>>('/attendance/my'),
+    enabled: !!me.data && !isTeacher && view === 'week',
+  });
+  const subjects = useQuery({
+    queryKey: ['subjects'],
+    queryFn: () => api<SubjectInfo[]>('/subjects'),
+    enabled: !!me.data && !isTeacher && view === 'week',
+  });
+  const queues = useQuery({
+    queryKey: ['queues-all'],
+    queryFn: () => api<RawQueue[]>('/queues'),
+    enabled: !!liveSubjectId,
+  });
+  const hwPending = useQuery({
+    queryKey: ['hw-pending-count'],
+    queryFn: () => api<Array<{ subjectId: string }>>('/homework/my/pending'),
+    enabled: !!liveSubjectId,
+  });
+
+  const markOf = (id: string) =>
+    ATT_CHIP[marks.data?.find((m) => m.lessonId === id)?.status ?? 'unknown'];
+  const subjectOf = (id?: string) => (id ? subjects.data?.find((s) => s._id === id) : undefined);
+  // Lesson link, else the subject link the head flagged for lesson reminders.
+  const joinUrlOf = (l: Lesson) =>
+    l.meetingUrl ??
+    subjectOf(l.subjectId)?.links?.find(
+      (k) => k.showInLessonReminder && (!k.lessonReminderType || k.lessonReminderType === l.type),
+    )?.url;
+
+  const liveExtras = (l: Lesson): Pick<LiveInfo, 'queue' | 'hw'> => {
+    if (!liveSubjectId || l.subjectId !== liveSubjectId) return {};
+    const settings = subjectOf(l.subjectId)?.settings;
+    const hwCount = (hwPending.data ?? []).filter((h) => h.subjectId === l.subjectId).length;
+    return {
+      queue:
+        canManage || !settings?.hideQueue
+          ? {
+              href: `/subjects/${l.subjectId}/queue`,
+              label: queueLabel(
+                queueBySubject(queues.data).get(l.subjectId),
+                me.data?._id ?? '',
+                canManage,
+              ),
+            }
+          : undefined,
+      hw:
+        hwCount && (canManage || !settings?.hideHomework)
+          ? { href: `/subjects/${l.subjectId}/homework`, count: hwCount }
+          : undefined,
+    };
+  };
 
   const enrolledCount = electives.data?.filter((e) =>
     e.electiveStudentIds.includes(me.data?._id ?? ''),
@@ -212,9 +321,10 @@ export default function SchedulePage() {
         }
         action={
           view === 'week' ? (
+            // mt-0.5: PageHeader top-aligns the action; the mockup centres it on the title block.
             <button
               type="button"
-              className="btn btn-outline btn-md"
+              className="btn btn-outline btn-md mt-0.5"
               onClick={() => setView('sessions')}
             >
               <Icon name="calendarCheck" size={18} />
@@ -223,7 +333,7 @@ export default function SchedulePage() {
           ) : (
             <button
               type="button"
-              className="btn btn-outline btn-md"
+              className="btn btn-outline btn-md mt-0.5"
               onClick={() => setView('week')}
             >
               <Icon name="calendar" size={18} />
@@ -242,13 +352,20 @@ export default function SchedulePage() {
               {WEEKDAYS.map((w, i) => {
                 const d = i + 1;
                 const isToday = d === today && week === currentWeek;
+                // Days without lessons are dimmed, like Sunday in the mockup.
+                const free = !!data && !data.some((l) => l.dayOfWeek === d);
                 return (
                   <button
                     key={d}
                     type="button"
                     onClick={() => setDay(d)}
                     aria-pressed={day === d}
-                    className={cn('day flex-1', day === d && 'on', isToday && 'today')}
+                    className={cn(
+                      'day min-w-0 flex-1',
+                      day === d && 'on',
+                      isToday && 'today',
+                      free && day !== d && 'opacity-50',
+                    )}
                   >
                     <span className="dow">{w}</span>
                     <span className="dnum">{monday.add(i, 'day').date()}</span>
@@ -259,7 +376,7 @@ export default function SchedulePage() {
             <div className="flex items-center justify-between gap-2">
               <span className={cn('chip', now.data && week === currentWeek && 'chip-accent')}>
                 {ROMAN[week]} тиждень
-                {now.data && week === currentWeek ? ' · поточний' : ''}
+                {now.data ? (week === currentWeek ? ' · поточний' : ' · наступний') : ''}
               </span>
               <button
                 type="button"
@@ -306,11 +423,14 @@ export default function SchedulePage() {
                       l={l}
                       canManage={canManage}
                       past={isPast}
+                      mark={week === currentWeek ? markOf(l._id) : undefined}
+                      joinUrl={joinUrlOf(l)}
                       live={
                         isNow
                           ? {
                               left: end - nowMin,
                               progress: Math.round(((nowMin - start) / (end - start)) * 100),
+                              ...liveExtras(l),
                             }
                           : undefined
                       }
@@ -337,7 +457,7 @@ export default function SchedulePage() {
                   <span className="tiny faint">
                     {electives.data?.length
                       ? `Обрано ${enrolledCount} з ${electives.data.length} · впливає на ваш розклад`
-                      : 'Обери, які вибіркові відображати в розкладі'}
+                      : 'Оберіть, які вибіркові показувати в розкладі'}
                   </span>
                 </div>
               </div>
@@ -369,13 +489,18 @@ function LessonRow({
   l,
   canManage,
   past,
+  mark,
+  joinUrl,
   live,
 }: {
   l: Lesson;
   canManage?: boolean;
   past?: boolean;
-  /** Set while the lesson is in progress: minutes left and % elapsed. */
-  live?: { left: number; progress: number };
+  /** The user's own attendance mark for this lesson (this week). */
+  mark?: { label: string; title: string; cls: string };
+  joinUrl?: string;
+  /** Set while the lesson is in progress. */
+  live?: LiveInfo;
 }) {
   const qc = useQueryClient();
   const toggleElective = useMutation({
@@ -395,27 +520,33 @@ function LessonRow({
   const teachers = l.teacherNames.map(shortenName).join(', ');
   const meta = [l.groupName, l.room, teachers].filter(Boolean).join(' · ');
 
+  // Head-only: a compact star instead of a text button on every card.
+  const electiveTitle = l.isElective ? 'Зняти позначку «вибіркова»' : 'Позначити вибірковою';
   const electiveBtn = canManage ? (
-    <>
-      <button
-        type="button"
-        disabled={toggleElective.isPending}
-        onClick={() => toggleElective.mutate(!l.isElective)}
-        className={cn(
-          'btn relative z-[1] self-start',
-          live ? 'btn-now-ghost btn-md' : 'btn-ghost btn-sm px-1',
-          !live && !l.isElective && 'text-ink-3',
-        )}
-      >
-        <Icon name="star" size={14} className={l.isElective ? 'fill-current' : undefined} />
-        {l.isElective ? 'Вибіркова' : 'Позначити вибірковою'}
-      </button>
-      {toggleElective.isError ? (
-        <span role="alert" className="chip chip-bad h-auto self-start whitespace-normal py-1">
-          {toggleElective.error.message}
-        </span>
-      ) : null}
-    </>
+    <button
+      type="button"
+      disabled={toggleElective.isPending}
+      onClick={() => toggleElective.mutate(!l.isElective)}
+      aria-pressed={!!l.isElective}
+      aria-label={electiveTitle}
+      title={electiveTitle}
+      className={cn(
+        'relative z-[1]',
+        live
+          ? cn(
+              '-my-3 -mr-2 inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl',
+              l.isElective ? 'text-now-accent' : 'text-now-muted',
+            )
+          : cn('icon-btn-plain -my-2.5 -mr-2', l.isElective ? 'text-accent-text' : 'text-ink-3'),
+      )}
+    >
+      <Icon name="star" size={18} className={l.isElective ? 'fill-current' : undefined} />
+    </button>
+  ) : null;
+  const electiveError = toggleElective.isError ? (
+    <span role="alert" className="chip chip-bad h-auto self-start whitespace-normal py-1">
+      {toggleElective.error.message}
+    </span>
   ) : null;
 
   return (
@@ -436,63 +567,97 @@ function LessonRow({
 
       {live ? (
         <div className="now flex min-w-0 flex-1 flex-col gap-2.5 p-4">
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-[18px] font-bold leading-tight">{l.subjectName}</span>
             <span className="chip flex-shrink-0 gap-1.5 bg-now-accent text-now-accent-ink">
               <span className="dot bg-current" />
-              зараз · ще {live.left} хв
+              ще {live.left} хв
             </span>
           </div>
-          <span className="small now-muted" title={l.teacherNames.join(', ')}>
-            {[typeLabel, l.isElective ? 'вибіркова' : '', meta].filter(Boolean).join(' · ')}
-          </span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="small now-muted min-w-0" title={l.teacherNames.join(', ')}>
+              {[typeLabel, l.isElective ? 'вибіркова' : '', meta].filter(Boolean).join(' · ')}
+            </span>
+            {electiveBtn}
+          </div>
           <div className="bar" aria-hidden="true">
             <span style={{ width: `${live.progress}%` }} />
           </div>
-          {l.meetingUrl || electiveBtn ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {l.meetingUrl ? (
+          {joinUrl || live.queue || live.hw ? (
+            <div className="flex flex-wrap gap-2">
+              {joinUrl ? (
                 <a
-                  href={l.meetingUrl}
+                  href={joinUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="btn btn-now btn-md relative z-[1] flex-1"
+                  className={cn(
+                    'btn btn-now btn-md relative z-[1] min-w-[40%] flex-1',
+                    // Three actions: join on its own row, queue + homework paired below.
+                    live.queue && live.hw && 'basis-full',
+                  )}
                 >
-                  {meetingLabel(l.meetingUrl)}
-                  <Icon name="arrowUpRight" size={16} />
+                  <Icon name="video" strokeWidth={1.9} />
+                  Приєднатись
                 </a>
               ) : null}
-              {electiveBtn}
+              {live.queue ? (
+                <Link
+                  href={live.queue.href as Route}
+                  className={cn(
+                    'btn btn-md relative z-[1] min-w-[40%] flex-1',
+                    joinUrl ? 'btn-now-ghost' : 'btn-now',
+                  )}
+                >
+                  {live.queue.label}
+                </Link>
+              ) : null}
+              {live.hw ? (
+                <Link
+                  href={live.hw.href as Route}
+                  className="btn btn-now-ghost btn-md relative z-[1] min-w-[40%] flex-1"
+                >
+                  Завдання · {live.hw.count}
+                </Link>
+              ) : null}
             </div>
           ) : null}
+          {electiveError}
         </div>
       ) : (
         <div className="card-flat flex min-w-0 flex-1 flex-col gap-1.5 p-3.5">
-          <div className="meta">
-            <span className="chip">{typeLabel}</span>
-            {l.isElective ? <span className="chip chip-accent">вибіркова</span> : null}
-            {l.meetingUrl ? <span className="chip chip-info">онлайн</span> : null}
+          <div className="flex items-center justify-between gap-2">
+            <div className="meta">
+              <span className="chip">{typeLabel}</span>
+              {mark ? (
+                <span className={cn('chip', mark.cls)} title={mark.title}>
+                  {mark.label}
+                </span>
+              ) : null}
+              {l.isElective ? <span className="chip chip-accent">вибіркова</span> : null}
+              {joinUrl ? <span className="chip chip-info">онлайн</span> : null}
+            </div>
+            {electiveBtn}
           </div>
           <span className="h3">{l.subjectName}</span>
-          {meta || l.meetingUrl ? (
+          {meta || joinUrl ? (
             <div className="flex items-center justify-between gap-2">
               <span className="small muted min-w-0" title={l.teacherNames.join(', ')}>
                 {meta}
               </span>
-              {l.meetingUrl ? (
+              {joinUrl ? (
                 <a
-                  href={l.meetingUrl}
+                  href={joinUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="btn btn-ghost btn-sm relative z-[1] -mr-2 flex-shrink-0 gap-1 px-2"
+                  className="btn btn-ghost btn-sm relative z-[1] -my-2.5 -mr-2 flex-shrink-0 gap-1 px-2"
                 >
-                  {meetingLabel(l.meetingUrl)}
+                  {meetingLabel(joinUrl)}
                   <Icon name="arrowUpRight" size={14} strokeWidth={2.2} />
                 </a>
               ) : null}
             </div>
           ) : null}
-          {electiveBtn}
+          {electiveError}
         </div>
       )}
     </div>
