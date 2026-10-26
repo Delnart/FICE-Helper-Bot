@@ -18,3 +18,11 @@ export function shortenName(full: string): string {
     .join('');
   return initials ? `${surname} ${initials}` : surname;
 }
+
+/** Two-letter avatar initials: "Коваль Марія" → "КМ", "Andrii" → "AN". */
+export function initials(full: string): string {
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  const letters = parts.length === 1 ? [...parts[0]].slice(0, 2) : parts.slice(0, 2).map((p) => [...p][0]);
+  return letters.join('').toUpperCase();
+}

@@ -6,12 +6,16 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
+import { ErrorState } from '../../../../components/Empty';
+import { SubjectTile } from '../../../../components/SubjectIcon';
+import { Section } from '../../../../components/ui/Section';
 import { haptic } from '../../../../lib/telegram';
 
 interface SubjectRow {
   _id: string;
   name: string;
   shortName?: string;
+  icon?: string;
 }
 
 interface CreateHwBody {
@@ -89,33 +93,50 @@ export default function NewHomeworkPage() {
   const subj = subjects.data?.find((s) => s._id === subjectId);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <PageHeader
-        title="Нове домашнє завдання"
+        title="Нове завдання"
         subtitle={subj ? (subj.shortName ?? subj.name) : undefined}
       />
 
-      <section className="card space-y-3">
+      {subjects.isError ? (
+        <ErrorState
+          error={subjects.error}
+          onRetry={() => subjects.refetch()}
+          title="Не вдалося завантажити дисципліни"
+        />
+      ) : null}
+
+      <section className="card-flat flex flex-col gap-3.5">
         <div>
-          <div className="label">Дисципліна</div>
-          <select
-            className="input"
-            value={subjectId}
-            onChange={(e) => setSubjectId(e.target.value)}
-            disabled={subjects.isLoading}
-          >
-            <option value="">— оберіть —</option>
-            {(subjects.data ?? []).map((s) => (
-              <option key={s._id} value={s._id}>
-                {s.shortName ?? s.name}
-              </option>
-            ))}
-          </select>
+          <label className="label" htmlFor="hw-subject">
+            Дисципліна
+          </label>
+          <div className="flex items-center gap-2.5">
+            {subj ? <SubjectTile name={subj.name} icon={subj.icon} /> : null}
+            <select
+              id="hw-subject"
+              className="input min-w-0 flex-1"
+              value={subjectId}
+              onChange={(e) => setSubjectId(e.target.value)}
+              disabled={subjects.isLoading}
+            >
+              <option value="">— оберіть —</option>
+              {(subjects.data ?? []).map((s) => (
+                <option key={s._id} value={s._id}>
+                  {s.shortName ?? s.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div>
-          <div className="label">Назва</div>
+          <label className="label" htmlFor="hw-title">
+            Назва
+          </label>
           <input
+            id="hw-title"
             className="input"
             placeholder="Наприклад: Лабораторна 3"
             value={title}
@@ -124,43 +145,63 @@ export default function NewHomeworkPage() {
         </div>
 
         <div>
-          <div className="label">Опис (необовʼязково)</div>
+          <label className="label" htmlFor="hw-desc">
+            Опис (необовʼязково)
+          </label>
           <textarea
-            className="input min-h-[96px]"
+            id="hw-desc"
+            className="textarea"
             placeholder="Що саме треба зробити, де знайти умову, тощо"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
         </div>
+      </section>
 
-        <div>
-          <div className="label">Дедлайн</div>
-          <div className="flex gap-2">
-            <input
-              type="date"
-              className="input flex-1"
-              value={deadlineDate}
-              onChange={(e) => setDeadlineDate(e.target.value)}
-            />
-            <input
-              type="time"
-              className="input w-28"
-              value={deadlineTime}
-              onChange={(e) => setDeadlineTime(e.target.value)}
-              disabled={!deadlineDate}
-            />
+      <Section title="Дедлайн">
+        <div className="card-flat">
+          <div className="flex gap-2.5">
+            <div className="min-w-0 flex-1">
+              <label className="label" htmlFor="hw-date">
+                Дата
+              </label>
+              <input
+                id="hw-date"
+                type="date"
+                className="input num"
+                value={deadlineDate}
+                onChange={(e) => setDeadlineDate(e.target.value)}
+              />
+            </div>
+            <div className="w-28">
+              <label className="label" htmlFor="hw-time">
+                Час
+              </label>
+              <input
+                id="hw-time"
+                type="time"
+                className="input num"
+                value={deadlineTime}
+                onChange={(e) => setDeadlineTime(e.target.value)}
+                disabled={!deadlineDate}
+              />
+            </div>
           </div>
-          {!deadlineDate ? (
-            <div className="text-xs text-ink-500 mt-1">Без дати — без дедлайну</div>
-          ) : null}
+          {!deadlineDate ? <div className="hint">Без дати — без дедлайну</div> : null}
         </div>
+      </Section>
 
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <div className="label">Балів (необовʼязково)</div>
+      <Section title="Оцінювання">
+        <div className="card-flat flex gap-2.5">
+          <div className="min-w-0 flex-1">
+            <label className="label" htmlFor="hw-points">
+              Балів (необовʼязково)
+            </label>
             <input
+              id="hw-points"
               type="number"
-              className="input"
+              inputMode="numeric"
+              className="input num"
               min={0}
               max={100}
               value={points}
@@ -170,11 +211,15 @@ export default function NewHomeworkPage() {
               }}
             />
           </div>
-          <div className="flex-1">
-            <div className="label">Команда (осіб)</div>
+          <div className="min-w-0 flex-1">
+            <label className="label" htmlFor="hw-team">
+              Команда (осіб)
+            </label>
             <input
+              id="hw-team"
               type="number"
-              className="input"
+              inputMode="numeric"
+              className="input num"
               min={0}
               max={50}
               value={teamSize}
@@ -185,17 +230,17 @@ export default function NewHomeworkPage() {
             />
           </div>
         </div>
-      </section>
+      </Section>
 
-      {error ? <div className="card text-sm text-danger">{error}</div> : null}
+      {error ? <div className="card-flat small text-bad">{error}</div> : null}
 
-      <div className="flex gap-2">
-        <button type="button" className="btn-secondary flex-1" onClick={() => router.back()}>
+      <div className="action-bar">
+        <button type="button" className="btn btn-secondary flex-1" onClick={() => router.back()}>
           Скасувати
         </button>
         <button
           type="button"
-          className="btn-primary flex-1"
+          className="btn btn-primary flex-[2]"
           onClick={submit}
           disabled={create.isPending}
         >

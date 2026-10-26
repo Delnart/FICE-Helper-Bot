@@ -1,59 +1,66 @@
 'use client';
 
 import Link from 'next/link';
+import type { Route } from 'next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { api, getActiveGroup } from '../../../lib/api';
+import { useState, type ReactNode } from 'react';
+import { api } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
+import { Section } from '../../../components/ui/Section';
+import { Sheet } from '../../../components/ui/Sheet';
+import { ErrorState, Loading } from '../../../components/Empty';
+import { Icon, type IconName } from '../../../components/icons';
 import { haptic } from '../../../lib/telegram';
-import { useIsTeacherOnly } from '../../../hooks/useMe';
+import { initials } from '../../../lib/name';
+import { cn } from '../../../lib/cn';
+import { useActiveGroup, useCanManage, useIsTeacherOnly, useMe, type Me } from '../../../hooks/useMe';
 
-interface MeDto {
-  _id: string;
-  telegramId: number;
-  firstName?: string;
-  lastName?: string;
-  username?: string;
-  avatarUrl?: string;
-  fullName?: string;
-  birthday?: string;
-  memberships: Array<{ groupId: string; role: string; groupName?: string }>;
+type Prefs = Record<'dmQueueOpen' | 'dmNextInQueue' | 'dmDeadlineTomorrow' | 'dmSwapRequests', boolean>;
+const PREF_KEYS: Array<keyof Prefs> = ['dmQueueOpen', 'dmNextInQueue', 'dmDeadlineTomorrow', 'dmSwapRequests'];
+
+// Mirror of the backend regex (UpdateProfileDto). Latin + Cyrillic letters,
+// space, dot, hyphen, apostrophes — anything else (digits, emoji, symbols)
+// is rejected. We pre-validate client-side so the user gets instant feedback
+// instead of a generic 400 from the server.
+const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
+function validateName(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return 'Вкажіть ПІБ.';
+  if (trimmed.length > 200) return 'ПІБ занадто довге (макс. 200 символів).';
+  if (!FULL_NAME_RE.test(trimmed)) {
+    return 'ПІБ має містити лише літери, пробіл, дефіс або апостроф. Емодзі та цифри не допускаються.';
+  }
+  return null;
 }
 
 export default function ProfilePage() {
   const qc = useQueryClient();
   const isTeacherOnly = useIsTeacherOnly();
-  const me = useQuery({ queryKey: ['me'], queryFn: () => api<MeDto>('/users/me') });
+  const canManage = useCanManage();
+  const activeGroupId = useActiveGroup();
+  const me = useMe();
+  const prefs = useQuery({
+    queryKey: ['prefs'],
+    queryFn: () => api<Prefs>('/notifications/prefs'),
+    enabled: !!me.data && !isTeacherOnly,
+  });
   const [fullName, setFullName] = useState('');
   const [birthday, setBirthday] = useState('');
   const [editing, setEditing] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (me.data) {
-      setFullName(me.data.fullName ?? '');
-      setBirthday(me.data.birthday ? me.data.birthday.slice(0, 10) : '');
-    }
-  }, [me.data]);
-
-  // Mirror of the backend regex (UpdateProfileDto). Latin + Cyrillic letters,
-  // space, dot, hyphen, apostrophes — anything else (digits, emoji, symbols)
-  // is rejected. We pre-validate client-side so the user gets instant feedback
-  // instead of a generic 400 from the server.
-  const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
-  const validateName = (name: string): string | null => {
-    const trimmed = name.trim();
-    if (trimmed.length === 0) return 'Вкажіть ПІБ.';
-    if (trimmed.length > 200) return 'ПІБ занадто довге (макс. 200 символів).';
-    if (!FULL_NAME_RE.test(trimmed)) {
-      return 'ПІБ має містити лише літери, пробіл, дефіс або апостроф. Емодзі та цифри не допускаються.';
-    }
-    return null;
-  };
+  // Fill the sheet when it opens, not on every ['me'] refetch — a background
+  // refetch must not overwrite what the user is typing.
+  function openEdit() {
+    setFullName(me.data?.fullName ?? '');
+    setBirthday(me.data?.birthday ? me.data.birthday.slice(0, 10) : '');
+    setNameError(null);
+    setEditing(true);
+  }
 
   const save = useMutation({
     mutationFn: () =>
-      api<MeDto>('/users/me', {
+      api<Me>('/users/me', {
         method: 'PATCH',
         json: { fullName: fullName.trim(), birthday: birthday || null },
       }),
@@ -80,209 +87,236 @@ export default function ProfilePage() {
     save.mutate();
   }
 
-  const activeGroupId = getActiveGroup();
-  const activeMembership = me.data?.memberships.find((m) => m.groupId === activeGroupId);
-  const display = fullName || [me.data?.firstName, me.data?.lastName].filter(Boolean).join(' ');
-  const initials = buildInitials(display);
+  function cancelEdit() {
+    setEditing(false);
+    setNameError(null);
+  }
+
+  if (me.isLoading || me.isError) {
+    return (
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Профіль" />
+        {me.isError ? <ErrorState error={me.error} onRetry={() => me.refetch()} /> : <Loading />}
+      </div>
+    );
+  }
+
+  const memberships = me.data?.memberships ?? [];
+  const activeMembership = memberships.find((m) => m.groupId === activeGroupId);
+  const display = me.data?.fullName || [me.data?.firstName, me.data?.lastName].filter(Boolean).join(' ');
+  const prefsOn = prefs.data ? PREF_KEYS.filter((k) => prefs.data[k]).length : null;
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-4">
       <PageHeader title="Профіль" />
 
-      <section className="card flex items-center gap-4">
-        <Avatar url={me.data?.avatarUrl} initials={initials} />
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold text-[17px] truncate">{display || '—'}</div>
-          {me.data?.username ? (
-            <div className="text-sm text-ink-500 truncate">@{me.data.username}</div>
-          ) : null}
+      <section className="card flex items-center gap-3.5">
+        {me.data?.avatarUrl ? (
+          <img src={me.data.avatarUrl} alt="" className="avatar h-16 w-16 object-cover" />
+        ) : (
+          <span className="avatar tile-accent h-16 w-16 text-[20px]">{initials(display)}</span>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <span className="truncate text-[18px] font-bold leading-tight">{display || '—'}</span>
+          {me.data?.username ? <span className="small muted truncate">@{me.data.username}</span> : null}
           {isTeacherOnly ? (
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              <span className="chip bg-accent-soft text-accent">Викладач</span>
+            <div className="flex flex-wrap gap-1.5">
+              <span className="chip chip-accent">Викладач</span>
             </div>
           ) : activeMembership ? (
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              <span className="chip">{roleLabel(activeMembership.role)}</span>
-              {activeMembership.groupName ? (
-                <span className="chip bg-accent-soft text-accent">{activeMembership.groupName}</span>
-              ) : null}
+            <div className="flex flex-wrap gap-1.5">
+              <span className="chip chip-accent">{roleLabel(activeMembership.role)}</span>
+              {activeMembership.groupName ? <span className="chip">{activeMembership.groupName}</span> : null}
             </div>
           ) : null}
         </div>
       </section>
 
-      <section className="card space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="font-medium">Особисті дані</div>
-          {!editing ? (
-            <button type="button" className="chip" onClick={() => setEditing(true)}>
-              Редагувати
-            </button>
+      <Section title="Особисті дані">
+        <div className="card-flat flex flex-col px-3.5 py-1">
+          <button type="button" className="row-plain w-full justify-between text-left" onClick={openEdit}>
+            <div className="flex min-w-0 flex-col">
+              <span className="tiny faint">ПІБ</span>
+              <span className="h3 truncate">{me.data?.fullName || '—'}</span>
+            </div>
+            <Icon name="chevronRight" className="chev" />
+          </button>
+          {!isTeacherOnly ? (
+            <>
+              <div className="divider" />
+              <button type="button" className="row-plain w-full justify-between text-left" onClick={openEdit}>
+                <div className="flex min-w-0 flex-col">
+                  <span className="tiny faint">День народження</span>
+                  <span className="h3">
+                    {me.data?.birthday ? `${formatBirthday(me.data.birthday)} · бот привітає в чаті` : '—'}
+                  </span>
+                </div>
+                <Icon name="chevronRight" className="chev" />
+              </button>
+            </>
           ) : null}
         </div>
-        {editing ? (
-          <>
-            <div>
-              <div className="label">ПІБ</div>
-              <input
-                className="input"
-                value={fullName}
-                maxLength={100}
-                onChange={(e) => {
-                  // Strip disallowed chars on input so the user sees instant
-                  // feedback instead of typing happily into a field that will
-                  // 400 on save. Keep only Latin/Cyrillic letters, space,
-                  // hyphen, apostrophes, dot. Same set as backend regex.
-                  const filtered = e.target.value.replace(
-                    /[^\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]/gu,
-                    '',
-                  );
-                  setFullName(filtered.slice(0, 100));
-                  if (nameError) setNameError(null);
-                }}
-                placeholder="Прізвище Імʼя По-батькові"
-              />
-              {nameError ? (
-                <div className="text-[12px] text-danger mt-1.5">{nameError}</div>
-              ) : (
-                <div className="text-[12px] text-ink-500 mt-1.5">
-                  Лише літери, пробіл, дефіс або апостроф. До 100 символів.
+      </Section>
+
+      {!isTeacherOnly && memberships.length > 0 ? (
+        <Section
+          title="Групи"
+          aside={
+            memberships.length > 1 ? (
+              <Link href="/select-group" className="-my-3 inline-flex min-h-11 items-center font-semibold text-accent-text">
+                Змінити активну
+              </Link>
+            ) : null
+          }
+        >
+          <div className="card-flat flex flex-col px-3.5 py-1">
+            {memberships.map((m, i) => {
+              const active = m.groupId === activeGroupId;
+              const body = (
+                <>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className={cn('radio', active && 'on')} aria-hidden="true" />
+                    <div className="flex min-w-0 flex-col">
+                      <span className="h3 truncate">{m.groupName ?? 'Група'}</span>
+                      <span className="tiny faint">
+                        {roleLabel(m.role)}
+                        {active ? ' · активна група' : ''}
+                      </span>
+                    </div>
+                  </div>
+                  {active ? <span className="chip chip-ok">активна</span> : null}
+                </>
+              );
+              return (
+                <div key={m.groupId}>
+                  {i > 0 ? <div className="divider" /> : null}
+                  {active ? (
+                    <div className="row-plain justify-between">{body}</div>
+                  ) : (
+                    <Link href="/select-group" className="row-plain justify-between">
+                      {body}
+                    </Link>
+                  )}
                 </div>
-              )}
-            </div>
-            {!isTeacherOnly ? (
-              <div>
-                <div className="label">День народження</div>
-                <input
-                  type="date"
-                  className="input"
-                  value={birthday}
-                  onChange={(e) => setBirthday(e.target.value)}
-                />
-                <div className="text-[12px] text-ink-500 mt-1.5">
-                  Привітаємо в груповому чаті у цей день.
-                </div>
-              </div>
-            ) : null}
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn-secondary flex-1"
-                onClick={() => {
-                  setEditing(false);
-                  setFullName(me.data?.fullName ?? '');
-                  setBirthday(me.data?.birthday ? me.data.birthday.slice(0, 10) : '');
-                }}
-              >
-                Скасувати
-              </button>
-              <button
-                className="btn-primary flex-1"
-                disabled={save.isPending || !fullName.trim()}
-                onClick={handleSave}
-              >
-                {save.isPending ? 'Зберігаємо…' : 'Зберегти'}
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="space-y-2 text-sm">
-            <Row label="ПІБ" value={me.data?.fullName ?? '—'} />
-            {!isTeacherOnly ? (
-              <Row
-                label="День народження"
-                value={me.data?.birthday ? new Date(me.data.birthday).toLocaleDateString('uk-UA') : '—'}
-              />
-            ) : null}
+              );
+            })}
           </div>
-        )}
-      </section>
-
-      {!isTeacherOnly && me.data?.memberships && me.data.memberships.length > 1 ? (
-        <section>
-          <div className="section-title">Інші групи</div>
-          <Link href="/select-group" className="card flex items-center justify-between hover:bg-paper-100">
-            <div>
-              <div className="font-medium">Змінити активну групу</div>
-              <div className="text-sm text-ink-500 mt-0.5">
-                Ви входите до {me.data.memberships.length} груп
-              </div>
-            </div>
-            <span className="chip">Обрати</span>
-          </Link>
-        </section>
+        </Section>
       ) : null}
 
-      <section>
-        <div className="section-title">Налаштування</div>
-        <div className="card divide-y divide-paper-300">
+      <Section title="Налаштування">
+        <div className="card-flat flex flex-col px-3.5 py-1">
           {/* Teachers don't get notification toggles — they don't subscribe to
               the student-side DMs (queue, deadlines, swaps). */}
           {!isTeacherOnly ? (
-            <Link href="/settings/notifications" className="flex items-center justify-between py-3 first:pt-0">
-              <span>Сповіщення</span>
-              <span className="text-ink-300">›</span>
-            </Link>
+            <SettingsRow
+              href="/settings/notifications"
+              icon="bell"
+              title="Сповіщення"
+              hint={prefsOn === null ? 'Що бот надсилає в ЛС' : `${prefsOn} з ${PREF_KEYS.length} увімкнено`}
+            />
           ) : null}
-          {!isTeacherOnly && canManageActive(activeMembership?.role) ? (
-            <Link href="/settings/group" className="flex items-center justify-between py-3 last:pb-0">
-              <span>Налаштування групи</span>
-              <span className="text-ink-300">›</span>
-            </Link>
+          {!isTeacherOnly && canManage ? (
+            <>
+              <div className="divider" />
+              <SettingsRow
+                href="/settings/group"
+                icon="sliders"
+                title="Налаштування групи"
+                hint={activeMembership?.groupName ?? 'Активна група'}
+              />
+            </>
           ) : null}
+          {!isTeacherOnly ? <div className="divider" /> : null}
+          <SettingsRow icon="help" title="Підтримка" hint={<>Напишіть боту <span className="font-mono">/support</span></>} />
+        </div>
+      </Section>
+
+      <button
+        type="button"
+        className="btn btn-ghost btn-block h-11 text-bad hover:text-bad"
+        onClick={() => {
+          const wa = typeof window !== 'undefined' ? window.Telegram?.WebApp : undefined;
+          if (wa?.close) wa.close();
+        }}
+      >
+        <Icon name="enter" size={18} />
+        Вийти з застосунку
+      </button>
+
+      <Sheet open={editing} onClose={cancelEdit} title="Особисті дані">
+        <div>
+          <div className="label">ПІБ</div>
+          <input
+            className="input"
+            value={fullName}
+            maxLength={100}
+            onChange={(e) => {
+              // Strip disallowed chars on input so the user sees instant
+              // feedback instead of typing happily into a field that will
+              // 400 on save. Keep only Latin/Cyrillic letters, space,
+              // hyphen, apostrophes, dot. Same set as backend regex.
+              const filtered = e.target.value.replace(/[^\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]/gu, '');
+              setFullName(filtered.slice(0, 100));
+              if (nameError) setNameError(null);
+            }}
+            placeholder="Прізвище Імʼя По-батькові"
+          />
+          {nameError ? (
+            <div className="hint text-bad">{nameError}</div>
+          ) : (
+            <div className="hint">Лише літери, пробіл, дефіс або апостроф. До 100 символів.</div>
+          )}
+        </div>
+        {!isTeacherOnly ? (
+          <div>
+            <div className="label">День народження</div>
+            <input type="date" className="input" value={birthday} onChange={(e) => setBirthday(e.target.value)} />
+            <div className="hint">Привітаємо в груповому чаті у цей день.</div>
+          </div>
+        ) : null}
+        <div className="flex gap-2">
+          <button type="button" className="btn btn-secondary flex-1" onClick={cancelEdit}>
+            Скасувати
+          </button>
           <button
             type="button"
-            onClick={() => {
-              const wa =
-                typeof window !== 'undefined' ? window.Telegram?.WebApp : undefined;
-              if (wa?.close) wa.close();
-            }}
-            className="flex items-center justify-between py-3 last:pb-0 first:pt-0 w-full text-left text-danger"
+            className="btn btn-primary flex-[2]"
+            disabled={save.isPending || !fullName.trim()}
+            onClick={handleSave}
           >
-            <span>Вийти з застосунку</span>
-            <span className="text-ink-300">›</span>
+            {save.isPending ? 'Зберігаємо…' : 'Зберегти'}
           </button>
         </div>
-      </section>
+      </Sheet>
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function SettingsRow({ href, icon, title, hint }: { href?: Route; icon: IconName; title: string; hint: ReactNode }) {
+  const body = (
+    <div className="flex min-w-0 items-center gap-3">
+      <span className="tile tile-soft h-9 w-9 rounded-[10px]">
+        <Icon name={icon} size={18} />
+      </span>
+      <div className="flex min-w-0 flex-col">
+        <span className="h3">{title}</span>
+        <span className="tiny faint truncate">{hint}</span>
+      </div>
+    </div>
+  );
+  if (!href) return <div className="row-plain">{body}</div>;
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-ink-500">{label}</span>
-      <span className="font-medium text-right truncate">{value}</span>
-    </div>
+    <Link href={href} className="row-plain justify-between">
+      {body}
+      <Icon name="chevronRight" className="chev" />
+    </Link>
   );
 }
 
-function Avatar({ url, initials }: { url?: string; initials: string }) {
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt=""
-        className="h-16 w-16 rounded-full object-cover border border-paper-300 flex-shrink-0"
-      />
-    );
-  }
-  return (
-    <div className="h-16 w-16 rounded-full bg-paper-200 text-ink-700 flex items-center justify-center font-semibold text-[20px] flex-shrink-0">
-      {initials || '—'}
-    </div>
-  );
-}
-
-function buildInitials(name: string | undefined): string {
-  if (!name) return '';
-  const parts = name.trim().split(/\s+/).slice(0, 2);
-  return parts.map((p) => p[0]?.toUpperCase() ?? '').join('');
-}
-
-function canManageActive(role: string | undefined): boolean {
-  if (!role) return false;
-  return role === 'group_head' || role === 'deputy_head' || role === 'admin';
+/** "2005-03-14T00:00:00Z" → "14 березня" (date-only value, read in UTC). */
+function formatBirthday(iso: string): string {
+  return new Date(iso.slice(0, 10)).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', timeZone: 'UTC' });
 }
 
 function roleLabel(r: string): string {

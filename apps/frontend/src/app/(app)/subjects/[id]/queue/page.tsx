@@ -1,13 +1,19 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../../../../lib/api';
 import { PageHeader } from '../../../../../components/PageHeader';
+import { Empty, ErrorState, Loading } from '../../../../../components/Empty';
+import { Icon } from '../../../../../components/icons';
+import { Sheet } from '../../../../../components/ui/Sheet';
+import { Section } from '../../../../../components/ui/Section';
+import { Toggle } from '../../../../../components/ui/Toggle';
 import { haptic } from '../../../../../lib/telegram';
 import { cn } from '../../../../../lib/cn';
+import { initials, shortenName } from '../../../../../lib/name';
 import { LabNumberInput } from '../../../../../components/LabNumberInput';
 
 type QueueStatus =
@@ -73,6 +79,8 @@ interface Member {
   username?: string;
 }
 
+type View = 'student' | 'manager' | 'teacher';
+
 const STATUS_LABEL: Record<QueueStatus, string> = {
   default: 'Очікує',
   preparing: 'Готується',
@@ -81,34 +89,78 @@ const STATUS_LABEL: Record<QueueStatus, string> = {
   missed: 'Пропустив',
   failed: 'Не здав',
 };
+const STATUSES = Object.keys(STATUS_LABEL) as QueueStatus[];
 
-const STATUS_CLASS: Record<QueueStatus, string> = {
-  default: 'bg-paper-200 text-ink-700',
-  preparing: 'bg-paper-200 text-ink-900 ring-1 ring-ink-300',
-  passing: 'bg-accent-soft text-accent',
-  passed: 'bg-success/10 text-success',
-  missed: 'bg-ink-100 text-ink-500',
-  failed: 'bg-danger/10 text-danger',
+const STATUS_CHIP: Record<QueueStatus, string> = {
+  default: 'chip',
+  preparing: 'chip chip-info',
+  passing: 'chip chip-accent',
+  passed: 'chip chip-ok',
+  missed: 'chip chip-warn',
+  failed: 'chip chip-bad',
 };
 
-/** Outline ring for an occupied slot, by occupant status. */
-const STATUS_RING: Record<QueueStatus, string> = {
-  default: 'border-paper-300',
-  preparing: 'border-ink-700 ring-2 ring-ink-700/15',
-  passing: 'border-accent ring-2 ring-accent/20',
-  passed: 'border-success ring-2 ring-success/20',
-  missed: 'border-paper-300',
-  failed: 'border-danger ring-2 ring-danger/20',
-};
+const MAX_SLOTS = 50;
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : 'Помилка');
+
+/** Refetch everything a queue write can change (inactive keys are only marked stale). */
+function resync(qc: QueryClient) {
+  for (const key of ['queue-by-subject', 'queue-incoming-swaps', 'queue-outgoing-swaps', 'queues-all']) {
+    void qc.invalidateQueries({ queryKey: [key] });
+  }
+}
+
+/**
+ * Every queue write goes through here: haptics, the server's message in `setError`
+ * (cleared on the next attempt) and a resync on success AND failure — a 409
+ * «Черга щойно змінилась» means the queue moved under us, so the user retries
+ * against fresh data. Callbacks live on the mutation, so they still run when an
+ * optimistic update unmounts the caller (pass a setter that outlives it).
+ */
+function useQueueWrite<V = void>(
+  mutationFn: (v: V) => Promise<unknown>,
+  setError: (msg: string | null) => void,
+  opts: { onMutate?: (v: V) => void; onSuccess?: () => void } = {},
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onMutate: (v: V) => {
+      setError(null);
+      opts.onMutate?.(v);
+    },
+    onSuccess: () => {
+      haptic('success');
+      resync(qc);
+      opts.onSuccess?.();
+    },
+    onError: (e) => {
+      haptic('error');
+      setError(errMsg(e));
+      resync(qc);
+    },
+  });
+}
+
+/** Ukrainian plural forms: plural(5, ['місце', 'місця', 'місць']) → 'місць'. */
+function plural(n: number, [one, few, many]: [string, string, string]): string {
+  const d = n % 10;
+  const h = n % 100;
+  if (d === 1 && h !== 11) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
+}
 
 export default function SubjectQueuePage() {
   const { id: subjectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
 
+  // The only polled query on this page (the VPS is small).
   const queue = useQuery({
     queryKey: ['queue-by-subject', subjectId],
     queryFn: () => api<QueueDetail>(`/queues/by-subject/${subjectId}`),
-    refetchInterval: 15_000,
+    refetchInterval: 30_000,
   });
 
   const queueId = queue.data?._id;
@@ -118,18 +170,30 @@ export default function SubjectQueuePage() {
     queryFn: () =>
       api<IncomingSwap[]>(`/queues/${queueId}/swaps/incoming`),
     enabled: !!queueId,
-    refetchInterval: 20_000,
   });
 
   const outgoing = useQuery({
     queryKey: ['queue-outgoing-swaps', queueId],
     queryFn: () => api<OutgoingSwap[]>(`/queues/${queueId}/swaps/outgoing`),
     enabled: !!queueId,
-    refetchInterval: 30_000,
   });
 
-  const [openSlot, setOpenSlot] = useState<number | null>(null);
+  // Swaps aren't polled: refetch them when the polled queue actually changed
+  // (structural sharing keeps queue.data's identity while nothing moved) and
+  // after every write (resync). cancelRefetch:false joins an in-flight fetch.
+  useEffect(() => {
+    if (!queueId) return;
+    for (const key of ['queue-incoming-swaps', 'queue-outgoing-swaps']) {
+      void qc.invalidateQueries({ queryKey: [key, queueId] }, { cancelRefetch: false });
+    }
+  }, [qc, queueId, queue.data]);
+
+  const [openSlot, setOpenSlot] = useState<{ index: number; admin: boolean } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSwap, setShowSwap] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [labFilter, setLabFilter] = useState<number | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
   // Teachers see queues read-only (per product spec: "тільки переглядати"):
   // they get no settings panel, no admin enroll, no enroll-self, no swap.
@@ -152,96 +216,139 @@ export default function SubjectQueuePage() {
     return out;
   }, [queue.data]);
 
-  const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['queue-by-subject', subjectId] });
-    if (queueId) {
-      qc.invalidateQueries({ queryKey: ['queue-incoming-swaps', queueId] });
-      qc.invalidateQueries({ queryKey: ['queue-outgoing-swaps', queueId] });
-    }
-  };
+  // "Звільнити місце" from the "Ваше місце" card.
+  const leave = useQueueWrite(
+    (slotIndex: number) => api(`/queues/${queueId}/entries/${slotIndex}`, { method: 'DELETE' }),
+    setListError,
+  );
 
   if (queue.isLoading) {
-    return <div className="card text-sm text-ink-500">Завантаження черги…</div>;
-  }
-  if (queue.isError) {
-    const msg = queue.error instanceof Error ? queue.error.message : 'Невідома помилка';
     return (
-      <div className="space-y-3">
-        <div className="card border-danger/40 space-y-2">
-          <div className="font-medium text-danger">Не вдалося завантажити чергу</div>
-          <div className="text-sm text-ink-700">{msg}</div>
-          <button
-            type="button"
-            className="btn-secondary text-sm"
-            onClick={() => queue.refetch()}
-          >
-            Спробувати ще
-          </button>
-        </div>
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Черга" />
+        <Loading label="Завантаження черги…" />
       </div>
     );
   }
-  if (!queue.data) {
-    // No data, no loading, no error — usually means the request never resolved.
-    // Surface it as a hint rather than spin forever.
+  if (queue.isError || !queue.data) {
+    // No data without an error usually means the request never resolved (offline):
+    // surface it with a retry rather than spin forever.
     return (
-      <div className="card text-sm text-ink-500 space-y-2">
-        <div>Черга не повернула жодних даних.</div>
-        <button
-          type="button"
-          className="btn-secondary text-sm"
-          onClick={() => queue.refetch()}
-        >
-          Перезавантажити
-        </button>
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Черга" />
+        <ErrorState
+          error={queue.error}
+          onRetry={() => queue.refetch()}
+          title={queue.isError ? 'Не вдалося завантажити чергу' : 'Черга не повернула жодних даних'}
+        />
       </div>
     );
   }
   const data = queue.data;
   const isOpen = data.status === 'open';
+  const view: View = isTeacher ? 'teacher' : canManage ? 'manager' : 'student';
 
-  const occupiedSlots = data.slots.filter((s) => s.occupants.length > 0).length;
+  const occupied = data.slots.filter((s) => s.occupants.length > 0);
+  const firstFree = data.slots.find((s) => s.occupants.length === 0);
+  const lastOccupied = occupied.length ? occupied[occupied.length - 1].slotIndex : 0;
+  const mine = myEntries[0] ?? null;
+  const enrolled = myEntries.length > 0;
+  const swapFrom = new Set((incoming.data ?? []).map((s) => s.fromSlotIndex));
+  const swapCandidates = occupied.filter(
+    (s) => !s.occupants.some((o) => o.userId === data.myUserId),
+  );
+  const ahead =
+    mine && (mine.occupant.status === 'default' || mine.occupant.status === 'preparing')
+      ? occupied.filter(
+          (s) =>
+            s.slotIndex < mine.slotIndex &&
+            ['default', 'preparing', 'passing'].includes(s.occupants[0].status),
+        ).length
+      : null;
+  const freeAction = isTeacher
+    ? undefined
+    : canManage
+      ? 'Записати'
+      : isOpen && (!enrolled || data.rules.allowMultipleEntriesPerUser)
+        ? 'Записатись'
+        : undefined;
+
+  const labs = Array.from(
+    new Set(data.slots.flatMap((s) => s.occupants.map((o) => o.labNumber))),
+  ).sort((a, b) => a - b);
+  const filtered =
+    labFilter == null
+      ? data.slots
+      : data.slots.filter((s) => s.occupants.some((o) => o.labNumber === labFilter));
+  // Trailing free places collapse behind "Показати решту".
+  const visible = showAll ? filtered : filtered.filter((s) => s.slotIndex <= lastOccupied + 1);
+  const hidden = filtered.length - visible.length;
+
+  const openSheet = (index: number, admin = false) => setOpenSlot({ index, admin });
+  const sheetSlot = openSlot ? data.slots.find((s) => s.slotIndex === openSlot.index) : undefined;
+
+  const row = (s: Slot) => (
+    <SlotRow
+      key={s.slotIndex}
+      slot={s}
+      view={view}
+      myUserId={data.myUserId}
+      queueId={data._id}
+      wantsSwap={swapFrom.has(s.slotIndex)}
+      freeAction={freeAction}
+      onOpen={() => openSheet(s.slotIndex)}
+      onError={setListError}
+    />
+  );
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <PageHeader
-        title={data.title}
-        subtitle={`${occupiedSlots}/${data.slotsCount} зайнято · ${isOpen ? 'відкрита' : 'закрита'}`}
+        title={isTeacher ? 'Черга на захист' : 'Черга на здачу'}
+        chips={
+          <>
+            {isOpen ? (
+              <span className="chip chip-ok">
+                <span className="dot bg-ok" />
+                відкрита
+              </span>
+            ) : (
+              <span className="chip">закрита</span>
+            )}
+            <span className="chip">
+              {occupied.length} із {data.slotsCount}{' '}
+              {plural(data.slotsCount, ['місця', 'місць', 'місць'])}
+            </span>
+            <span className="small muted">
+              {data.title}
+              {isTeacher ? ' · перегляд' : ''}
+            </span>
+          </>
+        }
         action={
           canManage ? (
             <button
               type="button"
-              className="btn-secondary h-9 px-3 text-sm"
-              onClick={() => setShowSettings((v) => !v)}
+              className="icon-btn"
+              aria-label="Налаштування черги"
+              onClick={() => setShowSettings(true)}
             >
-              {showSettings ? 'Закрити' : 'Налаштування'}
+              <Icon name="sliders" size={22} />
             </button>
           ) : undefined
         }
       />
 
+      {/* Incoming swaps */}
+      {/* Swap cards report errors to the page: an optimistic removal may unmount them. */}
+      {incoming.data && incoming.data.length > 0 ? (
+        <IncomingSwapsCard queueId={data._id} swaps={incoming.data} onError={setListError} />
+      ) : null}
+
       {/* My own outgoing swap requests — gives the user a way to cancel them
           (since "1 active per queue" cap blocks new ones until this one resolves). */}
       {outgoing.data && outgoing.data.length > 0 ? (
-        <OutgoingSwapsCard
-          queueId={data._id}
-          swaps={outgoing.data}
-          onChanged={refresh}
-        />
-      ) : null}
-
-      {/* Incoming swaps */}
-      {incoming.data && incoming.data.length > 0 ? (
-        <IncomingSwapsCard
-          queueId={data._id}
-          swaps={incoming.data}
-          onChanged={refresh}
-        />
-      ) : null}
-
-      {/* Settings (manage only) */}
-      {canManage && showSettings ? (
-        <SettingsPanel queue={data} onSaved={refresh} />
+        <OutgoingSwapsCard queueId={data._id} swaps={outgoing.data} onError={setListError} />
       ) : null}
 
       {/* Status banner — what happens next, and when. Only shown when the head
@@ -253,32 +360,211 @@ export default function SubjectQueuePage() {
         autoCloseAt={data.rules.autoCloseAt}
       />
 
-      {/* Slots grid */}
-      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-        {data.slots.map((s) => (
-          <SlotCard
-            key={s.slotIndex}
-            slot={s}
-            myUserId={data.myUserId}
-            onClick={() => setOpenSlot(s.slotIndex)}
-          />
-        ))}
-      </div>
+      {!isTeacher && mine ? (
+        <section className="now flex flex-col gap-3.5" aria-label="Ваше місце">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1.5">
+              <span className="now-eyebrow">Ваше місце</span>
+              <span className="num now-accent text-[48px] leading-[0.95]">№ {mine.slotIndex}</span>
+              {myEntries.length > 1 ? (
+                <span className="small now-muted">
+                  також {myEntries.slice(1).map((e) => `№${e.slotIndex}`).join(', ')}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-col items-end gap-1.5 text-right">
+              <button
+                type="button"
+                className="chip chip-btn bg-now-bg-2 text-now-ink"
+                aria-label="Змінити номер лаби"
+                onClick={() => openSheet(mine.slotIndex)}
+              >
+                лаб {mine.occupant.labNumber}
+                <Icon name="edit" size={14} />
+              </button>
+              <span className="small now-muted">
+                {STATUS_LABEL[mine.occupant.status].toLowerCase()}
+              </span>
+              {ahead != null ? <span className="small now-muted">перед вами {ahead}</span> : null}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn btn-now btn-md flex-1"
+              disabled={swapCandidates.length === 0}
+              onClick={() => setShowSwap(true)}
+            >
+              <Icon name="swap" size={18} />
+              Обмінятись
+            </button>
+            <button
+              type="button"
+              className="btn btn-now-ghost btn-md flex-1"
+              disabled={leave.isPending}
+              onClick={() => {
+                if (window.confirm(`Звільнити місце №${mine.slotIndex}?`)) leave.mutate(mine.slotIndex);
+              }}
+            >
+              Звільнити місце
+            </button>
+          </div>
+        </section>
+      ) : null}
 
-      {/* Slot modal */}
-      {openSlot !== null ? (
-        <SlotModal
+      {canManage ? (
+        <section className="flex gap-2">
+          <button
+            type="button"
+            className="btn btn-primary btn-md flex-1"
+            disabled={!firstFree}
+            onClick={() => firstFree && openSheet(firstFree.slotIndex, true)}
+          >
+            <Icon name="plus" size={18} />
+            Записати студента
+          </button>
+          {!enrolled && isOpen && firstFree ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-md flex-1"
+              onClick={() => openSheet(firstFree.slotIndex)}
+            >
+              Записатися
+            </button>
+          ) : null}
+        </section>
+      ) : !isTeacher && !enrolled && isOpen && firstFree ? (
+        <section className="card-soft flex items-center gap-3 px-3.5 py-3">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="h3">Ви ще не в черзі</span>
+            <span className="tiny faint">
+              Найближче вільне місце — <span className="num">№{firstFree.slotIndex}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary btn-md"
+            onClick={() => openSheet(firstFree.slotIndex)}
+          >
+            Записатися
+          </button>
+        </section>
+      ) : null}
+
+      {data.slots.length === 0 ? (
+        <Empty
+          title="Черга ще не створена"
+          hint="Староста ще не відкрив чергу для цієї дисципліни."
+          icon="users"
+        />
+      ) : isTeacher ? (
+        <>
+          <TeacherOverview slots={data.slots} />
+          {labs.length > 1 ? (
+            <div className="scroll-x -mx-4 flex items-center gap-1.5 px-4">
+              <span className="tiny faint mr-1 flex-shrink-0">Лаба:</span>
+              {[null, ...labs].map((l) => (
+                <button
+                  key={l ?? 'all'}
+                  type="button"
+                  className={cn('chip chip-btn flex-shrink-0', labFilter === l && 'chip-ink')}
+                  onClick={() => setLabFilter(l)}
+                >
+                  {l ?? 'Усі'}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <section aria-label="Список черги" className="card-flat flex flex-col px-3.5 py-1">
+            {visible.map((s, i) => (
+              <Fragment key={s.slotIndex}>
+                {i > 0 ? <div className="divider" /> : null}
+                {row(s)}
+              </Fragment>
+            ))}
+            {hidden > 0 ? (
+              <>
+                <div className="divider" />
+                <div className="row-plain justify-center">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowAll(true)}
+                  >
+                    Показати ще {hidden}
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </section>
+          <div className="card-soft flex items-center gap-3 px-3.5 py-3">
+            <Icon name="eye" className="flex-shrink-0 text-ink-3" />
+            <span className="small muted">
+              Режим перегляду: чергою керує староста. Оновлюється кожні 30 секунд.
+            </span>
+          </div>
+        </>
+      ) : (
+        <Section
+          title="Місця"
+          aside={
+            <span className="faint">
+              {canManage
+                ? 'торкніться статусу, щоб змінити'
+                : `оновлено о ${dayjs(queue.dataUpdatedAt).format('HH:mm')}`}
+            </span>
+          }
+        >
+          {listError ? <div className="card-flat small text-bad">{listError}</div> : null}
+          <div className="flex flex-col gap-2">
+            {visible.map(row)}
+            {hidden > 0 ? (
+              <button
+                type="button"
+                className="btn btn-outline btn-md btn-block"
+                onClick={() => setShowAll(true)}
+              >
+                Показати решту · {hidden}{' '}
+                {plural(hidden, ['вільне місце', 'вільні місця', 'вільних місць'])}
+              </button>
+            ) : null}
+          </div>
+        </Section>
+      )}
+
+      {openSlot && sheetSlot ? (
+        <SlotSheet
           queue={data}
-          slot={data.slots.find((s) => s.slotIndex === openSlot)!}
+          slot={sheetSlot}
+          adminFirst={openSlot.admin}
           canManage={canManage}
           isTeacher={isTeacher}
           isOpen={isOpen}
           onClose={() => setOpenSlot(null)}
-          onChanged={refresh}
-          mySlotIndex={myEntries[0]?.slotIndex ?? null}
+          mySlotIndex={mine?.slotIndex ?? null}
           allowMultipleEntries={data.rules.allowMultipleEntriesPerUser}
-          alreadyEnrolled={myEntries.length > 0}
+          alreadyEnrolled={enrolled}
         />
+      ) : null}
+
+      {showSwap && mine ? (
+        <SwapSheet
+          queueId={data._id}
+          mySlotIndex={mine.slotIndex}
+          candidates={swapCandidates}
+          onClose={() => setShowSwap(false)}
+        />
+      ) : null}
+
+      {canManage ? (
+        <Sheet open={showSettings} onClose={() => setShowSettings(false)} title="Налаштування черги">
+          <SettingsForm
+            queue={data}
+            isOpenNow={isOpen}
+            occupied={occupied.length}
+            onSaved={() => setShowSettings(false)}
+          />
+        </Sheet>
       ) : null}
     </div>
   );
@@ -346,17 +632,25 @@ function QueueStatusBanner({
 
   if (!title) return null;
 
-  const cls =
-    tone === 'warn'
-      ? 'card border-warn/40 bg-warn/5 text-ink-900'
-      : tone === 'closed'
-        ? 'card text-sm text-ink-500'
-        : 'card border-accent/40 bg-accent-soft text-ink-900';
-
   return (
-    <div className={cls}>
-      <div className="font-medium text-sm">{title}</div>
-      {hint ? <div className="text-xs text-ink-500 mt-0.5">{hint}</div> : null}
+    <div
+      className={cn(
+        'card-soft flex items-center gap-3 px-3.5 py-3',
+        tone === 'warn' && 'bg-warn-soft',
+        tone === 'info' && 'bg-accent-soft',
+      )}
+    >
+      <Icon
+        name="clock"
+        className={cn(
+          'flex-shrink-0',
+          tone === 'warn' ? 'text-warn' : tone === 'info' ? 'text-accent-text' : 'text-ink-3',
+        )}
+      />
+      <div className="flex min-w-0 flex-col">
+        <span className="h3">{title}</span>
+        {hint ? <span className="small muted">{hint}</span> : null}
+      </div>
     </div>
   );
 }
@@ -382,116 +676,336 @@ function formatRemaining(diffMs: number): string {
   return `${seconds} с`;
 }
 
-function SlotCard({
+function Avatar({ o, className }: { o: Occupant; className?: string }) {
+  return (
+    <span className={cn('avatar', className)}>
+      {o.avatarUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={o.avatarUrl} alt="" className="h-full w-full object-cover" />
+      ) : (
+        initials(o.fullName)
+      )}
+    </span>
+  );
+}
+
+function StatusChip({ status, className }: { status: QueueStatus; className?: string }) {
+  return (
+    <span className={cn(STATUS_CHIP[status], 'flex-shrink-0', className)}>
+      {status === 'passing' ? <span className="dot bg-accent" /> : null}
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+/** Head/deputy status control: a chip with a native picker on top, or a plain `.input` select. */
+function StatusSelect({
+  queueId,
+  slotIndex,
+  status,
+  variant,
+  onError,
+}: {
+  queueId: string;
+  slotIndex: number;
+  status: QueueStatus;
+  variant: 'chip' | 'input';
+  onError: (msg: string | null) => void;
+}) {
+  const setStatus = useQueueWrite(
+    (next: QueueStatus) =>
+      api(`/queues/${queueId}/entries/${slotIndex}`, {
+        method: 'PATCH',
+        json: { status: next },
+      }),
+    onError,
+  );
+
+  const select = (className: string) => (
+    <select
+      className={className}
+      aria-label="Статус"
+      value={status}
+      onChange={(e) => setStatus.mutate(e.target.value as QueueStatus)}
+      disabled={setStatus.isPending}
+    >
+      {STATUSES.map((k) => (
+        <option key={k} value={k}>
+          {STATUS_LABEL[k]}
+        </option>
+      ))}
+    </select>
+  );
+
+  if (variant === 'input') return select('input');
+  return (
+    <label className={cn(STATUS_CHIP[status], 'chip-btn relative flex-shrink-0 px-3')}>
+      {status === 'passing' ? <span className="dot bg-accent" /> : null}
+      {STATUS_LABEL[status]}
+      <Icon name="chevronDown" size={14} />
+      {select('absolute inset-0 h-full w-full cursor-pointer appearance-none text-base opacity-0')}
+    </label>
+  );
+}
+
+function SlotRow({
   slot,
+  view,
   myUserId,
-  onClick,
+  queueId,
+  wantsSwap,
+  freeAction,
+  onOpen,
+  onError,
 }: {
   slot: Slot;
+  view: View;
   myUserId: string;
-  onClick: () => void;
+  queueId: string;
+  /** The occupant of this slot asked to swap with me. */
+  wantsSwap: boolean;
+  /** Button label on a free place ("Записатись" / "Записати"), none for read-only. */
+  freeAction?: string;
+  onOpen: () => void;
+  onError: (msg: string | null) => void;
 }) {
-  const empty = slot.occupants.length === 0;
-  const mine = slot.occupants.some((o) => o.userId === myUserId);
-  const primary = slot.occupants[0];
+  const o = slot.occupants[0];
+  const me = slot.occupants.find((x) => x.userId === myUserId);
+  const plain = view === 'teacher';
+  const place = (accent: boolean) => (
+    <span className={cn('num w-7 flex-shrink-0 text-sm', accent ? 'text-accent-text' : 'text-ink-3')}>
+      {slot.slotIndex}
+    </span>
+  );
 
-  if (empty) {
+  if (!o) {
     return (
       <button
         type="button"
-        onClick={onClick}
-        className="aspect-[3/4] rounded-2xl border-2 border-dashed border-paper-300 bg-paper-50 hover:bg-paper-100 hover:border-ink-300 transition-colors flex flex-col items-center justify-center gap-1 text-ink-500"
+        onClick={onOpen}
+        className={cn('w-full text-left', plain ? 'row-plain' : 'row border-dashed bg-transparent')}
       >
-        <span className="text-2xl font-semibold leading-none">{slot.slotIndex}</span>
-        <span className="text-[11px]">Вільне місце</span>
+        {place(false)}
+        <span className="small faint flex-1">Вільне місце</span>
+        {freeAction ? <span className="btn btn-secondary btn-sm">{freeAction}</span> : null}
       </button>
     );
   }
 
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'aspect-[3/4] rounded-2xl bg-paper-50 border p-2.5 flex flex-col items-center text-center transition-colors active:scale-[0.98]',
-        STATUS_RING[primary.status],
-        !mine && 'hover:bg-paper-100',
-      )}
-    >
-      <div className="self-stretch flex items-center justify-between">
-        <span className="text-[11px] text-ink-500 font-medium">№{slot.slotIndex}</span>
-        {mine ? (
-          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0 rounded-full bg-ink-900 text-paper-50 leading-4">
-            Я
-          </span>
-        ) : slot.occupants.length > 1 ? (
-          <span className="text-[10px] chip py-0 h-4">+{slot.occupants.length - 1}</span>
-        ) : null}
-      </div>
-      <Avatar src={primary.avatarUrl} name={primary.fullName} className="mt-1.5" />
-      <div className="mt-1.5 text-[12px] font-semibold leading-tight line-clamp-2">
-        {primary.fullName || 'Без імені'}
-      </div>
-      <div className="mt-auto self-stretch flex items-center justify-between text-[11px]">
-        <span className="text-ink-500">Лаба №{primary.labNumber}</span>
-        <span className={cn('chip py-0 h-4 text-[10px]', STATUS_CLASS[primary.status])}>
-          {shortStatus(primary.status)}
-        </span>
-      </div>
-    </button>
-  );
-}
-
-function shortStatus(s: QueueStatus): string {
-  const m: Record<QueueStatus, string> = {
-    default: '·',
-    preparing: 'Готує',
-    passing: 'Здає',
-    passed: '✓',
-    missed: '∅',
-    failed: '×',
-  };
-  return m[s];
-}
-
-function Avatar({
-  src,
-  name,
-  className,
-  size = 'md',
-}: {
-  src?: string;
-  name: string;
-  className?: string;
-  size?: 'md' | 'lg';
-}) {
-  const dim = size === 'lg' ? 'w-14 h-14 text-base' : 'w-10 h-10 text-sm';
-  const initials = (name || '?')
-    .split(/\s+/)
+  const passing = o.status === 'passing';
+  const done = o.status === 'passed' || o.status === 'missed';
+  const extra = slot.occupants.length - 1;
+  const sub = [
+    `лаб ${o.labNumber}`,
+    me?.enrolledAt ? `записались ${dayjs(me.enrolledAt).format('HH:mm')}` : null,
+    wantsSwap ? 'хоче обмін з вами' : null,
+  ]
     .filter(Boolean)
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase() ?? '')
-    .join('');
-  if (src) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={src}
-        alt={name}
-        className={cn(dim, 'rounded-full object-cover bg-paper-200', className)}
+    .join(' · ');
+
+  const info = (
+    <>
+      {place(passing || !!me)}
+      {view === 'student' ? (
+        <Avatar
+          o={o}
+          className={me ? 'tile-accent' : passing ? 'bg-accent-soft text-accent-text' : undefined}
+        />
+      ) : null}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="h3 truncate">
+          {me ? 'Ви · ' : ''}
+          {o.fullName || 'Без імені'}
+          {extra > 0 ? ` +${extra}` : ''}
+        </span>
+        <span className={cn('tiny truncate', me ? 'text-ink-2' : 'faint')}>{sub}</span>
+      </div>
+    </>
+  );
+  const status =
+    view === 'manager' ? (
+      <StatusSelect
+        variant="chip"
+        queueId={queueId}
+        slotIndex={slot.slotIndex}
+        status={o.status}
+        onError={onError}
       />
+    ) : (
+      <StatusChip status={o.status} className={me && o.status === 'default' ? 'bg-surface' : undefined} />
+    );
+
+  if (plain) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={cn('row-plain w-full text-left', done && 'opacity-60')}
+      >
+        {info}
+        {status}
+      </button>
     );
   }
   return (
     <div
       className={cn(
-        dim,
-        'rounded-full bg-paper-200 text-ink-700 font-semibold flex items-center justify-center',
-        className,
+        'row',
+        done && 'opacity-60',
+        me
+          ? 'border-transparent bg-accent-soft'
+          : passing && 'border-accent shadow-[0_0_0_3px_var(--accent-soft)]',
       )}
     >
-      {initials || '?'}
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+        {info}
+      </button>
+      {status}
     </div>
+  );
+}
+
+/** Teacher read-only header: who is passing now, who is next, and counters. */
+function TeacherOverview({ slots }: { slots: Slot[] }) {
+  const occupants = slots.flatMap((s) => s.occupants);
+  const count = (...st: QueueStatus[]) => occupants.filter((o) => st.includes(o.status)).length;
+  const current = slots.find((s) => s.occupants[0]?.status === 'passing');
+  const p = current?.occupants[0];
+  const next = current
+    ? slots
+        .filter(
+          (s) =>
+            s.slotIndex > current.slotIndex &&
+            (s.occupants[0]?.status === 'default' || s.occupants[0]?.status === 'preparing'),
+        )
+        .slice(0, 2)
+        .map((s) => s.occupants[0])
+    : [];
+
+  return (
+    <>
+      {current && p ? (
+        <section className="now flex flex-col gap-3" aria-label="Зараз здає">
+          <div className="flex items-center gap-3.5">
+            <Avatar o={p} className="h-[52px] w-[52px] bg-now-bg-2 text-base text-now-ink" />
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="truncate text-xl font-bold leading-tight">{p.fullName || 'Без імені'}</span>
+              <div className="meta">
+                <span className="chip bg-now-accent text-now-accent-ink">
+                  <span className="dot bg-current" />
+                  здає
+                </span>
+                <span className="small now-muted">лабораторна {p.labNumber}</span>
+              </div>
+            </div>
+            <span className="num now-accent text-[28px]">№{current.slotIndex}</span>
+          </div>
+          {next.length ? (
+            <>
+              <div className="h-px bg-now-muted opacity-40" />
+              <div className="flex items-center justify-between gap-3">
+                <span className="small now-muted min-w-0 truncate">
+                  Далі:{' '}
+                  <span className="font-semibold text-now-ink">
+                    {shortenName(next[0].fullName) || 'Без імені'}
+                  </span>{' '}
+                  · лаб {next[0].labNumber}
+                </span>
+                {next[1] ? (
+                  <span className="small now-muted truncate">
+                    потім {shortenName(next[1].fullName) || 'Без імені'}
+                  </span>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </section>
+      ) : null}
+      <section className="grid grid-cols-3 gap-2">
+        {[
+          { value: count('passed'), label: 'здали', cls: 'text-ok' },
+          { value: count('default', 'preparing'), label: 'очікують', cls: 'text-accent-text' },
+          { value: slots.filter((s) => !s.occupants.length).length, label: 'вільно', cls: '' },
+        ].map((t) => (
+          <div key={t.label} className="card-flat flex flex-col gap-0.5 px-3.5 py-3">
+            <span className={cn('num text-[22px] leading-none', t.cls)}>{t.value}</span>
+            <span className="tiny faint">{t.label}</span>
+          </div>
+        ))}
+      </section>
+    </>
+  );
+}
+
+function useSwapRequest(
+  queueId: string,
+  mySlotIndex: number | null,
+  setError: (msg: string | null) => void,
+  onDone: () => void,
+) {
+  return useQueueWrite(
+    (targetSlotIndex: number) => {
+      if (mySlotIndex == null) throw new Error('Ви ще не у черзі');
+      return api(`/queues/${queueId}/entries/${mySlotIndex}/swap`, {
+        method: 'POST',
+        json: { targetSlotIndex },
+      });
+    },
+    setError,
+    { onSuccess: onDone },
+  );
+}
+
+/** "Обмінятись" from the "Ваше місце" card: pick whom to send a swap request to. */
+function SwapSheet({
+  queueId,
+  mySlotIndex,
+  candidates,
+  onClose,
+}: {
+  queueId: string;
+  mySlotIndex: number;
+  candidates: Slot[];
+  onClose: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const swap = useSwapRequest(queueId, mySlotIndex, setError, onClose);
+
+  return (
+    <Sheet open onClose={onClose} title="Обмін місцями">
+      <p className="small muted">
+        Оберіть, з ким помінятися місцем <span className="num">№{mySlotIndex}</span>. Людина отримає
+        запит і має його підтвердити.
+      </p>
+      {candidates.length ? (
+        <div className="card-soft flex flex-col px-3.5 py-1">
+          {candidates.map((s, i) => {
+            const o = s.occupants[0];
+            return (
+              <Fragment key={s.slotIndex}>
+                {i > 0 ? <div className="divider" /> : null}
+                <button
+                  type="button"
+                  className="row-plain w-full text-left"
+                  disabled={swap.isPending}
+                  onClick={() => swap.mutate(s.slotIndex)}
+                >
+                  <span className="num w-7 flex-shrink-0 text-sm text-ink-3">{s.slotIndex}</span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="h3 truncate">{o.fullName || 'Без імені'}</span>
+                    <span className="tiny faint">лаб {o.labNumber}</span>
+                  </div>
+                  <StatusChip status={o.status} className="bg-surface" />
+                </button>
+              </Fragment>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="small faint">У черзі поки немає з ким помінятися.</p>
+      )}
+      {error ? <div className="small text-bad">{error}</div> : null}
+    </Sheet>
   );
 }
 
@@ -504,50 +1018,42 @@ function Avatar({
 function OutgoingSwapsCard({
   queueId,
   swaps,
-  onChanged,
+  onError,
 }: {
   queueId: string;
   swaps: OutgoingSwap[];
-  onChanged: () => void;
+  onError: (msg: string | null) => void;
 }) {
   const qc = useQueryClient();
-  const cacheKey = ['queue-outgoing-swaps', queueId];
 
-  const cancel = useMutation({
-    mutationFn: (swapId: string) =>
-      api(`/queues/swaps/${swapId}`, { method: 'DELETE' }),
-    onMutate: (swapId) => {
-      qc.setQueryData<OutgoingSwap[]>(cacheKey, (prev) =>
-        (prev ?? []).filter((s) => s._id !== swapId),
-      );
+  // Optimistic: the row vanishes at once; a failure resyncs and brings it back.
+  const cancel = useQueueWrite(
+    (swapId: string) => api(`/queues/swaps/${swapId}`, { method: 'DELETE' }),
+    onError,
+    {
+      onMutate: (swapId) =>
+        qc.setQueryData<OutgoingSwap[]>(['queue-outgoing-swaps', queueId], (prev) =>
+          (prev ?? []).filter((s) => s._id !== swapId),
+        ),
     },
-    onSuccess: () => {
-      haptic('success');
-      onChanged();
-    },
-    onError: () => {
-      haptic('error');
-      void qc.invalidateQueries({ queryKey: cacheKey });
-    },
-  });
+  );
 
   return (
-    <section className="card border-paper-300 space-y-2">
-      <div className="text-[12px] uppercase tracking-wide text-ink-500 font-medium">
-        Ваші запити на обмін ({swaps.length})
-      </div>
+    <section className="card-flat flex flex-col px-3.5 pb-1 pt-3" aria-label="Ваші запити на обмін">
+      <span className="eyebrow">Ваші запити на обмін · {swaps.length}</span>
       {swaps.map((s) => (
-        <div key={s._id} className="flex items-center justify-between gap-2">
-          <div className="text-sm leading-snug min-w-0">
-            <div className="text-xs text-ink-500 mb-0.5">Чекає відповіді:</div>
-            <div className="font-medium truncate">{s.toFullName}</div>
-            <div className="text-xs text-ink-500 mt-0.5">
-              ваше <b>№{s.fromSlotIndex}</b> ↔ їхнє <b>№{s.toSlotIndex}</b>
-            </div>
+        <div key={s._id} className="row-plain">
+          <span className="avatar">{initials(s.toFullName)}</span>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="h3 truncate">{s.toFullName}</span>
+            <span className="tiny faint">
+              ваше <span className="num">№{s.fromSlotIndex}</span> ↔ їхнє{' '}
+              <span className="num">№{s.toSlotIndex}</span> · чекає відповіді
+            </span>
           </div>
           <button
             type="button"
-            className="btn-secondary h-8 px-3 text-xs flex-shrink-0 disabled:opacity-50"
+            className="btn btn-secondary btn-sm flex-shrink-0"
             disabled={cancel.isPending}
             onClick={() => {
               if (window.confirm(`Скасувати запит до ${s.toFullName}?`)) {
@@ -564,62 +1070,50 @@ function OutgoingSwapsCard({
 }
 
 /**
- * Section card for the receiver: shows every pending incoming swap, plus a
- * one-click "Decline all" button when there are 2+ — anti-spam relief.
+ * Receiver's incoming swaps: one card per request, plus a one-click
+ * "Decline all" button when there are 2+ — anti-spam relief.
  *
- * Optimistic UI: when receiver clicks Accept/Decline, the row disappears
+ * Optimistic UI: when receiver clicks Accept/Decline, the card disappears
  * immediately (we patch React Query's cache before the server responds).
  */
 function IncomingSwapsCard({
   queueId,
   swaps,
-  onChanged,
+  onError,
 }: {
   queueId: string;
   swaps: IncomingSwap[];
-  onChanged: () => void;
+  onError: (msg: string | null) => void;
 }) {
   const qc = useQueryClient();
   const cacheKey = ['queue-incoming-swaps', queueId];
 
   // Optimistically remove a swap from the local list so the row vanishes
-  // before the network round-trip completes.
+  // before the network round-trip completes. On failure useQueueWrite's
+  // resync refetches the truth (rollback).
   const removeFromCache = (swapId: string) => {
     qc.setQueryData<IncomingSwap[]>(cacheKey, (prev) =>
       (prev ?? []).filter((s) => s._id !== swapId),
     );
   };
-  const removeAllFromCache = () => {
-    qc.setQueryData<IncomingSwap[]>(cacheKey, []);
-  };
 
-  const declineAll = useMutation({
-    mutationFn: () =>
+  const declineAll = useQueueWrite(
+    () =>
       api<{ declined: number }>(`/queues/${queueId}/swaps/decline-all`, {
         method: 'POST',
       }),
-    onMutate: () => removeAllFromCache(),
-    onSuccess: () => {
-      haptic('success');
-      onChanged();
-    },
-    onError: () => {
-      haptic('error');
-      // Roll back: refetch the truth.
-      void qc.invalidateQueries({ queryKey: cacheKey });
-    },
-  });
+    onError,
+    { onMutate: () => qc.setQueryData<IncomingSwap[]>(cacheKey, []) },
+  );
 
   return (
-    <section className="card border-warn/40 bg-warn/5 space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[12px] uppercase tracking-wide text-warn font-medium">
-          Пропозиції обміну ({swaps.length})
-        </div>
-        {swaps.length > 1 ? (
+    <div className="flex flex-col gap-2">
+      {swaps.length > 1 ? (
+        <div className="flex items-center justify-between gap-3">
+          <span className="eyebrow">Пропозиції обміну · {swaps.length}</span>
           <button
             type="button"
-            className="text-xs text-ink-500 hover:text-danger underline disabled:opacity-50"
+            className="btn btn-ghost btn-sm"
             disabled={declineAll.isPending}
             onClick={() => {
               if (window.confirm(`Відхилити всі ${swaps.length} пропозицій обміну?`)) {
@@ -629,8 +1123,8 @@ function IncomingSwapsCard({
           >
             Відхилити всі
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {swaps.map((s) => (
         <SwapInvite
           key={s._id}
@@ -639,289 +1133,364 @@ function IncomingSwapsCard({
           // React Query immediately refetches and the still-pending row from
           // the backend reappears before the respond request finishes.
           onResolveStart={() => removeFromCache(s._id)}
-          onResolveDone={() => onChanged()}
-          onError={() => void qc.invalidateQueries({ queryKey: cacheKey })}
+          onError={onError}
         />
       ))}
-    </section>
+    </div>
   );
 }
 
 function SwapInvite({
   swap,
   onResolveStart,
-  onResolveDone,
   onError,
 }: {
   swap: IncomingSwap;
   /** Called BEFORE the network request — strip the row from the cache. */
   onResolveStart: () => void;
-  /** Called AFTER the request succeeds — refresh the broader queue. */
-  onResolveDone: () => void;
-  onError: () => void;
+  /** Must outlive this row: the optimistic strip unmounts it before the reply. */
+  onError: (msg: string | null) => void;
 }) {
-  const respond = useMutation({
-    mutationFn: (accept: boolean) =>
+  // The queue is resynced only after the backend answered (useQueueWrite),
+  // otherwise the refetch returns the still-pending row and undoes the strip.
+  const respond = useQueueWrite(
+    (accept: boolean) =>
       api(`/queues/swaps/${swap._id}/respond`, {
         method: 'POST',
         json: { accept },
       }),
-    // Optimistic strip — row disappears instantly.
-    onMutate: () => onResolveStart(),
-    // Only refresh the broader queue after the backend confirmed the change,
-    // otherwise the refetch returns the still-pending row and undoes our
-    // optimistic removal.
-    onSuccess: () => {
-      haptic('success');
-      onResolveDone();
-    },
-    onError: () => {
-      haptic('error');
-      onError();
-    },
-  });
+    onError,
+    { onMutate: onResolveStart },
+  );
   return (
-    <div className="flex items-center justify-between gap-2">
-      <div className="text-sm leading-snug">
-        <div className="font-medium">{swap.fromFullName}</div>
-        <div className="text-xs text-ink-500 mt-0.5">
-          їхнє місце <b>№{swap.fromSlotIndex}</b> → ваше <b>№{swap.toSlotIndex}</b>
+    <section className="card-soft flex flex-col gap-3 bg-accent-soft" aria-label="Запит на обмін">
+      <div className="flex items-center gap-3">
+        <span className="avatar bg-surface text-accent-text">{initials(swap.fromFullName)}</span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="h3">{swap.fromFullName} пропонує обмін</span>
+          <span className="small text-ink-2">
+            їхнє <span className="num text-[13px]">№{swap.fromSlotIndex}</span> ↔ ваше{' '}
+            <span className="num text-[13px]">№{swap.toSlotIndex}</span>
+          </span>
         </div>
       </div>
-      <div className="flex gap-1.5 flex-shrink-0">
+      <div className="flex gap-2">
         <button
-          className="btn-primary h-8 px-3 text-xs disabled:opacity-50"
+          type="button"
+          className="btn btn-primary btn-md flex-1"
           disabled={respond.isPending}
           onClick={() => respond.mutate(true)}
         >
-          Згоден
+          Прийняти
         </button>
         <button
-          className="btn-secondary h-8 px-3 text-xs disabled:opacity-50"
+          type="button"
+          className="btn btn-md flex-1 bg-surface text-ink"
           disabled={respond.isPending}
           onClick={() => respond.mutate(false)}
         >
-          Ні
+          Відхилити
         </button>
       </div>
-    </div>
-  );
-}
-
-function SettingsPanel({ queue, onSaved }: { queue: QueueDetail; onSaved: () => void }) {
-  const [slotsCount, setSlotsCount] = useState(queue.slotsCount);
-  const [isOpenRule, setIsOpenRule] = useState(queue.rules.isOpen);
-  const [allowMulti, setAllowMulti] = useState(queue.rules.allowMultipleEntriesPerUser);
-  const [allowGroup, setAllowGroup] = useState(queue.rules.allowGroupSubmission);
-  const [autoOpenAt, setAutoOpenAt] = useState(toLocalInput(queue.rules.autoOpenAt));
-  const [autoCloseAt, setAutoCloseAt] = useState(toLocalInput(queue.rules.autoCloseAt));
-  const [error, setError] = useState<string | null>(null);
-
-  const save = useMutation({
-    mutationFn: () =>
-      api(`/queues/${queue._id}`, {
-        method: 'PATCH',
-        json: {
-          slotsCount,
-          rules: {
-            isOpen: isOpenRule,
-            allowMultipleEntriesPerUser: allowMulti,
-            allowGroupSubmission: allowGroup,
-            autoOpenAt: autoOpenAt ? new Date(autoOpenAt).toISOString() : undefined,
-            autoCloseAt: autoCloseAt ? new Date(autoCloseAt).toISOString() : undefined,
-          },
-        },
-      }),
-    onSuccess: () => {
-      haptic('success');
-      onSaved();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
-
-  return (
-    <section className="card space-y-3">
-      <div className="font-medium">Налаштування черги</div>
-
-      <div>
-        <div className="label">Кількість місць (1–50)</div>
-        <input
-          type="range"
-          min={1}
-          max={50}
-          value={slotsCount}
-          onChange={(e) => setSlotsCount(Number(e.target.value))}
-          className="w-full"
-        />
-        <div className="text-sm text-ink-500">{slotsCount}</div>
-      </div>
-
-      <ToggleRow
-        title="Черга відкрита"
-        hint="Студенти можуть записатись"
-        checked={isOpenRule}
-        onChange={setIsOpenRule}
-      />
-      <ToggleRow
-        title="Дозволити декілька записів від одного студента"
-        hint="Можна займати кілька місць"
-        checked={allowMulti}
-        onChange={setAllowMulti}
-      />
-      <ToggleRow
-        title="Групова здача"
-        hint="Кілька людей на одне місце"
-        checked={allowGroup}
-        onChange={setAllowGroup}
-      />
-
-      <div>
-        <div className="label">Автоматично відкрити о</div>
-        <input
-          type="datetime-local"
-          className="input"
-          value={autoOpenAt}
-          onChange={(e) => setAutoOpenAt(e.target.value)}
-        />
-      </div>
-      <div>
-        <div className="label">Автоматично закрити о</div>
-        <input
-          type="datetime-local"
-          className="input"
-          value={autoCloseAt}
-          onChange={(e) => setAutoCloseAt(e.target.value)}
-        />
-      </div>
-
-      {error ? <div className="text-sm text-danger">{error}</div> : null}
-
-      <button
-        type="button"
-        className="btn-primary w-full"
-        disabled={save.isPending}
-        onClick={() => save.mutate()}
-      >
-        {save.isPending ? 'Зберігаємо…' : 'Зберегти'}
-      </button>
     </section>
   );
 }
 
-function SlotModal({
+function SettingsForm({
+  queue,
+  isOpenNow,
+  occupied,
+  onSaved,
+}: {
+  queue: QueueDetail;
+  /** Live status from the API (schedule already applied). */
+  isOpenNow: boolean;
+  occupied: number;
+  onSaved: () => void;
+}) {
+  const [slotsCount, setSlotsCount] = useState(queue.slotsCount);
+  const [allowMulti, setAllowMulti] = useState(queue.rules.allowMultipleEntriesPerUser);
+  const [allowGroup, setAllowGroup] = useState(queue.rules.allowGroupSubmission);
+  const [autoOpenOn, setAutoOpenOn] = useState(!!queue.rules.autoOpenAt);
+  const [autoOpenAt, setAutoOpenAt] = useState(toLocalInput(queue.rules.autoOpenAt));
+  const [autoCloseOn, setAutoCloseOn] = useState(!!queue.rules.autoCloseAt);
+  const [autoCloseAt, setAutoCloseAt] = useState(toLocalInput(queue.rules.autoCloseAt));
+  const [error, setError] = useState<string | null>(null);
+
+  // `openNow` set → "Відкрити/Закрити зараз"; undefined → plain save keeping rules.isOpen.
+  const save = useQueueWrite(
+    (openNow: boolean | undefined) => {
+      const iso = (on: boolean, v: string) => (on && v ? new Date(v).toISOString() : undefined);
+      const isPast = (v?: string) => !!v && new Date(v) <= new Date();
+      let openAt = iso(autoOpenOn, autoOpenAt);
+      let closeAt = iso(autoCloseOn, autoCloseAt);
+      // The backend lets an already-passed schedule time override isOpen, so drop it here.
+      if (openNow === false && isPast(openAt)) openAt = undefined;
+      if (openNow === true && isPast(closeAt)) closeAt = undefined;
+      return api(`/queues/${queue._id}`, {
+        method: 'PATCH',
+        json: {
+          slotsCount,
+          rules: {
+            isOpen: openNow ?? queue.rules.isOpen,
+            allowMultipleEntriesPerUser: allowMulti,
+            allowGroupSubmission: allowGroup,
+            autoOpenAt: openAt,
+            autoCloseAt: closeAt,
+          },
+        },
+      });
+    },
+    setError,
+    { onSuccess: onSaved },
+  );
+  const run = (openNow: boolean | undefined) => save.mutate(openNow);
+
+  return (
+    <>
+      <div className="card-soft flex items-center justify-between gap-3 px-3.5 py-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="h3">Кількість місць</span>
+          <span className="tiny faint">
+            від 1 до {MAX_SLOTS} · зайнято {occupied}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="icon-btn bg-surface"
+            aria-label="Менше"
+            disabled={slotsCount <= 1}
+            onClick={() => setSlotsCount((n) => Math.max(1, n - 1))}
+          >
+            <Icon name="minus" />
+          </button>
+          <span className="num w-11 text-center text-lg">{slotsCount}</span>
+          <button
+            type="button"
+            className="icon-btn bg-surface"
+            aria-label="Більше"
+            disabled={slotsCount >= MAX_SLOTS}
+            onClick={() => setSlotsCount((n) => Math.min(MAX_SLOTS, n + 1))}
+          >
+            <Icon name="plus" />
+          </button>
+        </div>
+      </div>
+
+      <div className="card-soft flex flex-col px-3.5 py-1">
+        <SwitchRow
+          title="Автовідкриття"
+          hint="Черга відкриється в заданий час"
+          checked={autoOpenOn}
+          onChange={setAutoOpenOn}
+        >
+          {autoOpenOn ? (
+            <input
+              type="datetime-local"
+              className="input mb-3"
+              aria-label="Автоматично відкрити о"
+              value={autoOpenAt}
+              onChange={(e) => setAutoOpenAt(e.target.value)}
+            />
+          ) : null}
+        </SwitchRow>
+        <div className="divider" />
+        <SwitchRow
+          title="Автозакриття"
+          hint="Черга закриється в заданий час"
+          checked={autoCloseOn}
+          onChange={setAutoCloseOn}
+        >
+          {autoCloseOn ? (
+            <input
+              type="datetime-local"
+              className="input mb-3"
+              aria-label="Автоматично закрити о"
+              value={autoCloseAt}
+              onChange={(e) => setAutoCloseAt(e.target.value)}
+            />
+          ) : null}
+        </SwitchRow>
+        <div className="divider" />
+        <SwitchRow
+          title="Кілька записів на студента"
+          hint="Можна займати кілька місць"
+          checked={allowMulti}
+          onChange={setAllowMulti}
+        />
+        <div className="divider" />
+        <SwitchRow
+          title="Командна здача"
+          hint="Одне місце на кілька людей"
+          checked={allowGroup}
+          onChange={setAllowGroup}
+        />
+      </div>
+
+      {error ? <div className="small text-bad">{error}</div> : null}
+
+      <div className="flex gap-2">
+        {isOpenNow ? (
+          <button
+            type="button"
+            className="btn btn-danger flex-1"
+            disabled={save.isPending}
+            onClick={() => run(false)}
+          >
+            Закрити зараз
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-secondary flex-1"
+            disabled={save.isPending}
+            onClick={() => run(true)}
+          >
+            Відкрити зараз
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn btn-primary flex-[1.4]"
+          disabled={save.isPending}
+          onClick={() => run(undefined)}
+        >
+          {save.isPending ? 'Зберігаємо…' : 'Зберегти'}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function SwitchRow({
+  title,
+  hint,
+  checked,
+  onChange,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="row-plain justify-between">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="h3">{title}</span>
+          {hint ? <span className="tiny faint">{hint}</span> : null}
+        </div>
+        <Toggle checked={checked} onChange={onChange} label={title} />
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SlotSheet({
   queue,
   slot,
+  adminFirst,
   canManage,
   isTeacher,
   isOpen,
   onClose,
-  onChanged,
   mySlotIndex,
   allowMultipleEntries,
   alreadyEnrolled,
 }: {
   queue: QueueDetail;
   slot: Slot;
+  /** Opened via "Записати студента": start with the admin-enroll form expanded. */
+  adminFirst: boolean;
   canManage: boolean;
   isTeacher: boolean;
   isOpen: boolean;
   onClose: () => void;
-  onChanged: () => void;
   mySlotIndex: number | null;
   allowMultipleEntries: boolean;
   alreadyEnrolled: boolean;
 }) {
   const empty = slot.occupants.length === 0;
   const myUserId = queue.myUserId;
+  // Lives here, not in the forms: a failed write resyncs the queue, which can
+  // swap the form for the occupant view (e.g. "Slot is already taken").
+  const [error, setError] = useState<string | null>(null);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-ink-900/40 backdrop-blur-sm">
-      <div
-        className="absolute inset-0"
-        onClick={onClose}
-        role="button"
-        aria-label="Закрити"
-      />
-      <div className="relative card w-full sm:max-w-md max-h-[85vh] overflow-y-auto rounded-b-none sm:rounded-2xl pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:pb-4">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <div className="font-semibold text-[16px]">Місце №{slot.slotIndex}</div>
-          <button
-            type="button"
-            className="chip"
-            onClick={onClose}
-            aria-label="Закрити"
-          >
-            ✕
-          </button>
-        </div>
-
-        {empty ? (
-          isTeacher ? (
-            <div className="text-sm text-ink-500">
-              Місце вільне. Викладачі переглядають чергу без можливості записатися.
-            </div>
-          ) : (
+    <Sheet
+      open
+      onClose={onClose}
+      title={
+        <>
+          Місце <span className="num">№{slot.slotIndex}</span>
+        </>
+      }
+    >
+      {empty ? (
+        isTeacher ? (
+          <p className="small muted">
+            Місце вільне. Викладачі переглядають чергу без можливості записатися.
+          </p>
+        ) : (
+          <EnrollForm
+            queueId={queue._id}
+            slotIndex={slot.slotIndex}
+            isOpen={isOpen}
+            disabled={!isOpen || (alreadyEnrolled && !allowMultipleEntries)}
+            disabledHint={
+              !isOpen
+                ? 'Черга закрита'
+                : alreadyEnrolled && !allowMultipleEntries
+                  ? 'Ви вже записані. Адміністратор має дозволити кілька записів.'
+                  : undefined
+            }
+            canManageEnrollAnyone={canManage}
+            initialAdmin={adminFirst}
+            setError={setError}
+            onDone={onClose}
+          />
+        )
+      ) : (
+        <>
+          {slot.occupants.map((o, i) => (
+            <OccupantBlock
+              key={(o.userId ?? '') + i}
+              queue={queue}
+              slot={slot}
+              occupant={o}
+              isMine={o.userId === myUserId}
+              canManage={canManage}
+              isTeacher={isTeacher}
+              mySlotIndex={mySlotIndex}
+              setError={setError}
+              onCloseModal={onClose}
+            />
+          ))}
+          {/* Allow extra group submission entry — never for teachers (read-only) */}
+          {queue.rules.allowGroupSubmission && isOpen && !isTeacher ? (
             <EnrollForm
               queueId={queue._id}
               slotIndex={slot.slotIndex}
               isOpen={isOpen}
-              disabled={!isOpen || (alreadyEnrolled && !allowMultipleEntries)}
-              disabledHint={
-                !isOpen
-                  ? 'Черга закрита'
-                  : alreadyEnrolled && !allowMultipleEntries
-                    ? 'Ви вже записані. Адміністратор має дозволити кілька записів.'
-                    : undefined
-              }
+              disabled={false}
+              title="Доєднатися до місця"
               canManageEnrollAnyone={canManage}
-              queueGroupId={queue.subjectId}
-              onDone={() => {
-                onChanged();
-                onClose();
-              }}
+              setError={setError}
+              onDone={onClose}
             />
-          )
-        ) : (
-          <div className="space-y-3">
-            {slot.occupants.map((o, i) => (
-              <OccupantBlock
-                key={(o.userId ?? '') + i}
-                queue={queue}
-                slot={slot}
-                occupant={o}
-                isMine={o.userId === myUserId}
-                canManage={canManage}
-                isTeacher={isTeacher}
-                mySlotIndex={mySlotIndex}
-                onChanged={() => {
-                  onChanged();
-                }}
-                onCloseModal={onClose}
-              />
-            ))}
-            {/* Allow extra group submission entry — never for teachers (read-only) */}
-            {queue.rules.allowGroupSubmission && isOpen && !isTeacher ? (
-              <EnrollForm
-                queueId={queue._id}
-                slotIndex={slot.slotIndex}
-                isOpen={isOpen}
-                disabled={false}
-                title="Доєднатися до місця"
-                canManageEnrollAnyone={canManage}
-                queueGroupId={queue.subjectId}
-                onDone={() => {
-                  onChanged();
-                  onClose();
-                }}
-              />
-            ) : null}
-          </div>
-        )}
-      </div>
-    </div>
+          ) : null}
+        </>
+      )}
+      {error ? (
+        <div className="small text-bad" role="alert">
+          {error}
+        </div>
+      ) : null}
+    </Sheet>
   );
 }
 
@@ -933,6 +1502,8 @@ function EnrollForm({
   disabledHint,
   title,
   canManageEnrollAnyone,
+  initialAdmin = false,
+  setError,
   onDone,
 }: {
   queueId: string;
@@ -942,66 +1513,55 @@ function EnrollForm({
   disabledHint?: string;
   title?: string;
   canManageEnrollAnyone: boolean;
-  queueGroupId: string;
+  initialAdmin?: boolean;
+  setError: (msg: string | null) => void;
   onDone: () => void;
 }) {
   const [labNumber, setLabNumber] = useState<number>(1);
-  const [error, setError] = useState<string | null>(null);
-  const [adminMode, setAdminMode] = useState(false);
+  const [adminMode, setAdminMode] = useState(initialAdmin);
 
-  const enroll = useMutation({
-    mutationFn: () =>
+  const enroll = useQueueWrite(
+    () =>
       api(`/queues/${queueId}/enroll`, {
         method: 'POST',
         json: { slotIndex, labNumber },
       }),
-    onSuccess: () => {
-      haptic('success');
-      onDone();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
+    setError,
+    { onSuccess: onDone },
+  );
 
   return (
-    <div className="space-y-3">
-      {title ? <div className="font-medium text-sm">{title}</div> : null}
-      {!isOpen ? (
-        <div className="text-sm text-ink-500">Черга закрита.</div>
-      ) : null}
+    <div className="flex flex-col gap-3">
+      {title ? <div className="h3">{title}</div> : null}
+      {!isOpen ? <div className="small muted">Черга закрита.</div> : null}
       <div>
         <div className="label">Номер лабораторної</div>
         <LabNumberInput value={labNumber} onChange={setLabNumber} disabled={disabled} />
+        {disabledHint ? <div className="hint">{disabledHint}</div> : null}
       </div>
-      {disabledHint ? <div className="text-xs text-ink-500">{disabledHint}</div> : null}
-      {error ? <div className="text-sm text-danger">{error}</div> : null}
       <button
         type="button"
-        className="btn-primary w-full"
+        className="btn btn-primary btn-block"
         disabled={disabled || enroll.isPending}
-        onClick={() => {
-          setError(null);
-          enroll.mutate();
-        }}
+        onClick={() => enroll.mutate()}
       >
         {enroll.isPending ? 'Записуємо…' : 'Записатися'}
       </button>
 
       {canManageEnrollAnyone ? (
         <>
-          <div className="border-t border-paper-300 my-1" />
+          <div className="divider" />
           {adminMode ? (
             <AdminEnrollSection
               queueId={queueId}
               slotIndex={slotIndex}
+              setError={setError}
               onDone={onDone}
             />
           ) : (
             <button
               type="button"
-              className="btn-secondary w-full text-sm"
+              className="btn btn-secondary btn-block"
               onClick={() => setAdminMode(true)}
             >
               Записати когось іншого
@@ -1016,16 +1576,17 @@ function EnrollForm({
 function AdminEnrollSection({
   queueId,
   slotIndex,
+  setError,
   onDone,
 }: {
   queueId: string;
   slotIndex: number;
+  setError: (msg: string | null) => void;
   onDone: () => void;
 }) {
   const [search, setSearch] = useState('');
   const [labNumber, setLabNumber] = useState<number>(1);
   const [picked, setPicked] = useState<Member | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const members = useQuery({
     queryKey: ['group-members'],
@@ -1036,25 +1597,19 @@ function AdminEnrollSection({
     m.fullName.toLowerCase().includes(search.trim().toLowerCase()),
   );
 
-  const enroll = useMutation({
-    mutationFn: () =>
+  const enroll = useQueueWrite(
+    () =>
       api(`/queues/${queueId}/admin-enroll`, {
         method: 'POST',
         json: { slotIndex, labNumber, userId: picked!._id },
       }),
-    onSuccess: () => {
-      haptic('success');
-      onDone();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
+    setError,
+    { onSuccess: onDone },
+  );
 
   return (
-    <div className="space-y-2 rounded-xl border border-paper-300 p-3">
-      <div className="font-medium text-sm">Записати когось</div>
+    <div className="card-flat flex flex-col gap-3 p-3.5">
+      <div className="h3">Записати когось</div>
       <input
         className="input"
         placeholder="Пошук за ПІБ"
@@ -1064,20 +1619,29 @@ function AdminEnrollSection({
           setPicked(null);
         }}
       />
-      {!picked ? (
-        <div className="max-h-40 overflow-y-auto space-y-1">
+      {members.isError ? (
+        <ErrorState
+          error={members.error}
+          onRetry={() => members.refetch()}
+          title="Не вдалося завантажити список групи"
+        />
+      ) : !picked ? (
+        <div className="flex max-h-56 flex-col overflow-y-auto">
           {filtered.slice(0, 30).map((m) => (
             <button
               key={m._id}
               type="button"
-              className="w-full text-left px-2.5 py-1.5 rounded-md hover:bg-paper-100 text-sm"
+              className="row-plain w-full text-left"
               onClick={() => {
                 setPicked(m);
                 setSearch(m.fullName);
               }}
             >
-              {m.fullName}
-              {m.username ? <span className="text-ink-500"> @{m.username}</span> : null}
+              <span className="avatar">{initials(m.fullName)}</span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="h3 truncate">{m.fullName}</span>
+                {m.username ? <span className="tiny faint">@{m.username}</span> : null}
+              </div>
             </button>
           ))}
         </div>
@@ -1086,15 +1650,11 @@ function AdminEnrollSection({
         <div className="label">Номер лаби</div>
         <LabNumberInput value={labNumber} onChange={setLabNumber} />
       </div>
-      {error ? <div className="text-sm text-danger">{error}</div> : null}
       <button
         type="button"
-        className="btn-primary w-full"
+        className="btn btn-primary btn-block"
         disabled={!picked || enroll.isPending}
-        onClick={() => {
-          setError(null);
-          enroll.mutate();
-        }}
+        onClick={() => enroll.mutate()}
       >
         {enroll.isPending ? 'Записуємо…' : 'Записати'}
       </button>
@@ -1110,7 +1670,7 @@ function OccupantBlock({
   canManage,
   isTeacher,
   mySlotIndex,
-  onChanged,
+  setError,
   onCloseModal,
 }: {
   queue: QueueDetail;
@@ -1120,113 +1680,68 @@ function OccupantBlock({
   canManage: boolean;
   isTeacher: boolean;
   mySlotIndex: number | null;
-  onChanged: () => void;
+  setError: (msg: string | null) => void;
   onCloseModal: () => void;
 }) {
   const queueId = queue._id;
   const slotIndex = slot.slotIndex;
   const [labNumber, setLabNumber] = useState<number>(occupant.labNumber);
-  const [error, setError] = useState<string | null>(null);
 
-  const setStatus = useMutation({
-    mutationFn: (status: QueueStatus) =>
-      api(`/queues/${queueId}/entries/${slotIndex}`, {
-        method: 'PATCH',
-        json: { status },
-      }),
-    onSuccess: () => {
-      haptic('success');
-      onChanged();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
-
-  const updateLab = useMutation({
-    mutationFn: () =>
+  const updateLab = useQueueWrite(
+    () =>
       api(`/queues/${queueId}/entries/${slotIndex}`, {
         method: 'PATCH',
         json: { labNumber },
       }),
-    onSuccess: () => {
-      haptic('success');
-      onChanged();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
+    setError,
+  );
 
-  const leave = useMutation({
-    mutationFn: () =>
-      api(`/queues/${queueId}/entries/${slotIndex}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      haptic('success');
-      onChanged();
-      onCloseModal();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
+  const leave = useQueueWrite(
+    () => api(`/queues/${queueId}/entries/${slotIndex}`, { method: 'DELETE' }),
+    setError,
+    { onSuccess: onCloseModal },
+  );
 
-  const swap = useMutation({
-    mutationFn: () => {
-      if (mySlotIndex == null) throw new Error('Ви ще не у черзі');
-      return api(`/queues/${queueId}/entries/${mySlotIndex}/swap`, {
-        method: 'POST',
-        json: { targetSlotIndex: slotIndex },
-      });
-    },
-    onSuccess: () => {
-      haptic('success');
-      onCloseModal();
-    },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : 'Помилка');
-      haptic('error');
-    },
-  });
+  const swap = useSwapRequest(queueId, mySlotIndex, setError, onCloseModal);
+
+  const canLeave = isMine && !isTeacher;
+  const canRemove = !isTeacher && canManage && !isMine;
+  const canSwap = !isTeacher && !isMine && mySlotIndex != null;
 
   return (
-    <div className="rounded-xl border border-paper-300 p-3 space-y-3">
+    <div className="card-flat flex flex-col gap-3 px-3.5 py-3">
       <div className="flex items-center gap-3">
-        <Avatar src={occupant.avatarUrl} name={occupant.fullName} size="lg" />
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold truncate">{occupant.fullName || 'Без імені'}</div>
-          {occupant.username ? (
-            <div className="text-xs text-ink-500">@{occupant.username}</div>
-          ) : null}
+        <Avatar o={occupant} className="h-12 w-12" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="h3 truncate">{occupant.fullName || 'Без імені'}</span>
+          {occupant.username ? <span className="tiny faint">@{occupant.username}</span> : null}
           {occupant.enrolledAt ? (
-            <div className="text-xs text-ink-500 mt-0.5">
-              записаний {dayjs(occupant.enrolledAt).format('DD.MM HH:mm')}
-            </div>
+            <span className="tiny faint">
+              записаний{' '}
+              <span className="num">{dayjs(occupant.enrolledAt).format('DD.MM HH:mm')}</span>
+            </span>
           ) : null}
         </div>
-        <span className={cn('chip', STATUS_CLASS[occupant.status])}>
-          {STATUS_LABEL[occupant.status]}
-        </span>
+        <StatusChip status={occupant.status} />
       </div>
 
       {/* Lab number editor (mine or manage) — never for teachers */}
       {!isTeacher && (isMine || canManage) ? (
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
-            <div className="label">Номер лаби</div>
-            <LabNumberInput value={labNumber} onChange={setLabNumber} />
+        <div>
+          <div className="label">Номер лаби</div>
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <LabNumberInput value={labNumber} onChange={setLabNumber} />
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={updateLab.isPending || labNumber === occupant.labNumber}
+              onClick={() => updateLab.mutate()}
+            >
+              Оновити
+            </button>
           </div>
-          <button
-            type="button"
-            className="btn-secondary h-10 px-3 text-sm"
-            disabled={updateLab.isPending || labNumber === occupant.labNumber}
-            onClick={() => updateLab.mutate()}
-          >
-            Оновити
-          </button>
         </div>
       ) : null}
 
@@ -1234,95 +1749,54 @@ function OccupantBlock({
       {!isTeacher && canManage ? (
         <div>
           <div className="label">Статус</div>
-          <select
-            className="input"
-            value={occupant.status}
-            onChange={(e) => setStatus.mutate(e.target.value as QueueStatus)}
-            disabled={setStatus.isPending}
-          >
-            {(Object.keys(STATUS_LABEL) as QueueStatus[]).map((k) => (
-              <option key={k} value={k}>
-                {STATUS_LABEL[k]}
-              </option>
-            ))}
-          </select>
+          <StatusSelect
+            variant="input"
+            queueId={queueId}
+            slotIndex={slotIndex}
+            status={occupant.status}
+            onError={setError}
+          />
         </div>
       ) : null}
 
-      {error ? <div className="text-sm text-danger">{error}</div> : null}
+      {canLeave || canRemove || canSwap ? (
+        <div className="flex flex-wrap gap-2">
+          {canLeave ? (
+            <button
+              type="button"
+              className="btn btn-danger btn-md flex-1"
+              disabled={leave.isPending}
+              onClick={() => leave.mutate()}
+            >
+              Виписатись
+            </button>
+          ) : null}
 
-      <div className="flex flex-wrap gap-2">
-        {isMine && !isTeacher ? (
-          <button
-            type="button"
-            className="btn-secondary text-danger flex-1"
-            disabled={leave.isPending}
-            onClick={() => leave.mutate()}
-          >
-            Виписатись
-          </button>
-        ) : null}
+          {canRemove ? (
+            <button
+              type="button"
+              className="btn btn-danger btn-md flex-1"
+              disabled={leave.isPending}
+              onClick={() => {
+                if (window.confirm('Видалити студента з цього місця?')) leave.mutate();
+              }}
+            >
+              Видалити
+            </button>
+          ) : null}
 
-        {!isTeacher && canManage && !isMine ? (
-          <button
-            type="button"
-            className="btn-secondary text-danger flex-1"
-            disabled={leave.isPending}
-            onClick={() => {
-              if (window.confirm('Видалити студента з цього місця?')) leave.mutate();
-            }}
-          >
-            Видалити
-          </button>
-        ) : null}
-
-        {!isTeacher && !isMine && mySlotIndex != null ? (
-          <button
-            type="button"
-            className="btn-primary flex-1"
-            disabled={swap.isPending}
-            onClick={() => swap.mutate()}
-          >
-            {swap.isPending ? 'Надсилаємо…' : 'Запропонувати обмін'}
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ToggleRow({
-  title,
-  hint,
-  checked,
-  onChange,
-}: {
-  title: string;
-  hint?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex-1 min-w-0">
-        <div className="font-medium text-sm">{title}</div>
-        {hint ? <div className="text-xs text-ink-500">{hint}</div> : null}
-      </div>
-      <button
-        type="button"
-        onClick={() => onChange(!checked)}
-        className={cn(
-          'relative h-7 w-12 rounded-full transition-colors flex-shrink-0',
-          checked ? 'bg-ink-900' : 'bg-paper-300',
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-paper-50 shadow transition-transform',
-            checked && 'translate-x-5',
-          )}
-        />
-      </button>
+          {canSwap ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-md flex-1"
+              disabled={swap.isPending}
+              onClick={() => swap.mutate(slotIndex)}
+            >
+              {swap.isPending ? 'Надсилаємо…' : 'Запропонувати обмін'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,13 +1,17 @@
 'use client';
 
 import dayjs from 'dayjs';
+import 'dayjs/locale/uk';
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
-import { Empty } from '../../../../components/Empty';
+import { Empty, ErrorState, Loading } from '../../../../components/Empty';
+import { Icon } from '../../../../components/icons';
+import { Sheet } from '../../../../components/ui/Sheet';
 import { haptic } from '../../../../lib/telegram';
 import { cn } from '../../../../lib/cn';
+import { useActiveMembership } from '../../../../hooks/useMe';
 
 type Status = 'present' | 'absent' | 'late' | 'excused' | 'unknown';
 
@@ -34,12 +38,14 @@ interface SavedRecord {
   entries: Array<{ userId: string; status: Status; note?: string }>;
 }
 
-const STATUSES: Array<{ k: Status; label: string; cls: string }> = [
-  { k: 'present', label: 'П', cls: 'bg-success/10 text-success' },
-  { k: 'late', label: 'Зап', cls: 'bg-accent-soft text-accent' },
-  { k: 'excused', label: 'Пов', cls: 'bg-warn/10 text-warn' },
-  { k: 'absent', label: 'Н', cls: 'bg-danger/10 text-danger' },
+const STATUSES: Array<{ k: Status; label: string; st: string; chip: string; dot: string; legend: string }> = [
+  { k: 'present', label: 'П', st: 'on-ok', chip: 'chip-ok', dot: 'bg-ok', legend: 'присутній' },
+  { k: 'absent', label: 'Н', st: 'on-bad', chip: 'chip-bad', dot: 'bg-bad', legend: 'відсутній' },
+  { k: 'late', label: 'Зап', st: 'on-warn', chip: 'chip-warn', dot: 'bg-warn', legend: 'запізнився' },
+  { k: 'excused', label: 'Пов', st: 'on-info', chip: 'chip-info', dot: 'bg-info', legend: 'поважна' },
 ];
+
+const LESSON_TYPE: Record<string, string> = { lecture: 'лек', practice: 'прак', lab: 'лаб', seminar: 'сем' };
 
 function dayOfWeekFromIso(iso: string): number {
   // Mon=1..Sun=7 → KPI: 1..6 (Sun excluded)
@@ -49,9 +55,12 @@ function dayOfWeekFromIso(iso: string): number {
 
 export default function MarkAttendancePage() {
   const qc = useQueryClient();
+  const membership = useActiveMembership();
   const [date, setDate] = useState(() => dayjs().format('YYYY-MM-DD'));
   const [selectedLesson, setSelectedLesson] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
+  const [dateSheet, setDateSheet] = useState(false);
+  const [search, setSearch] = useState('');
 
   // Determine current week parity from /schedule/now (which exposes weekType)
   const nowQ = useQuery({
@@ -88,14 +97,35 @@ export default function MarkAttendancePage() {
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
   }, [lessonsQ.data, date]);
 
-  // When user picks a lesson or date, hydrate statuses from saved (default unknown)
+  // Today: preselect the lesson in progress (else the last one that started), once per date —
+  // Home's "Відмітити присутніх" lands here without params.
+  const [autoPickedFor, setAutoPickedFor] = useState<string | null>(null);
   useEffect(() => {
-    if (!selectedLesson) return;
+    if (autoPickedFor === date || selectedLesson || !lessonsQ.data) return;
+    setAutoPickedFor(date);
+    if (date !== dayjs().format('YYYY-MM-DD')) return;
+    const hm = dayjs().format('HH:mm');
+    const started = dayLessons.filter((l) => l.startTime <= hm);
+    const pick = started.find((l) => hm < l.endTime) ?? started[started.length - 1];
+    if (pick) setSelectedLesson(pick._id);
+  }, [autoPickedFor, date, selectedLesson, lessonsQ.data, dayLessons]);
+
+  // Hydrate statuses from the saved record once per lesson+date (default unknown).
+  // Not on every savedQ/membersQ change: a background refetch (window focus,
+  // post-save invalidation) would otherwise wipe unsaved marks.
+  const lessonKey = selectedLesson ? `${selectedLesson}::${date}` : null;
+  const [hydratedFor, setHydratedFor] = useState<string | null>(null);
+  const ready = !!lessonKey && hydratedFor === lessonKey;
+  useEffect(() => {
+    if (!lessonKey || hydratedFor === lessonKey) return;
+    // Wait for a fresh copy: a cached record may be mid-refetch.
+    if (!savedQ.data || savedQ.isFetching || !membersQ.data) return;
     const initial: Record<string, Status> = {};
-    for (const m of membersQ.data ?? []) initial[m._id] = 'unknown';
-    for (const e of savedQ.data?.entries ?? []) initial[e.userId] = e.status;
+    for (const m of membersQ.data) initial[m._id] = 'unknown';
+    for (const e of savedQ.data.entries ?? []) initial[e.userId] = e.status;
     setStatuses(initial);
-  }, [selectedLesson, savedQ.data, membersQ.data]);
+    setHydratedFor(lessonKey);
+  }, [lessonKey, hydratedFor, savedQ.data, savedQ.isFetching, membersQ.data]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -113,116 +143,216 @@ export default function MarkAttendancePage() {
       haptic('success');
       qc.invalidateQueries({ queryKey: ['attendance'] });
       qc.invalidateQueries({ queryKey: ['attendance-stats'] });
+      qc.invalidateQueries({ queryKey: ['attendance-grid'] });
       qc.invalidateQueries({ queryKey: ['attendance-lesson', selectedLesson, date] });
     },
     onError: () => haptic('error'),
   });
 
+  const members = membersQ.data ?? [];
+
   function setAll(s: Status) {
     const next: Record<string, Status> = {};
-    for (const m of membersQ.data ?? []) next[m._id] = s;
+    for (const m of members) next[m._id] = s;
     setStatuses(next);
   }
 
-  const lesson = dayLessons.find((l) => l._id === selectedLesson) ?? null;
+  function setRestPresent() {
+    setStatuses((prev) => {
+      const next = { ...prev };
+      for (const m of members) if (!next[m._id] || next[m._id] === 'unknown') next[m._id] = 'present';
+      return next;
+    });
+  }
+
+  function pickDate(value: string) {
+    if (!value) return; // cleared native date input
+    setDate(value);
+    setSelectedLesson(null);
+    save.reset();
+  }
+
+  const counts = { present: 0, absent: 0, late: 0, excused: 0, unknown: 0 };
+  for (const m of members) counts[statuses[m._id] ?? 'unknown'] += 1;
+  const marked = members.length - counts.unknown;
+
+  const q = search.trim().toLowerCase();
+  const visibleMembers = q
+    ? members.filter((m) => m.fullName.toLowerCase().includes(q) || m.username?.toLowerCase().includes(q))
+    : members;
+
+  const dateLabel = dayjs(date).locale('uk').format('dd, D MMMM');
+  const subtitle = [dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1), membership?.groupName]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="Відмітити пари" subtitle={lesson ? lesson.subjectName : 'Оберіть пару'} />
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        title="Присутність"
+        subtitle={subtitle}
+        action={
+          <button type="button" className="btn btn-outline btn-sm" onClick={() => setDateSheet(true)}>
+            Інша дата
+          </button>
+        }
+      />
 
-      <section className="card space-y-3">
-        <div>
-          <div className="label">Дата</div>
-          <input
-            type="date"
-            className="input"
-            value={date}
-            onChange={(e) => {
-              setDate(e.target.value);
-              setSelectedLesson(null);
-            }}
-          />
+      {nowQ.isLoading || lessonsQ.isLoading ? (
+        <Loading label="Завантаження пар…" />
+      ) : nowQ.isError || lessonsQ.isError ? (
+        <ErrorState
+          title="Не вдалося завантажити розклад"
+          error={nowQ.error ?? lessonsQ.error}
+          onRetry={() => (nowQ.isError ? nowQ.refetch() : lessonsQ.refetch())}
+        />
+      ) : dayLessons.length === 0 ? (
+        <Empty
+          icon="calendar"
+          title="У цей день пар немає"
+          hint="Або розклад ще не синхронізовано."
+          action={
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setDateSheet(true)}>
+              Інша дата
+            </button>
+          }
+        />
+      ) : (
+        <div role="radiogroup" aria-label="Пара" className="flex flex-wrap gap-1.5">
+          {dayLessons.map((l) => {
+            const on = selectedLesson === l._id;
+            const type = l.type ? LESSON_TYPE[l.type] : undefined;
+            return (
+              <button
+                key={l._id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => {
+                  setSelectedLesson(l._id);
+                  if (!on) save.reset();
+                }}
+                className={cn('chip chip-btn h-10 max-w-full gap-1.5 px-3', on && 'chip-ink')}
+                title={l.subjectName}
+              >
+                <span className="num text-xs">{l.startTime}</span>
+                <span className="min-w-0 truncate">
+                  {l.subjectName}
+                  {type ? ` · ${type}` : ''}
+                </span>
+              </button>
+            );
+          })}
         </div>
-        <div>
-          <div className="label">Пара</div>
-          {lessonsQ.isLoading ? (
-            <div className="text-sm text-ink-500">Завантаження…</div>
-          ) : dayLessons.length === 0 ? (
-            <div className="text-sm text-ink-500">У цей день пар немає (або не синхронізовано розклад)</div>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {dayLessons.map((l) => (
+      )}
+
+      {!selectedLesson ? (
+        dayLessons.length > 0 ? (
+          <Empty icon="calendarCheck" title="Оберіть пару" hint="Після вибору зʼявиться список студентів." />
+        ) : null
+      ) : !ready && (savedQ.isError || membersQ.isError) ? (
+        <ErrorState
+          title="Не вдалося завантажити студентів"
+          error={savedQ.error ?? membersQ.error}
+          onRetry={() => {
+            if (savedQ.isError) void savedQ.refetch();
+            if (membersQ.isError) void membersQ.refetch();
+          }}
+        />
+      ) : !ready ? (
+        <Loading label="Завантаження списку…" />
+      ) : (
+        <>
+          <section className="card-flat flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-2">
+              <Counter value={counts.present} label="присутні" className="text-ok" />
+              <Counter value={counts.absent} label="відсутні" className="text-bad" />
+              <Counter value={counts.late} label="запізн." className="text-warn" />
+              <Counter value={counts.excused} label="поважні" className="text-info" />
+              <Counter value={counts.unknown} label="не відм." />
+            </div>
+            <div className="bar bar-accent" aria-hidden="true">
+              <span style={{ width: `${members.length ? (marked / members.length) * 100 : 0}%` }} />
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={setRestPresent}>
+                Решту — П
+              </button>
+              <span className="small muted ml-1">Усім:</span>
+              {STATUSES.map((s) => (
                 <button
-                  key={l._id}
+                  key={s.k}
                   type="button"
-                  onClick={() => setSelectedLesson(l._id)}
-                  className={cn(
-                    'px-3 h-9 rounded-full text-sm font-medium whitespace-nowrap transition-colors',
-                    selectedLesson === l._id
-                      ? 'bg-ink-900 text-paper-50'
-                      : 'bg-paper-200 text-ink-700 hover:bg-paper-300',
-                  )}
-                  title={l.subjectName}
+                  onClick={() => setAll(s.k)}
+                  className={cn('chip chip-btn px-3', s.chip)}
+                  aria-label={`Усім: ${s.legend}`}
                 >
-                  {l.startTime} · {l.subjectName}
+                  {s.label}
                 </button>
               ))}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {selectedLesson ? (
-        <>
-          <section className="card flex flex-wrap gap-2 items-center">
-            <span className="text-sm text-ink-500">Усім:</span>
-            {STATUSES.map((s) => (
-              <button
-                key={s.k}
-                type="button"
-                onClick={() => setAll(s.k)}
-                className={cn('chip', s.cls)}
-              >
-                {s.label}
+              <button type="button" onClick={() => setAll('unknown')} className="chip chip-btn px-3">
+                Скинути
               </button>
-            ))}
-            <button type="button" onClick={() => setAll('unknown')} className="chip">
-              Скинути
-            </button>
+            </div>
           </section>
 
-          {membersQ.isLoading ? (
-            <div className="card text-sm text-ink-500">Завантаження списку…</div>
-          ) : (membersQ.data ?? []).length === 0 ? (
-            <Empty title="У групі ще немає студентів" />
+          <div className="relative">
+            <label
+              htmlFor="mark-search"
+              className="absolute left-3.5 top-0 inline-flex h-11 items-center text-ink-3"
+              aria-label="Пошук"
+            >
+              <Icon name="search" size={18} />
+            </label>
+            <input
+              id="mark-search"
+              type="search"
+              className="input h-11 pl-[42px]"
+              placeholder="Знайти студента"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-x-2.5 gap-y-1.5 px-0.5">
+            {STATUSES.map((s) => (
+              <span key={s.k} className="tiny inline-flex items-center gap-[5px]">
+                <span className={cn('dot', s.dot)} />
+                {s.label} — {s.legend}
+              </span>
+            ))}
+          </div>
+
+          {members.length === 0 ? (
+            <Empty icon="users" title="У групі ще немає студентів" />
+          ) : visibleMembers.length === 0 ? (
+            <Empty icon="search" title="Нікого не знайдено" />
           ) : (
-            <div className="space-y-2">
-              {(membersQ.data ?? []).map((m) => (
-                <div key={m._id} className="card">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="font-medium truncate">{m.fullName}</div>
-                      {m.username ? (
-                        <div className="text-xs text-ink-500">@{m.username}</div>
-                      ) : null}
+            <section aria-label="Студенти" className="card-flat flex flex-col py-1 pl-3.5 pr-2.5">
+              {visibleMembers.map((m, i) => (
+                <div key={m._id}>
+                  {i > 0 ? <div className="divider" /> : null}
+                  <div className="row-plain justify-between gap-2">
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="h3 truncate">{m.fullName}</span>
+                      {m.username ? <span className="tiny faint truncate">@{m.username}</span> : null}
                     </div>
-                    <div className="flex gap-1.5 flex-shrink-0">
+                    <div className="flex flex-shrink-0 gap-1" role="group" aria-label={m.fullName}>
                       {STATUSES.map((s) => {
                         const active = statuses[m._id] === s.k;
                         return (
                           <button
                             key={s.k}
                             type="button"
+                            aria-pressed={active}
+                            aria-label={s.legend}
                             onClick={() =>
                               setStatuses((prev) => ({
                                 ...prev,
                                 [m._id]: active ? 'unknown' : s.k,
                               }))
                             }
-                            className={cn(
-                              'h-8 min-w-[2.5rem] px-2 rounded-md text-xs font-semibold transition-colors',
-                              active ? s.cls : 'bg-paper-200 text-ink-500 hover:bg-paper-300',
-                            )}
+                            className={cn('st', active && s.st)}
                           >
                             {s.label}
                           </button>
@@ -232,24 +362,54 @@ export default function MarkAttendancePage() {
                   </div>
                 </div>
               ))}
-            </div>
+            </section>
           )}
-
-          <div className="sticky bottom-20 z-20">
-            <button
-              type="button"
-              className="btn-primary w-full"
-              disabled={save.isPending || !selectedLesson}
-              onClick={() => save.mutate()}
-            >
-              {save.isPending ? 'Збереження…' : 'Зберегти'}
-            </button>
-            {save.isSuccess ? (
-              <div className="text-sm text-success mt-2 text-center">Збережено</div>
-            ) : null}
-          </div>
         </>
+      )}
+
+      <Sheet open={dateSheet} onClose={() => setDateSheet(false)} title="Інша дата">
+        <input
+          type="date"
+          className="input"
+          aria-label="Дата"
+          value={date}
+          onChange={(e) => pickDate(e.target.value)}
+        />
+        <button type="button" className="btn btn-primary btn-block" onClick={() => setDateSheet(false)}>
+          Готово
+        </button>
+      </Sheet>
+
+      {selectedLesson ? (
+        <div className="action-bar flex-col">
+          <button
+            type="button"
+            className="btn btn-primary btn-block"
+            disabled={save.isPending || !ready}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? 'Збереження…' : `Зберегти · ${marked} з ${members.length} відмічено`}
+          </button>
+          {save.isError ? (
+            <span className="tiny text-center font-semibold text-bad">
+              {(save.error as Error)?.message || 'Не вдалося зберегти'}
+            </span>
+          ) : save.isSuccess ? (
+            <span className="tiny text-center font-semibold text-ok">Збережено</span>
+          ) : (
+            <span className="tiny faint text-center">Невідмічені залишаться порожніми.</span>
+          )}
+        </div>
       ) : null}
+    </div>
+  );
+}
+
+function Counter({ value, label, className }: { value: number; label: string; className?: string }) {
+  return (
+    <div className="flex flex-col">
+      <span className={cn('num text-[20px] leading-none', className)}>{value}</span>
+      <span className="tiny faint">{label}</span>
     </div>
   );
 }

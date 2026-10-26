@@ -4,6 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
+import { ErrorState, Loading } from '../../../../components/Empty';
 
 interface QueueShape {
   subjectId: string;
@@ -23,5 +24,8 @@ export default function LegacyQueueRedirectPage() {
     }
   }, [q.data, router]);
 
-  return <div className="card text-sm text-ink-500">Відкриваємо чергу…</div>;
+  if (q.isError) {
+    return <ErrorState error={q.error} onRetry={() => q.refetch()} title="Не вдалося відкрити чергу" />;
+  }
+  return <Loading label="Відкриваємо чергу…" />;
 }

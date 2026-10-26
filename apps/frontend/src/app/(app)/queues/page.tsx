@@ -4,8 +4,9 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
-import { Empty } from '../../../components/Empty';
-import { cn } from '../../../lib/cn';
+import { Empty, ErrorState, Loading } from '../../../components/Empty';
+import { Icon } from '../../../components/icons';
+import { SubjectTile } from '../../../components/SubjectIcon';
 
 interface QueueCard {
   _id: string;
@@ -21,45 +22,47 @@ const STATUS_LABEL: Record<QueueCard['status'], string> = {
   open: 'Відкрита',
   closed: 'Закрита',
 };
-const STATUS_CLASS: Record<QueueCard['status'], string> = {
-  draft: 'bg-paper-200 text-ink-500',
-  open: 'bg-success/10 text-success',
-  closed: 'bg-ink-100 text-ink-500',
-};
 
 export default function QueuesPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['queues-all'],
     queryFn: () => api<QueueCard[]>('/queues'),
   });
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <PageHeader title="Черги" />
       {isLoading ? (
-        <div className="card text-sm text-ink-500">Завантаження…</div>
+        <Loading />
+      ) : isError ? (
+        <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити черги" />
       ) : data && data.length ? (
-        <div className="space-y-2">
+        <div className="flex flex-col">
           {data.map((q) => {
             const status = q.status ?? (q.rules?.isOpen ? 'open' : 'closed');
             return (
-              <Link
-                key={q._id}
-                href={`/subjects/${q.subjectId}/queue`}
-                className="card flex items-center justify-between hover:bg-paper-100"
-              >
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{q.title}</div>
+              <Link key={q._id} href={`/subjects/${q.subjectId}/queue`} className="row">
+                <SubjectTile name={q.subjectName ?? q.title} />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="h3 truncate">{q.title}</span>
                   {q.subjectName ? (
-                    <div className="text-sm text-ink-500 truncate">{q.subjectName}</div>
+                    <span className="tiny faint truncate">{q.subjectName}</span>
                   ) : null}
                 </div>
-                <span className={cn('chip', STATUS_CLASS[status])}>{STATUS_LABEL[status]}</span>
+                {status === 'open' ? (
+                  <span className="chip chip-ok">
+                    <span className="dot bg-ok" />
+                    {STATUS_LABEL[status]}
+                  </span>
+                ) : (
+                  <span className="chip">{STATUS_LABEL[status]}</span>
+                )}
+                <Icon name="chevronRight" className="chev" />
               </Link>
             );
           })}
         </div>
       ) : (
-        <Empty title="Черг ще немає" />
+        <Empty title="Черг ще немає" icon="users" />
       )}
     </div>
   );

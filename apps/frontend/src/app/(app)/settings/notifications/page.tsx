@@ -1,10 +1,14 @@
 'use client';
 
+import { Fragment } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
+import { Section } from '../../../../components/ui/Section';
+import { Toggle } from '../../../../components/ui/Toggle';
+import { ErrorState, Loading } from '../../../../components/Empty';
+import { Icon } from '../../../../components/icons';
 import { haptic } from '../../../../lib/telegram';
-import { cn } from '../../../../lib/cn';
 
 interface Prefs {
   dmQueueOpen: boolean;
@@ -13,12 +17,21 @@ interface Prefs {
   dmSwapRequests: boolean;
 }
 
-const LABELS: Array<{ k: keyof Prefs; title: string; hint: string }> = [
-  { k: 'dmQueueOpen', title: 'Відкриття черги', hint: 'Сповіщати у ЛС за 5 хв до відкриття' },
-  { k: 'dmNextInQueue', title: 'Ви наступний у черзі', hint: 'Коли попередній почав здавати' },
-  { k: 'dmDeadlineTomorrow', title: 'Дедлайн завтра', hint: 'Ранкове нагадування о 9:00' },
-  { k: 'dmSwapRequests', title: 'Запити на обмін', hint: 'Коли хтось пропонує обмін у черзі' },
+const GROUPS: Array<{ title: string; items: Array<{ k: keyof Prefs; title: string; hint: string }> }> = [
+  {
+    title: 'Черги',
+    items: [
+      { k: 'dmQueueOpen', title: 'Відкриття черги', hint: 'За 5 хв до відкриття — встигнете записатись' },
+      { k: 'dmNextInQueue', title: 'Ви наступний у черзі', hint: 'Коли попередній почав здавати' },
+      { k: 'dmSwapRequests', title: 'Запити на обмін', hint: 'Коли хтось пропонує помінятись місцями' },
+    ],
+  },
+  {
+    title: 'Завдання',
+    items: [{ k: 'dmDeadlineTomorrow', title: 'Дедлайн завтра', hint: 'Ранкове нагадування о 9:00, лише невиконані' }],
+  },
 ];
+const ALL_KEYS = GROUPS.flatMap((g) => g.items.map((i) => i.k));
 
 // Module-level constant so the queryKey reference is stable across renders.
 // React Query compares keys by deep equality, but reusing the same array also
@@ -27,7 +40,7 @@ const PREFS_QUERY_KEY = ['prefs'] as const;
 
 export default function NotificationsSettingsPage() {
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: PREFS_QUERY_KEY,
     queryFn: () => api<Prefs>('/notifications/prefs'),
   });
@@ -67,69 +80,75 @@ export default function NotificationsSettingsPage() {
     },
   });
 
-  return (
-    <div className="space-y-4">
-      <PageHeader title="Сповіщення" subtitle="Керуйте тим, що приходить вам у ЛС" />
-      <div className="card divide-y divide-paper-300">
-        {LABELS.map((l, i) => (
-          <Row
-            key={l.k}
-            title={l.title}
-            hint={l.hint}
-            checked={Boolean(data?.[l.k])}
-            onChange={(v) => save.mutate({ [l.k]: v } as Partial<Prefs>)}
-            first={i === 0}
-            last={i === LABELS.length - 1}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
+  const onCount = ALL_KEYS.filter((k) => Boolean(data?.[k])).length;
 
-function Row({
-  title,
-  hint,
-  checked,
-  onChange,
-  first,
-  last,
-}: {
-  title: string;
-  hint: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  first: boolean;
-  last: boolean;
-}) {
   return (
-    <div className={cn('flex items-center justify-between gap-3 py-3', first && 'pt-0', last && 'pb-0')}>
-      <div className="flex-1">
-        <div className="font-medium">{title}</div>
-        <div className="text-sm text-ink-500">{hint}</div>
-      </div>
-      <Toggle checked={checked} onChange={onChange} />
-    </div>
-  );
-}
+    <div className="flex flex-col gap-4">
+      <PageHeader title="Сповіщення" subtitle="Що бот надсилає вам в особисті" />
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative h-7 w-12 rounded-full transition-colors',
-        checked ? 'bg-ink-900' : 'bg-paper-300',
+      {isLoading ? (
+        <Loading />
+      ) : isError ? (
+        <ErrorState error={error} onRetry={() => refetch()} />
+      ) : (
+        <>
+          {save.isError ? (
+            <div role="alert" className="card-flat small text-bad">
+              {save.error.message}
+            </div>
+          ) : null}
+
+          <section className="card px-4 py-1">
+            {/* label: the whole row toggles the switch (switch alone is 30px tall) */}
+            <label className="row-plain cursor-pointer justify-between">
+              <span className="flex min-w-0 items-center gap-3">
+                <span className="tile tile-accent h-10 w-10 rounded-[12px]">
+                  <Icon name="bell" />
+                </span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="h3">Сповіщення в ЛС</span>
+                  <span className="tiny faint">
+                    <span className="num">{onCount}</span> з <span className="num">{ALL_KEYS.length}</span> увімкнено
+                  </span>
+                </span>
+              </span>
+              {/* Master switch: on while anything is on; flips every preference in one PATCH. */}
+              <Toggle
+                checked={onCount > 0}
+                label="Усі сповіщення"
+                onChange={(v) => save.mutate(Object.fromEntries(ALL_KEYS.map((k) => [k, v])) as Partial<Prefs>)}
+              />
+            </label>
+          </section>
+
+          {GROUPS.map((g) => (
+            <Section key={g.title} title={g.title}>
+              <div className="card-flat flex flex-col px-3.5 py-1">
+                {g.items.map((l, i) => (
+                  <Fragment key={l.k}>
+                    {i > 0 ? <div className="divider" /> : null}
+                    <label className="row-plain cursor-pointer justify-between">
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="h3">{l.title}</span>
+                        <span className="tiny faint">{l.hint}</span>
+                      </span>
+                      <Toggle
+                        checked={Boolean(data?.[l.k])}
+                        label={l.title}
+                        onChange={(v) => save.mutate({ [l.k]: v } as Partial<Prefs>)}
+                      />
+                    </label>
+                  </Fragment>
+                ))}
+              </div>
+            </Section>
+          ))}
+
+          <span className="tiny faint px-3 text-center">
+            Бот може писати вам в особисті лише після того, як ви самі натиснете «Start» у чаті з ним.
+          </span>
+        </>
       )}
-      aria-pressed={checked}
-    >
-      <span
-        className={cn(
-          'absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-paper-50 shadow transition-transform',
-          checked && 'translate-x-5',
-        )}
-      />
-    </button>
+    </div>
   );
 }

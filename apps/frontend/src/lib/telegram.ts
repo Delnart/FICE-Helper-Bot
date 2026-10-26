@@ -32,6 +32,11 @@ export interface TelegramWebApp {
     notificationOccurred(type: 'error' | 'success' | 'warning'): void;
     selectionChanged(): void;
   };
+  setHeaderColor?(color: string): void;
+  setBackgroundColor?(color: string): void;
+  setBottomBarColor?(color: string): void;
+  onEvent?(event: 'themeChanged' | 'activated' | 'deactivated', cb: () => void): void;
+  offEvent?(event: 'themeChanged' | 'activated' | 'deactivated', cb: () => void): void;
   ready(): void;
   expand(): void;
   close(): void;
@@ -70,4 +75,35 @@ export function haptic(kind: 'light' | 'medium' | 'success' | 'error' | 'selecti
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Mirror Telegram's color scheme onto `html.dark` and paint Telegram's own
+ * header/background in the app's `--bg`. Returns an unsubscribe function.
+ * Outside Telegram (platform "unknown") follows the OS preference.
+ */
+export function syncTheme(): () => void {
+  const wa = getWebApp();
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  const inTelegram = !!wa && wa.platform !== 'unknown';
+  const apply = () => {
+    const dark = inTelegram ? wa!.colorScheme === 'dark' : media.matches;
+    document.documentElement.classList.toggle('dark', dark);
+    if (!inTelegram) return;
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    try {
+      wa!.setHeaderColor?.(bg);
+      wa!.setBackgroundColor?.(bg);
+      wa!.setBottomBarColor?.(bg);
+    } catch {
+      /* older clients */
+    }
+  };
+  apply();
+  if (inTelegram) {
+    wa!.onEvent?.('themeChanged', apply);
+    return () => wa!.offEvent?.('themeChanged', apply);
+  }
+  media.addEventListener('change', apply);
+  return () => media.removeEventListener('change', apply);
 }

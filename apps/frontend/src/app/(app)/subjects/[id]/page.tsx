@@ -3,18 +3,35 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useParams } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
-import { PageHeader } from '../../../../components/PageHeader';
-import { Empty } from '../../../../components/Empty';
 import { cn } from '../../../../lib/cn';
+import { initials } from '../../../../lib/name';
+import { useMe } from '../../../../hooks/useMe';
+import { useTelegramBackButton } from '../../../../components/PageHeader';
+import { Empty, ErrorState, Loading } from '../../../../components/Empty';
+import { Icon, type IconName } from '../../../../components/icons';
+import { SubjectTile } from '../../../../components/SubjectIcon';
+import { Section } from '../../../../components/ui/Section';
+import {
+  LESSON_TYPE_LABEL,
+  dueSoon,
+  isLessonOf,
+  isQueueOpen,
+  pluralUk,
+  queueBySubject,
+  takenSlots,
+  type NowLesson,
+  type RawQueue,
+} from '../../../../components/subjects/helpers';
 
 interface SubjectDetail {
   _id: string;
   groupId: string;
   name: string;
   shortName?: string;
+  icon?: string;
   teachers: Array<{
     fullName: string;
     role: string;
@@ -33,12 +50,26 @@ interface SubjectDetail {
 }
 
 interface NowResponse {
-  current: { subjectName: string; startTime: string; endTime: string; room?: string } | null;
-  next: { subjectName: string; startTime: string; endTime: string; room?: string } | null;
+  current: NowLesson | null;
+  next: NowLesson | null;
 }
 
+interface HomeworkRow {
+  _id: string;
+  title: string;
+  deadline?: string;
+  done?: boolean;
+  points?: number;
+  teamSize?: number;
+}
+
+/** Queue entry statuses that no longer hold a place in line. */
+const QUEUE_DONE = ['passed', 'missed', 'failed'];
+
 export default function SubjectDetailPage() {
+  useTelegramBackButton();
   const { id } = useParams<{ id: string }>();
+  const me = useMe();
   const subject = useQuery({
     queryKey: ['subject', id],
     queryFn: () => api<SubjectDetail>(`/subjects/${id}`),
@@ -60,125 +91,273 @@ export default function SubjectDetailPage() {
     return `/attendance?${params.toString()}` as Route;
   }, [id, subject.data?.name, subject.data?.shortName]);
 
-  const isCurrent =
-    subject.data && now.data?.current && matchSubject(now.data.current.subjectName, subject.data);
-  const isNext =
-    subject.data && now.data?.next && matchSubject(now.data.next.subjectName, subject.data);
-  const liveLesson = isCurrent ? now.data?.current : isNext ? now.data?.next : null;
-  const liveLabel = isCurrent ? 'Зараз триває' : 'Наступна пара';
+  // Quick-card stats — same endpoints (and cache keys) as the queues / homework screens.
+  const queues = useQuery({
+    queryKey: ['queues-all'],
+    queryFn: () => api<RawQueue[]>('/queues'),
+    enabled: !!v?.queueVisible,
+  });
+  const hw = useQuery({
+    queryKey: ['subject-hw', id],
+    queryFn: () => api<HomeworkRow[]>('/homework', { query: { subjectId: id } }),
+    enabled: !!id && !!v?.homeworkVisible,
+  });
 
-  if (subject.isLoading || !subject.data) {
-    return <div className="card text-sm text-ink-500">Завантаження…</div>;
+  const isCurrent = !!subject.data && isLessonOf(now.data?.current, subject.data);
+  const isNext = !!subject.data && isLessonOf(now.data?.next, subject.data);
+  const liveLesson = isCurrent ? now.data?.current : isNext ? now.data?.next : null;
+
+  if (subject.isLoading) return <Loading />;
+  if (subject.isError || !subject.data) {
+    return (
+      <ErrorState
+        error={subject.error}
+        onRetry={() => subject.refetch()}
+        title="Не вдалося завантажити дисципліну"
+      />
+    );
   }
+  const s = subject.data;
+
+  const queue = queueBySubject(queues.data).get(id);
+  const queueOpen = !!queue && isQueueOpen(queue);
+  // Earliest live place when the queue allows several entries per user.
+  const myQueueEntry = queue?.entries
+    ?.filter((e) => e.userId === me.data?._id && !QUEUE_DONE.includes(e.status ?? ''))
+    .sort((a, b) => a.slotIndex - b.slotIndex)[0];
+  const ahead =
+    queue && myQueueEntry
+      ? new Set(
+          (queue.entries ?? [])
+            .filter((e) => e.slotIndex < myQueueEntry.slotIndex && !QUEUE_DONE.includes(e.status ?? ''))
+            .map((e) => e.slotIndex),
+        ).size
+      : 0;
+
+  const hwPending = (hw.data ?? []).filter((h) => !h.done && h.teamSize !== 0);
+  const hwNearest =
+    hwPending.find((h) => h.deadline && new Date(h.deadline) >= new Date()) ?? hwPending[0];
+  const hwSoon = dueSoon(hwNearest?.deadline);
+
+  const liveInfo = liveLesson
+    ? [
+        liveLesson.type ? LESSON_TYPE_LABEL[liveLesson.type] ?? liveLesson.type : null,
+        liveLesson.room,
+        isCurrent ? `до ${liveLesson.endTime}` : `${liveLesson.startTime}–${liveLesson.endTime}`,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+
+  const hasCards = !!(v?.queueVisible || v?.homeworkVisible || v?.linksVisible || isTeacher);
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        title={subject.data.shortName ?? subject.data.name}
-        subtitle={
-          subject.data.shortName && subject.data.name !== subject.data.shortName
-            ? subject.data.name
-            : undefined
-        }
-        action={
-          canManage ? (
-            <Link
-              href={`/subjects/${id}/edit`}
-              className="btn-secondary h-9 px-3 text-sm"
-              aria-label="Редагувати дисципліну"
-            >
-              Редагувати
-            </Link>
-          ) : undefined
-        }
-      />
-
-      {liveLesson ? (
-        <section
-          className={cn(
-            'card',
-            isCurrent ? 'bg-ink-900 text-paper-50 border-ink-900' : '',
-          )}
-        >
-          <div
-            className={cn(
-              'text-[12px] uppercase tracking-wide',
-              isCurrent ? 'text-paper-300/80' : 'text-ink-500',
-            )}
+    <div className="flex flex-col gap-4">
+      <header className="flex items-center gap-3.5">
+        <SubjectTile name={s.name} icon={s.icon} size="lg" tone="ink" />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="flex flex-col gap-0.5">
+            <h1 className="h1 break-words text-[20px]">{s.shortName ?? s.name}</h1>
+            {s.shortName && s.name !== s.shortName ? (
+              <div className="small muted font-medium">{s.name}</div>
+            ) : null}
+          </div>
+          {liveLesson ? (
+            <div className="meta">
+              <span className={cn('chip', isCurrent ? 'chip-lime' : 'chip-info')}>
+                {isCurrent ? 'зараз триває' : 'наступна пара'}
+              </span>
+              <span className="chip max-w-full">
+                <span className="truncate">{liveInfo}</span>
+              </span>
+            </div>
+          ) : null}
+        </div>
+        {canManage ? (
+          <Link
+            href={`/subjects/${id}/edit`}
+            className="icon-btn self-start"
+            aria-label="Редагувати дисципліну"
           >
-            {liveLabel}
-          </div>
-          <div className={cn('text-sm mt-1', isCurrent ? 'text-paper-300' : 'text-ink-500')}>
-            {liveLesson.startTime} – {liveLesson.endTime}
-            {liveLesson.room ? ` · ${liveLesson.room}` : ''}
-          </div>
-        </section>
-      ) : null}
+            <Icon name="edit" />
+          </Link>
+        ) : null}
+      </header>
 
-      {/* Teacher cards — collapsed by person: one card per teacher with all
-          their roles in this subject (Лектор · Практика · Лаборант). */}
-      {v?.teachersVisible ? (
-        subject.data.teachers.length > 0 ? (
-          <div className="space-y-2">
-            {mergeTeachers(subject.data.teachers).map((t) => (
-              <TeacherCard key={t.dedupeKey} t={t} />
-            ))}
-          </div>
-        ) : (
-          <Empty title="Викладачів ще не призначено" />
-        )
-      ) : null}
-
-      {/* Actions */}
-      <section className="space-y-2">
-        <h2 className="text-[15px] font-semibold tracking-tight">Дії</h2>
-        <div className="space-y-2">
+      {hasCards ? (
+        <section
+          aria-label="Розділи дисципліни"
+          className="grid grid-cols-2 gap-2.5 [&>*:last-child:nth-child(odd)]:col-span-2"
+        >
+          {v?.queueVisible ? (
+            <QuickCard
+              href={`/subjects/${id}/queue` as Route}
+              icon="list"
+              accent={queueOpen}
+              badge={
+                queue ? (
+                  <span className={cn('chip', queueOpen && 'chip-lime')}>
+                    {queueOpen ? 'відкрита' : 'закрита'}
+                  </span>
+                ) : null
+              }
+              value={myQueueEntry ? `№ ${myQueueEntry.slotIndex}` : undefined}
+              title="Черга на здачу"
+              sub={
+                queue
+                  ? `${takenSlots(queue)} із ${queue.slotsCount} місць` +
+                    (myQueueEntry ? ` · перед вами ${ahead}` : '')
+                  : 'Запис на лабораторні'
+              }
+            />
+          ) : null}
+          {v?.homeworkVisible ? (
+            <QuickCard
+              href={`/subjects/${id}/homework` as Route}
+              icon="checkSquare"
+              badge={hwSoon ? <span className="chip chip-warn">{hwSoon}</span> : null}
+              value={hw.data ? String(hwPending.length) : undefined}
+              title="Завдання"
+              sub={
+                hwNearest
+                  ? [
+                      hwNearest.title,
+                      hwNearest.points
+                        ? `${hwNearest.points} ${pluralUk(hwNearest.points, ['бал', 'бали', 'балів'])}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : hw.data?.length
+                    ? 'Усе виконано'
+                    : 'Перегляд та додавання'
+              }
+            />
+          ) : null}
+          {v?.linksVisible ? (
+            <QuickCard
+              href={`/subjects/${id}/links` as Route}
+              icon="link"
+              value={String(s.links.length)}
+              title="Посилання"
+              sub={
+                s.links.length
+                  ? s.links.map((l) => l.label).slice(0, 3).join(', ')
+                  : 'Поки немає'
+              }
+            />
+          ) : null}
           {/* Teacher-only actions (head/deputy use the global /attendance directly).
               Journal goes to the same /attendance grid as the head sees, but
               filtered to this subject — so teacher and head share the same data. */}
           {isTeacher ? (
             <>
-              <ActionRow href={journalHref} icon="Ж" title="Журнал відвідуваності" subtitle="Облік присутності студентів" />
-              <ActionRow
+              <QuickCard
+                href={journalHref}
+                icon="calendarCheck"
+                title="Журнал відвідуваності"
+                sub="Облік присутності студентів"
+              />
+              <QuickCard
                 href={`/subjects/${id}/students` as Route}
-                icon="С"
+                icon="users"
                 title="Список студентів"
-                subtitle="Контакти у Telegram"
+                sub="Контакти у Telegram"
               />
             </>
           ) : null}
+        </section>
+      ) : null}
 
-          {v?.linksVisible ? (
-            <ActionRow
+      {/* Teachers — collapsed by person: one row per teacher with all
+          their roles in this subject (Лектор · Практика · Лаборант). */}
+      {v?.teachersVisible ? (
+        <Section title="Викладачі">
+          {s.teachers.length > 0 ? (
+            <div>
+              {mergeTeachers(s.teachers).map((t) => (
+                <TeacherRow key={t.dedupeKey} t={t} />
+              ))}
+            </div>
+          ) : (
+            <Empty title="Викладачів ще не призначено" icon="users" />
+          )}
+        </Section>
+      ) : null}
+
+      {v?.linksVisible && s.links.length ? (
+        <Section
+          title="Корисні посилання"
+          aside={
+            <Link
               href={`/subjects/${id}/links` as Route}
-              icon="L"
-              title="Корисні посилання"
-              subtitle={
-                subject.data.links.length
-                  ? subject.data.links.map((l) => l.label).slice(0, 3).join(', ')
-                  : 'Поки немає'
-              }
-            />
-          ) : null}
-          {v?.queueVisible ? (
-            <ActionRow
-              href={`/subjects/${id}/queue` as Route}
-              icon="Q"
-              title="Черга на здачу"
-              subtitle="Запис на лабораторні"
-            />
-          ) : null}
-          {v?.homeworkVisible ? (
-            <ActionRow
-              href={`/subjects/${id}/homework` as Route}
-              icon="H"
-              title="Домашнє завдання"
-              subtitle="Перегляд та додавання"
-            />
-          ) : null}
-        </div>
-      </section>
+              className="-my-[13px] inline-block py-[13px] font-semibold text-accent-text"
+            >
+              Усі {s.links.length}
+            </Link>
+          }
+        >
+          <div className="card-flat flex flex-col px-3.5 py-1">
+            {s.links.slice(0, 3).map((l, i) => {
+              const meta = linkMeta(l.url);
+              return (
+                <Fragment key={`${i}-${l.url}`}>
+                  {i ? <div className="divider" /> : null}
+                  <a href={meta.href} target="_blank" rel="noopener noreferrer" className="row-plain">
+                    <span className="subj subj-sm">
+                      <Icon name="link" strokeWidth={1.9} />
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="h3 truncate">{l.label}</span>
+                      {meta.host ? <span className="tiny faint truncate">{meta.host}</span> : null}
+                    </div>
+                    <Icon name="arrowUpRight" size={18} className="chev" />
+                  </a>
+                </Fragment>
+              );
+            })}
+          </div>
+        </Section>
+      ) : null}
     </div>
+  );
+}
+
+function QuickCard({
+  href,
+  icon,
+  title,
+  sub,
+  value,
+  badge,
+  accent,
+}: {
+  href: Route;
+  icon: IconName;
+  title: string;
+  sub?: string;
+  value?: string;
+  badge?: ReactNode;
+  accent?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        'card-flat flex min-h-[128px] flex-col justify-between gap-3.5 p-3.5',
+        accent && 'border-accent bg-accent text-accent-ink',
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <Icon name={icon} size={22} className={accent ? undefined : 'text-accent-text'} />
+        {badge}
+      </div>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        {value ? <span className="num text-[22px] leading-none">{value}</span> : null}
+        <span className="h3">{title}</span>
+        {sub ? <span className={cn('tiny line-clamp-2', !accent && 'faint')}>{sub}</span> : null}
+      </div>
+    </Link>
   );
 }
 
@@ -191,16 +370,9 @@ interface MergedTeacher {
 
 /**
  * Group teacher entries by person (username or fullName) so a single instructor
- * with multiple roles in this subject shows up as one card with a list of roles.
+ * with multiple roles in this subject shows up as one row with a list of roles.
  */
-function mergeTeachers(
-  teachers: Array<{
-    fullName: string;
-    role: string;
-    roleInSubject?: string;
-    telegramUsername?: string;
-  }>,
-): MergedTeacher[] {
+function mergeTeachers(teachers: SubjectDetail['teachers']): MergedTeacher[] {
   const ROLE_ORDER = ['lecturer', 'practice', 'lab'];
   const map = new Map<string, MergedTeacher>();
   for (const t of teachers) {
@@ -220,111 +392,51 @@ function mergeTeachers(
   }
   // Stable role order (lecturer first, then practice, then lab)
   for (const t of map.values()) {
-    t.roles.sort(
-      (a, b) => (ROLE_ORDER.indexOf(a) + 100) - (ROLE_ORDER.indexOf(b) + 100),
-    );
+    t.roles.sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b));
   }
   return [...map.values()];
 }
 
-function TeacherCard({ t }: { t: MergedTeacher }) {
-  const tgUrl = t.telegramUsername
-    ? `https://t.me/${t.telegramUsername.replace(/^@/, '')}`
-    : null;
+function TeacherRow({ t }: { t: MergedTeacher }) {
+  const username = t.telegramUsername?.replace(/^@/, '');
+  const tgUrl = username ? `https://t.me/${username}` : null;
 
-  const handleClick = (e: React.MouseEvent) => {
-    if (tgUrl) {
-      window.open(tgUrl, '_blank', 'noopener,noreferrer');
-      e.preventDefault();
-    }
-  };
-
-  const hasContact = !!tgUrl;
-
-  return (
-    <div
-      className={cn(
-        'card flex items-start justify-between gap-3',
-        hasContact && 'hover:bg-paper-100 cursor-pointer transition-colors',
-      )}
-      onClick={hasContact ? handleClick : undefined}
-      role={hasContact ? 'button' : undefined}
-      tabIndex={hasContact ? 0 : undefined}
-      onKeyDown={
-        hasContact
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                if (tgUrl) window.open(tgUrl, '_blank', 'noopener,noreferrer');
-              }
-            }
-          : undefined
-      }
-    >
-      <div className="min-w-0 flex-1">
-        <div className="inline-flex items-center flex-wrap gap-1 mb-1.5">
+  const body = (
+    <>
+      <span className="avatar">{initials(t.fullName)}</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="h3 break-words">{t.fullName}</span>
+        <div className="flex flex-wrap gap-1">
           {t.roles.map((r) => (
-            <span
-              key={r}
-              className="text-[10px] uppercase tracking-wider font-semibold rounded-md px-1.5 py-0.5 bg-accent-soft text-accent"
-            >
+            <span key={r} className="chip chip-accent h-5 text-[11px]">
               {teacherRoleLabel(r)}
             </span>
           ))}
         </div>
-        <div className="font-semibold truncate">{t.fullName}</div>
-        {tgUrl ? (
-          <div className="text-xs text-ink-500 mt-0.5 truncate">@{t.telegramUsername!.replace(/^@/, '')}</div>
-        ) : (
-          <div className="text-xs text-ink-300 mt-0.5">Контакти не вказані</div>
-        )}
+        {username ? <span className="tiny faint truncate">@{username}</span> : null}
       </div>
-      {hasContact ? (
-        <span className="text-ink-300 mt-0.5 flex-shrink-0">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
-            <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-      ) : null}
-    </div>
+    </>
   );
-}
 
-function ActionRow({
-  href,
-  icon,
-  title,
-  subtitle,
-}: {
-  href: Route;
-  icon: string;
-  title: string;
-  subtitle?: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="card flex items-center justify-between gap-3 hover:bg-paper-100 active:scale-[0.99] transition-transform"
-    >
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <span
-          className="h-10 w-10 rounded-full flex items-center justify-center font-bold text-[15px] flex-shrink-0 bg-accent-soft text-accent"
-        >
-          {icon}
-        </span>
-        <div className="min-w-0">
-          <div className="font-semibold truncate">{title}</div>
-          {subtitle ? (
-            <div className="text-xs text-ink-500 truncate">{subtitle}</div>
-          ) : null}
-        </div>
+  if (!tgUrl) {
+    return (
+      <div className="row">
+        {body}
+        <span className="tiny faint max-w-[110px] flex-shrink-0 text-right">контакти не вказані</span>
       </div>
-      <span className="text-ink-300 flex-shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
-          <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="row w-full text-left"
+      onClick={() => window.open(tgUrl, '_blank', 'noopener,noreferrer')}
+    >
+      {body}
+      <span className="chip flex-shrink-0 gap-1">
+        <Icon name="send" size={14} /> Написати
       </span>
-    </Link>
+    </button>
   );
 }
 
@@ -340,10 +452,13 @@ function teacherRoleLabel(r: string): string {
   return m[r] ?? r;
 }
 
-function matchSubject(currentName: string, subject: { name: string; shortName?: string }): boolean {
-  if (!currentName) return false;
-  const a = currentName.trim().toLowerCase();
-  if (a === subject.name.trim().toLowerCase()) return true;
-  if (subject.shortName && a === subject.shortName.trim().toLowerCase()) return true;
-  return false;
+/** Normalised href + bare host for a stored link (mirrors the links screen). */
+function linkMeta(raw: string): { href: string; host: string } {
+  const trimmed = raw.trim();
+  try {
+    const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    return { href: url.toString(), host: url.hostname.replace(/^www\./i, '') };
+  } catch {
+    return { href: trimmed, host: '' };
+  }
 }

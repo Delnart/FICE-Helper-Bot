@@ -4,7 +4,13 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
+import { ErrorState, Loading } from '../../../../components/Empty';
+import { Icon } from '../../../../components/icons';
+import { Section } from '../../../../components/ui/Section';
+import { Sheet } from '../../../../components/ui/Sheet';
+import { Toggle } from '../../../../components/ui/Toggle';
 import { haptic } from '../../../../lib/telegram';
+import { initials } from '../../../../lib/name';
 import { cn } from '../../../../lib/cn';
 
 interface GroupSettings {
@@ -35,9 +41,12 @@ interface GroupMember {
 // Stable module-level reference (see notifications/page.tsx for why).
 const GROUP_SETTINGS_KEY = ['group-settings'] as const;
 
+// Quick picks for the lesson reminder (backend accepts 0..60).
+const REMINDER_PRESETS = [0, 5, 10, 15, 30, 60];
+
 export default function GroupSettingsPage() {
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, isError, error, refetch } = useQuery({
     queryKey: GROUP_SETTINGS_KEY,
     queryFn: () => api<GroupSettings>('/groups/current/settings'),
   });
@@ -65,9 +74,9 @@ export default function GroupSettingsPage() {
     },
   });
 
-  // Local state for the slider — debounced so we don't fire a PATCH per pixel
-  // dragged. The value is shown immediately from `localMinutes`; the server
-  // call only goes out once the user stops moving for 300ms.
+  // Local state for the reminder picker — debounced so rapid taps don't fire a
+  // PATCH each. The value is shown immediately from `localMinutes`; the server
+  // call only goes out once the user stops for 300ms.
   const [localMinutes, setLocalMinutes] = useState<number | null>(null);
   const minutesValue = localMinutes ?? data?.lessonReminderMinutes ?? 0;
   useEffect(() => {
@@ -79,70 +88,113 @@ export default function GroupSettingsPage() {
     return () => clearTimeout(t);
   }, [localMinutes]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!data) return <div className="card text-sm text-ink-500">Завантаження…</div>;
+  if (isError && !data) {
+    return (
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Налаштування групи" />
+        <ErrorState title="Не вдалося завантажити налаштування" error={error} onRetry={() => refetch()} />
+      </div>
+    );
+  }
+  if (!data) return <Loading />;
   const disabled = !data.canEdit;
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="Налаштування групи" subtitle={data.name} />
+    <div className="flex flex-col gap-4">
+      <PageHeader title="Налаштування групи" subtitle={`${data.name} · доступно старості та адміну`} />
 
       {disabled ? (
-        <div className="card text-sm text-ink-500">Лише староста або адміністратор можуть змінювати ці налаштування.</div>
+        <div className="card-soft small muted">
+          Лише староста або адміністратор можуть змінювати ці налаштування.
+        </div>
       ) : null}
 
-      <CampusBindingSection
-        currentId={data.campusGroupId}
-        groupName={data.name}
-        canEdit={data.canEdit}
-      />
-
-      {data.iAmHead ? (
-        <DeputiesSection
-          groupId={data._id}
-          headUserId={data.headUserId}
-          deputyUserIds={data.deputyUserIds}
-        />
-      ) : null}
+      <CampusBindingCard currentId={data.campusGroupId} groupName={data.name} canEdit={data.canEdit} />
 
       {data.canEdit ? <TeacherJoinRequests groupId={data._id} /> : null}
 
-      <section className="card space-y-4">
-        <Row
-          title="Сповіщення-нагадування у чат"
-          hint="Пари та відкриття черг, повідомлення в групі"
-          checked={data.notificationsEnabled}
-          disabled={disabled}
-          onChange={(v) => save.mutate({ notificationsEnabled: v })}
-        />
-        <Row
-          title="Привітання з днем народження"
-          hint="Автоматичні привітання в групі"
-          checked={data.birthdayAnnouncementsEnabled}
-          disabled={disabled}
-          onChange={(v) => save.mutate({ birthdayAnnouncementsEnabled: v })}
-        />
-        <div>
-          <div className="label">За скільки хвилин до пари сповіщати</div>
-          <input
-            type="range"
-            min={0}
-            max={60}
-            step={5}
-            value={minutesValue}
+      {data.iAmHead ? (
+        <DeputiesSection groupId={data._id} headUserId={data.headUserId} deputyUserIds={data.deputyUserIds} />
+      ) : null}
+
+      <Section title="Сповіщення в чаті групи">
+        <div className="card-flat flex flex-col px-3.5 py-1">
+          <SwitchRow
+            title="Нагадування в чат"
+            hint="Пари та відкриття черг, повідомлення в групі"
+            checked={data.notificationsEnabled}
             disabled={disabled}
-            onChange={(e) => setLocalMinutes(Number(e.target.value))}
-            className="w-full"
+            onChange={(v) => save.mutate({ notificationsEnabled: v })}
           />
-          <div className="text-sm text-ink-500">
-            {minutesValue === 0 ? 'Не сповіщати' : `${minutesValue} хв до пари`}
+          <div className="pb-1">
+            <div className="seg" role="radiogroup" aria-label="За скільки хвилин до пари сповіщати">
+              {REMINDER_PRESETS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="radio"
+                  aria-checked={minutesValue === m}
+                  className={minutesValue === m ? 'on' : undefined}
+                  disabled={disabled}
+                  onClick={() => setLocalMinutes(m)}
+                >
+                  {m} хв
+                </button>
+              ))}
+            </div>
+            {/* ±5 keeps every 0–60 step the old slider allowed; presets above are quick picks. */}
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span className="tiny faint">
+                {minutesValue === 0 ? (
+                  'Нагадування на початку пари'
+                ) : (
+                  <>
+                    За <span className="num">{minutesValue}</span> хв до пари
+                  </>
+                )}
+              </span>
+              <div className="-mr-2.5 flex">
+                <button
+                  type="button"
+                  className="icon-btn-plain"
+                  aria-label="Менше на 5 хв"
+                  disabled={disabled || minutesValue <= 0}
+                  onClick={() => setLocalMinutes(Math.max(0, minutesValue - 5))}
+                >
+                  <Icon name="minus" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn-plain"
+                  aria-label="Більше на 5 хв"
+                  disabled={disabled || minutesValue >= 60}
+                  onClick={() => setLocalMinutes(Math.min(60, minutesValue + 5))}
+                >
+                  <Icon name="plus" />
+                </button>
+              </div>
+            </div>
           </div>
+          <div className="divider" />
+          <SwitchRow
+            title="Привітання з днем народження"
+            hint="Автоматичні привітання в групі"
+            checked={data.birthdayAnnouncementsEnabled}
+            disabled={disabled}
+            onChange={(v) => save.mutate({ birthdayAnnouncementsEnabled: v })}
+          />
         </div>
-      </section>
+        {save.isError ? (
+          <div className="small text-bad" role="alert">
+            {save.error.message || 'Не вдалося зберегти'}
+          </div>
+        ) : null}
+      </Section>
     </div>
   );
 }
 
-function CampusBindingSection({
+function CampusBindingCard({
   currentId,
   groupName,
   canEdit,
@@ -152,6 +204,7 @@ function CampusBindingSection({
   canEdit: boolean;
 }) {
   const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(groupName);
   const [debounced, setDebounced] = useState(groupName);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -164,7 +217,7 @@ function CampusBindingSection({
   const search = useQuery({
     queryKey: ['campus-search', debounced],
     queryFn: () => api<CampusGroupRow[]>('/campus/groups', { query: { q: debounced } }),
-    enabled: canEdit && debounced.length >= 2,
+    enabled: canEdit && open && debounced.length >= 2,
   });
 
   const bind = useMutation({
@@ -173,6 +226,7 @@ function CampusBindingSection({
     onSuccess: () => {
       haptic('success');
       qc.invalidateQueries({ queryKey: ['group-settings'] });
+      setOpen(false);
     },
     onError: () => haptic('error'),
   });
@@ -191,86 +245,120 @@ function CampusBindingSection({
     },
   });
 
-  return (
-    <section className="card space-y-3">
-      <div>
-        <div className="font-medium">Привʼязка до Кампусу</div>
-        <div className="text-sm text-ink-500">
-          Знайдіть свою академічну групу — після збереження розклад тягтиметься автоматично.
-        </div>
-      </div>
+  const results = search.data ?? [];
 
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[12px] uppercase tracking-wide text-ink-500">Зараз</div>
-          <div className="font-medium">
-            {currentId ? `ID: ${currentId}` : 'Не привʼязано'}
-          </div>
+  return (
+    <section className="card flex flex-col gap-3.5">
+      <div className="flex items-center gap-3">
+        <span className="subj subj-ink">
+          <Icon name="users" strokeWidth={1.9} />
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="h3">
+            {groupName} · {currentId ? 'привʼязано до Кампус КПІ' : 'не привʼязано до Кампусу'}
+          </span>
+          <span className="tiny faint">
+            {currentId
+              ? <>Campus ID <span className="num">{currentId}</span> · розклад оновлюється авто кожні 12 год</>
+              : 'Знайдіть свою академічну групу — після збереження розклад тягтиметься автоматично.'}
+          </span>
         </div>
         {currentId ? (
-          <button
-            type="button"
-            className="btn-primary h-9 px-3 text-sm"
-            disabled={!canEdit || sync.isPending}
-            onClick={() => {
-              setSyncMsg(null);
-              sync.mutate();
-            }}
-          >
-            {sync.isPending ? 'Синхронізація…' : 'Синхронізувати'}
-          </button>
-        ) : null}
+          <span className="chip chip-ok">
+            <span className="dot bg-ok" />
+            ok
+          </span>
+        ) : (
+          <span className="chip chip-warn">немає</span>
+        )}
       </div>
-      {syncMsg ? <div className="text-sm text-ink-500">{syncMsg}</div> : null}
 
-      {canEdit ? (
-        <div className="space-y-2">
-          <div>
-            <div className="label">Пошук за назвою</div>
-            <input
-              className="input"
-              placeholder="Наприклад: ФІ-31"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
+      {currentId || canEdit ? (
+        <div className="flex gap-2">
+          {currentId ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-md flex-1"
+              disabled={!canEdit || sync.isPending}
+              onClick={() => {
+                setSyncMsg(null);
+                sync.mutate();
+              }}
+            >
+              <Icon name="refresh" size={18} className={cn(sync.isPending && 'animate-spin')} />
+              {sync.isPending ? 'Синхронізація…' : 'Синхронізувати'}
+            </button>
+          ) : null}
+          {canEdit ? (
+            <button
+              type="button"
+              className={cn('btn btn-md flex-1', currentId ? 'btn-outline' : 'btn-primary')}
+              onClick={() => setOpen(true)}
+            >
+              {currentId ? 'Змінити групу' : 'Привʼязати групу'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {syncMsg ? (
+        <div className={cn('small', syncMsg.startsWith('Помилка') ? 'text-bad' : 'muted')}>{syncMsg}</div>
+      ) : null}
 
-          {debounced.length < 2 ? (
-            <div className="text-sm text-ink-500">Введіть назву (мінімум 2 символи)</div>
-          ) : search.isLoading ? (
-            <div className="text-sm text-ink-500">Шукаємо…</div>
-          ) : (search.data ?? []).length === 0 ? (
-            <div className="text-sm text-ink-500">Нічого не знайшли</div>
-          ) : (
-            <div className="space-y-1.5">
-              {(search.data ?? []).map((g) => {
-                const active = currentId === g.id;
-                return (
+      <Sheet open={open} onClose={() => setOpen(false)} title="Група в Кампусі">
+        <div>
+          <label className="label" htmlFor="campus-search">
+            Пошук за назвою
+          </label>
+          <input
+            id="campus-search"
+            className="input"
+            placeholder="Наприклад: ФІ-31"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        {debounced.length < 2 ? (
+          <div className="small muted">Введіть назву (мінімум 2 символи)</div>
+        ) : search.isLoading ? (
+          <div className="small muted">Шукаємо…</div>
+        ) : search.isError ? (
+          <ErrorState title="Пошук не вдався" error={search.error} onRetry={() => search.refetch()} />
+        ) : results.length === 0 ? (
+          <div className="small muted">Нічого не знайшли</div>
+        ) : (
+          <div className="flex flex-col">
+            {results.map((g, i) => {
+              const active = currentId === g.id;
+              return (
+                <div key={g.id}>
+                  {i > 0 ? <div className="divider" /> : null}
                   <button
-                    key={g.id}
                     type="button"
                     onClick={() => bind.mutate(g.id)}
                     disabled={bind.isPending || active}
-                    className={cn(
-                      'w-full flex items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors',
-                      active
-                        ? 'bg-ink-900 text-paper-50'
-                        : 'bg-paper-200 text-ink-700 hover:bg-paper-300',
-                    )}
+                    className="row-plain w-full justify-between text-left"
                   >
-                    <span className="font-medium truncate">{g.name}</span>
-                    <span className={cn('text-xs', active ? 'text-paper-300' : 'text-ink-500')}>
-                      {active ? 'привʼязано' : `ID ${g.id}`}
-                    </span>
+                    <span className="h3 truncate">{g.name}</span>
+                    {active ? (
+                      <span className="chip chip-ok">привʼязано</span>
+                    ) : (
+                      <span className="tiny faint num">ID {g.id}</span>
+                    )}
                   </button>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-          <ManualIdEntry currentId={currentId} bind={bind.mutate} pending={bind.isPending} />
-        </div>
-      ) : null}
+        {bind.isError ? (
+          <div className="small text-bad" role="alert">
+            {bind.error.message || 'Не вдалося привʼязати групу'}
+          </div>
+        ) : null}
+        <ManualIdEntry currentId={currentId} bind={bind.mutate} pending={bind.isPending} />
+      </Sheet>
     </section>
   );
 }
@@ -288,23 +376,20 @@ function ManualIdEntry({
   const [val, setVal] = useState(currentId ?? '');
   if (!open) {
     return (
-      <button
-        type="button"
-        className="text-sm text-ink-500 underline underline-offset-2"
-        onClick={() => setOpen(true)}
-      >
+      <button type="button" className="btn btn-ghost btn-md self-start" onClick={() => setOpen(true)}>
         Або ввести ID вручну
       </button>
     );
   }
   return (
-    <div className="space-y-2 rounded-xl border border-paper-300 p-3">
-      <div className="text-sm text-ink-500">
-        ID можна знайти в URL на campus.kpi.ua — після <code>?groupId=</code>.
+    <div className="card-soft flex flex-col gap-2">
+      <div className="small muted">
+        ID можна знайти в URL на campus.kpi.ua — після <code className="font-mono">?groupId=</code>.
       </div>
       <div className="flex gap-2">
         <input
-          className="input flex-1"
+          className="input num flex-1"
+          aria-label="ID групи в Кампусі"
           placeholder="5627"
           inputMode="numeric"
           value={val}
@@ -312,7 +397,7 @@ function ManualIdEntry({
         />
         <button
           type="button"
-          className="btn-primary px-3"
+          className="btn btn-primary"
           disabled={pending || !val.trim()}
           onClick={() => bind(val.trim())}
         >
@@ -333,6 +418,7 @@ function DeputiesSection({
   deputyUserIds: string[];
 }) {
   const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const members = useQuery({
     queryKey: ['group-members'],
@@ -363,37 +449,40 @@ function DeputiesSection({
   });
 
   const list = (members.data ?? []).filter((m) => m._id !== headUserId);
-  const visible = search.trim()
-    ? list.filter((m) =>
-        m.fullName.toLowerCase().includes(search.trim().toLowerCase()) ||
-        (m.username ?? '').toLowerCase().includes(search.trim().toLowerCase()),
-      )
+  const q = search.trim().toLowerCase();
+  const visible = q
+    ? list.filter((m) => m.fullName.toLowerCase().includes(q) || (m.username ?? '').toLowerCase().includes(q))
     : list;
   const deputies = list.filter((m) => deputySet.has(m._id));
 
   return (
-    <section className="card space-y-3">
-      <div>
-        <div className="font-medium">Заступники старости</div>
-        <div className="text-sm text-ink-500">
-          Заступники мають ті ж права, що й староста: редагувати розклад, налаштування, журнал, черги.
-        </div>
+    <Section title="Заступники старости">
+      <div className="small muted -mt-1">
+        Заступники мають ті ж права, що й староста: редагувати розклад, налаштування, журнал, черги.
       </div>
-
-      {deputies.length ? (
-        <div className="space-y-1.5">
-          <div className="text-[12px] uppercase tracking-wide text-ink-500">Призначено</div>
-          {deputies.map((m) => (
-            <div key={m._id} className="flex items-center justify-between gap-2 rounded-xl bg-paper-100 px-3 py-2">
-              <div className="min-w-0">
-                <div className="font-medium truncate text-sm">{m.fullName}</div>
-                {m.username ? (
-                  <div className="text-xs text-ink-500 truncate">@{m.username}</div>
-                ) : null}
+      {members.isError && !members.data ? (
+        <ErrorState title="Не вдалося завантажити учасників" error={members.error} onRetry={() => members.refetch()} />
+      ) : null}
+      {remove.isError ? (
+        <div className="small text-bad" role="alert">
+          {remove.error.message || 'Не вдалося зняти заступника'}
+        </div>
+      ) : null}
+      <div className="card-flat flex flex-col px-3.5 py-1">
+        {deputies.map((m) => (
+          <div key={m._id}>
+            <div className="row-plain justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="avatar">{initials(m.fullName)}</span>
+                <div className="flex min-w-0 flex-col">
+                  <span className="h3 truncate">{m.fullName}</span>
+                  {m.username ? <span className="tiny faint truncate">@{m.username}</span> : null}
+                </div>
               </div>
               <button
                 type="button"
-                className="btn-secondary h-8 px-3 text-xs text-danger"
+                className="icon-btn-plain"
+                aria-label="Зняти з заступників"
                 disabled={remove.isPending}
                 onClick={() => {
                   if (window.confirm(`Зняти ${m.fullName} з ролі заступника?`)) {
@@ -401,60 +490,75 @@ function DeputiesSection({
                   }
                 }}
               >
-                Зняти
+                <Icon name="close" size={20} />
               </button>
             </div>
-          ))}
-        </div>
-      ) : null}
+            <div className="divider" />
+          </div>
+        ))}
+        <button
+          type="button"
+          className="row-plain w-full justify-start text-left text-accent-text"
+          onClick={() => setOpen(true)}
+        >
+          <span className="tile tile-soft h-10 w-10 rounded-full">
+            <Icon name="plus" size={20} strokeWidth={2.2} />
+          </span>
+          <span className="h3 text-accent-text">Призначити заступника</span>
+        </button>
+      </div>
 
-      <div>
-        <div className="label">Призначити заступника</div>
+      <Sheet open={open} onClose={() => setOpen(false)} title="Призначити заступника">
         <input
           className="input"
           placeholder="Пошук за ПІБ або @username"
+          aria-label="Пошук учасника"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-      </div>
-
-      {members.isLoading ? (
-        <div className="text-sm text-ink-500">Завантаження…</div>
-      ) : visible.length === 0 ? (
-        <div className="text-sm text-ink-500">Нікого не знайдено</div>
-      ) : (
-        <div className="max-h-72 overflow-y-auto space-y-1">
-          {visible.slice(0, 50).map((m) => {
-            const isDeputy = deputySet.has(m._id);
-            return (
-              <div
-                key={m._id}
-                className="flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5"
-              >
-                <div className="min-w-0 text-sm">
-                  <div className="font-medium truncate">{m.fullName}</div>
-                  {m.username ? (
-                    <div className="text-xs text-ink-500 truncate">@{m.username}</div>
-                  ) : null}
+        {assign.isError ? (
+          <div className="small text-bad" role="alert">
+            {assign.error.message || 'Не вдалося призначити заступника'}
+          </div>
+        ) : null}
+        {members.isLoading ? (
+          <Loading />
+        ) : members.isError && !members.data ? (
+          <ErrorState title="Не вдалося завантажити учасників" error={members.error} onRetry={() => members.refetch()} />
+        ) : visible.length === 0 ? (
+          <div className="small muted">Нікого не знайдено</div>
+        ) : (
+          <div className="flex flex-col">
+            {visible.slice(0, 50).map((m, i) => (
+              <div key={m._id}>
+                {i > 0 ? <div className="divider" /> : null}
+                <div className="row-plain justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="avatar">{initials(m.fullName)}</span>
+                    <div className="flex min-w-0 flex-col">
+                      <span className="h3 truncate">{m.fullName}</span>
+                      {m.username ? <span className="tiny faint truncate">@{m.username}</span> : null}
+                    </div>
+                  </div>
+                  {deputySet.has(m._id) ? (
+                    <span className="chip chip-accent">Заступник</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={assign.isPending}
+                      onClick={() => assign.mutate(m._id)}
+                    >
+                      Призначити
+                    </button>
+                  )}
                 </div>
-                {isDeputy ? (
-                  <span className="chip bg-accent-soft text-accent">Заступник</span>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn-secondary h-8 px-3 text-xs"
-                    disabled={assign.isPending}
-                    onClick={() => assign.mutate(m._id)}
-                  >
-                    Призначити
-                  </button>
-                )}
               </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
+            ))}
+          </div>
+        )}
+      </Sheet>
+    </Section>
   );
 }
 
@@ -473,7 +577,7 @@ function TeacherJoinRequests({ groupId }: { groupId: string }) {
   const requests = useQuery({
     queryKey: ['teacher-join-requests', groupId],
     queryFn: () => api<JoinRequest[]>('/teachers/join-requests', { query: { groupId } }),
-    refetchInterval: 30_000, // poll every 30 s
+    refetchInterval: 60_000, // poll every minute (small VPS)
   });
 
   const decide = useMutation({
@@ -490,54 +594,54 @@ function TeacherJoinRequests({ groupId }: { groupId: string }) {
   if (!list.length) return null; // hide section when nothing pending
 
   return (
-    <section className="card space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold text-sm">Запити викладачів</div>
-        <span className="chip bg-warning/15 text-warning font-semibold">{list.length}</span>
+    <section className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-2">
+        <h2 className="h2">Запити викладачів</h2>
+        <span className="count num">{list.length}</span>
       </div>
-      <div className="text-xs text-ink-500">
-        Викладачі, які хочуть отримати доступ до черги та журналу вашої групи.
-      </div>
-      <div className="space-y-2">
-        {list.map((r) => (
-          <div key={r._id} className="rounded-xl bg-paper-100 px-3 py-2.5 space-y-2">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="font-medium text-sm truncate">{r.fullName}</div>
-                {r.username ? (
-                  <div className="text-xs text-ink-500">@{r.username}</div>
-                ) : null}
-                {r.note ? (
-                  <div className="text-xs text-ink-600 mt-0.5 italic">«{r.note}»</div>
-                ) : null}
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn-primary flex-1 h-8 text-xs"
-                disabled={decide.isPending}
-                onClick={() => decide.mutate({ id: r._id, action: 'approve' })}
-              >
-                ✅ Підтвердити
-              </button>
-              <button
-                type="button"
-                className="btn-secondary flex-1 h-8 text-xs text-danger"
-                disabled={decide.isPending}
-                onClick={() => decide.mutate({ id: r._id, action: 'reject' })}
-              >
-                ❌ Відхилити
-              </button>
+      {decide.isError ? (
+        <div className="small text-bad" role="alert">
+          {decide.error.message || 'Не вдалося обробити запит'}
+        </div>
+      ) : null}
+      {list.map((r) => (
+        <div key={r._id} className="card-flat flex flex-col gap-3 border-accent">
+          <div className="flex items-start gap-3">
+            <span className="avatar bg-accent-soft text-accent-text">{initials(r.fullName)}</span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="h3">{r.fullName}</span>
+              {r.username ? <span className="tiny faint">@{r.username}</span> : null}
+              <span className="small muted">Просить доступ до черги та журналу вашої групи</span>
+              {r.note ? (
+                <span className="small rounded-[10px] bg-surface-2 px-2.5 py-2 text-ink-2">«{r.note}»</span>
+              ) : null}
             </div>
           </div>
-        ))}
-      </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn btn-primary btn-md flex-1"
+              disabled={decide.isPending}
+              onClick={() => decide.mutate({ id: r._id, action: 'approve' })}
+            >
+              Підтвердити
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-md flex-1"
+              disabled={decide.isPending}
+              onClick={() => decide.mutate({ id: r._id, action: 'reject' })}
+            >
+              Відхилити
+            </button>
+          </div>
+        </div>
+      ))}
     </section>
   );
 }
 
-function Row({
+function SwitchRow({
   title,
   hint,
   checked,
@@ -551,28 +655,12 @@ function Row({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex-1">
-        <div className="font-medium">{title}</div>
-        <div className="text-sm text-ink-500">{hint}</div>
+    <div className="row-plain justify-between">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="h3">{title}</span>
+        <span className="tiny faint">{hint}</span>
       </div>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={cn(
-          'relative h-7 w-12 rounded-full transition-colors',
-          checked ? 'bg-ink-900' : 'bg-paper-300',
-          disabled && 'opacity-40',
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-paper-50 shadow transition-transform',
-            checked && 'translate-x-5',
-          )}
-        />
-      </button>
+      <Toggle checked={checked} onChange={onChange} disabled={disabled} label={title} />
     </div>
   );
 }

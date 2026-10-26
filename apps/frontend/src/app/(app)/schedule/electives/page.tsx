@@ -1,10 +1,14 @@
 'use client';
 
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { useCanManage, useMe } from '../../../../hooks/useMe';
 import { PageHeader } from '../../../../components/PageHeader';
+import { Icon } from '../../../../components/icons';
+import { Empty, ErrorState, Loading } from '../../../../components/Empty';
 import { cn } from '../../../../lib/cn';
+import { shortenName } from '../../../../lib/name';
 
 interface LessonPart {
   _id: string;
@@ -29,14 +33,18 @@ interface ElectiveDiscipline {
 }
 
 const DAY_NAMES = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-const WEEK_LABEL: Record<number, string> = { 0: '', 1: 'I тижд.', 2: 'II тижд.' };
+const WEEK_LABEL: Record<number, string> = { 0: 'щотижня', 1: 'I тижд.', 2: 'II тижд.' };
 const TYPE_LABEL: Record<string, string> = {
   lecture: 'Лекція',
   practice: 'Практика',
-  lab: 'Лабораторна',
+  lab: 'Лаб',
   seminar: 'Семінар',
   other: 'Заняття',
 };
+
+/** 1 заняття, 3 заняття, 5 занять. */
+const lessonsWord = (n: number) =>
+  n % 10 >= 1 && n % 10 <= 4 && !(n % 100 >= 11 && n % 100 <= 14) ? 'заняття' : 'занять';
 
 export default function ElectivesPage() {
   const me = useMe();
@@ -44,27 +52,32 @@ export default function ElectivesPage() {
   const qc = useQueryClient();
   const userId = me.data?._id ?? '';
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['schedule-electives'],
     queryFn: () => api<ElectiveDiscipline[]>('/schedule/electives'),
   });
 
-  const join = useMutation({
-    mutationFn: (lessonId: string) =>
-      api(`/schedule/electives/${lessonId}/join`, { method: 'POST' }),
+  // Last failed action, shown under the card it belongs to.
+  const [actionError, setActionError] = useState<{ id: string; message: string } | null>(null);
+  const feedback = {
+    onMutate: () => setActionError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['schedule-electives'] });
       qc.invalidateQueries({ queryKey: ['schedule'] });
     },
+    onError: (err: Error, lessonId: string) => setActionError({ id: lessonId, message: err.message }),
+  };
+
+  const join = useMutation({
+    mutationFn: (lessonId: string) =>
+      api(`/schedule/electives/${lessonId}/join`, { method: 'POST' }),
+    ...feedback,
   });
 
   const leave = useMutation({
     mutationFn: (lessonId: string) =>
       api(`/schedule/electives/${lessonId}/leave`, { method: 'POST' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedule-electives'] });
-      qc.invalidateQueries({ queryKey: ['schedule'] });
-    },
+    ...feedback,
   });
 
   const removeElective = useMutation({
@@ -73,148 +86,160 @@ export default function ElectivesPage() {
         method: 'PATCH',
         json: { isElective: false },
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedule-electives'] });
-      qc.invalidateQueries({ queryKey: ['schedule'] });
-    },
+    ...feedback,
   });
 
   const isPending = join.isPending || leave.isPending || removeElective.isPending;
+  const enrolledCount = data?.filter((d) => d.electiveStudentIds.includes(userId)).length ?? 0;
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-4">
       <PageHeader
-        title="Вибіркові дисципліни"
-        subtitle="Оберіть дисципліни, які відображатимуться у вашому розкладі"
+        title="Вибіркові"
+        subtitle={
+          data && data.length > 0
+            ? `Обрано ${enrolledCount} з ${data.length} · впливає лише на ваш розклад`
+            : 'Оберіть дисципліни, які відображатимуться у вашому розкладі'
+        }
       />
 
-      {isLoading && (
-        <div className="card text-sm text-ink-500">Завантаження…</div>
-      )}
+      <section className="card-soft flex items-start gap-3">
+        <span className="tile tile-soft h-9 w-9 rounded-[12px] bg-surface">
+          <Icon name="info" size={18} />
+        </span>
+        <div className="flex flex-col gap-1">
+          <span className="h3">Як це працює</span>
+          <span className="small muted">
+            Відмічені дисципліни — з усіма лекціями, практиками та лабами — показуються у
+            вашому розкладі. Невідмічені приховані, але їх можна увімкнути будь-коли.
+          </span>
+        </div>
+      </section>
+
+      {isLoading && <Loading />}
 
       {isError && (
-        <div className="card text-sm text-danger">
-          Не вдалося завантажити список вибіркових дисциплін.
-        </div>
+        <ErrorState
+          error={error}
+          onRetry={() => refetch()}
+          title="Не вдалося завантажити вибіркові"
+        />
       )}
 
       {!isLoading && !isError && (!data || data.length === 0) && (
-        <div className="card text-sm text-ink-500">
-          <div className="font-medium mb-1">Вибіркових дисциплін немає</div>
-          <div className="text-zinc-500">
-            Староста ще не позначив жодну дисципліну як вибіркову.
-          </div>
-        </div>
+        <Empty
+          title="Вибіркових дисциплін немає"
+          hint="Староста ще не позначив жодну дисципліну як вибіркову."
+          icon="star"
+        />
       )}
 
-      {data && data.length > 0 && (
-        <div className="space-y-2">
+      {!isError && data && data.length > 0 && (
+        <section aria-label="Список вибіркових" className="flex flex-col gap-2.5">
           {data.map((item) => {
             const enrolled = item.electiveStudentIds.includes(userId);
             const targetId = item.sampleLessonId || item._id;
+            const lessons = item.lessons ?? [];
+            const teachers = [...new Set(lessons.flatMap((l) => l.teacherNames ?? []))]
+              .map(shortenName)
+              .join(', ');
 
             return (
               <div
                 key={item._id}
-                className={cn(
-                  'card flex items-start gap-3 transition-colors',
-                  enrolled ? 'ring-1 ring-accent/30 bg-accent-soft/30' : '',
-                )}
+                className={cn('card-flat flex flex-col gap-1', enrolled && 'border-accent')}
               >
-                {/* Student Enrollment Checkbox */}
+                {/* Student enrollment: the whole card body is the checkbox. */}
                 <button
                   type="button"
                   disabled={isPending}
                   onClick={() =>
                     enrolled ? leave.mutate(targetId) : join.mutate(targetId)
                   }
-                  className={cn(
-                    'mt-0.5 flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors',
-                    enrolled
-                      ? 'bg-accent border-accent text-white'
-                      : 'border-zinc-300 bg-white',
-                    isPending && 'opacity-50 cursor-not-allowed',
-                  )}
-                  aria-label={enrolled ? 'Відписатися від вибіркової' : 'Записатися на вибіркову'}
+                  role="checkbox"
+                  aria-checked={enrolled}
+                  aria-label={item.subjectName}
+                  title={enrolled ? 'Відписатися від вибіркової' : 'Записатися на вибіркову'}
+                  className="flex w-full items-start gap-3 text-left text-ink"
                 >
-                  {enrolled && (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="h-3 w-3">
-                      <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
+                  <span className={cn('check mt-0.5', enrolled && 'on')}>
+                    {enrolled ? <Icon name="check" size={16} strokeWidth={3} /> : null}
+                  </span>
+                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="h3 text-[16px]">{item.subjectName}</span>
+                        <span className="tiny faint">
+                          {[teachers, `${lessons.length} ${lessonsWord(lessons.length)}`]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      </div>
+                      {enrolled ? (
+                        <span className="chip chip-accent flex-shrink-0">обрано</span>
+                      ) : null}
+                    </div>
+                    {lessons.length > 0 ? (
+                      <div className="meta">
+                        {lessons.map((l, idx) => (
+                          <span
+                            key={l._id || idx}
+                            className="chip h-auto min-h-6 whitespace-normal py-1 leading-tight"
+                          >
+                            {[
+                              DAY_NAMES[l.dayOfWeek] ?? '',
+                              `${l.startTime}–${l.endTime}`,
+                              TYPE_LABEL[l.type ?? 'other'] ?? 'Заняття',
+                              WEEK_LABEL[l.weekType ?? 0],
+                              l.room,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 </button>
 
-                {/* Discipline Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="font-semibold text-[14px] leading-snug">
-                      {item.subjectName}
-                    </div>
-
-                    {/* Head: Remove from electives button */}
-                    {canManage && (
-                      <button
-                        type="button"
-                        disabled={isPending}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Вилучити «${item.subjectName}» із вибіркових? Дисципліна стане обовʼязковою для всієї групи.`,
-                            )
-                          ) {
-                            removeElective.mutate(targetId);
-                          }
-                        }}
-                        className="flex-shrink-0 text-zinc-400 hover:text-danger p-1 rounded transition-colors"
-                        title="Вилучити дисципліну з вибіркових"
-                        aria-label="Вилучити з вибіркових"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                          <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                    )}
+                {actionError?.id === targetId ? (
+                  <div role="alert" className="small ml-8 text-bad">
+                    {actionError.message}
                   </div>
+                ) : null}
 
-                  {/* Components (lectures, labs, practices) */}
-                  <div className="mt-1 space-y-0.5">
-                    {(item.lessons ?? []).map((l, idx) => (
-                      <div key={l._id || idx} className="flex items-center gap-1.5 text-[11px] text-zinc-600 flex-wrap">
-                        <span className="font-medium text-zinc-700">
-                          {TYPE_LABEL[l.type ?? 'other'] ?? 'Заняття'}:
-                        </span>
-                        <span>{DAY_NAMES[l.dayOfWeek] ?? ''}</span>
-                        <span className="tabular-nums">{l.startTime} – {l.endTime}</span>
-                        {l.weekType ? (
-                          <span className="chip text-[9px] px-1 py-0 bg-paper-200 text-zinc-600">
-                            {WEEK_LABEL[l.weekType]}
-                          </span>
-                        ) : null}
-                        {l.room ? <span className="text-zinc-400">({l.room})</span> : null}
-                      </div>
-                    ))}
-                  </div>
-
-                  {enrolled && (
-                    <div className="mt-1.5">
-                      <span className="chip text-[10px] bg-accent-soft text-accent">
-                        обрано
-                      </span>
-                    </div>
-                  )}
-                </div>
+                {/* Head: remove from electives */}
+                {canManage && (
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Вилучити «${item.subjectName}» із вибіркових? Дисципліна стане обовʼязковою для всієї групи.`,
+                        )
+                      ) {
+                        removeElective.mutate(targetId);
+                      }
+                    }}
+                    className="btn btn-ghost btn-sm ml-8 self-start px-1 text-ink-3"
+                    title="Вилучити дисципліну з вибіркових"
+                    aria-label="Вилучити з вибіркових"
+                  >
+                    <Icon name="trash" size={16} />
+                    Вилучити з вибіркових
+                  </button>
+                )}
               </div>
             );
           })}
-        </div>
+        </section>
       )}
 
-      <div className="card text-[12px] text-zinc-500 space-y-1">
-        <div className="font-medium text-zinc-700">Як це працює?</div>
-        <div>✅ Відмічені дисципліни (всі їх лекції, практики і лаби) відображаються у вашому розкладі</div>
-        <div>☐ Невідмічені — приховані (ви можете обрати їх у будь-який момент)</div>
-        <div>Зміни зберігаються автоматично після натискання.</div>
-      </div>
+      <p className="tiny faint px-3 text-center">
+        Зміни зберігаються автоматично. Староста позначає заняття як вибіркові в розкладі —
+        тут вони зʼявляються автоматично й зберігаються при оновленнях з Кампусу.
+      </p>
     </div>
   );
 }

@@ -1,45 +1,50 @@
 import type { Config } from 'tailwindcss';
 
+// Every color is a CSS variable from globals.css, so light/dark themes come for free.
+// Opacity modifiers (`bg-accent/10`) don't work with these — use the *-soft tokens instead.
 const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
-        // Dark with a subtle blue undertone — softer than pure black, still reads as "ink".
-        ink: {
-          900: '#16243C',
-          700: '#2F3E5C',
-          500: '#5C6A82',
-          300: '#A4ADBE',
-          100: '#E6E9EE',
-        },
-        paper: {
-          50: '#FFFFFF',
-          100: '#FAFBFC',
-          200: '#F3F5F7',
-          300: '#E6E9EE',
-        },
-        // Vibrant brand blue — used for "live" / active surfaces alongside the dark `ink`.
+        bg: 'var(--bg)',
+        surface: { DEFAULT: 'var(--surface)', 2: 'var(--surface-2)', 3: 'var(--surface-3)' },
+        line: { DEFAULT: 'var(--line)', 2: 'var(--line-2)' },
+        ink: { DEFAULT: 'var(--ink)', 2: 'var(--ink-2)', 3: 'var(--ink-3)' },
         accent: {
-          DEFAULT: '#2B6CFF',
-          soft: '#E7EFFF',
-          ring: '#A6C0FF',
+          DEFAULT: 'var(--accent)',
+          ink: 'var(--accent-ink)',
+          soft: 'var(--accent-soft)',
+          text: 'var(--accent-text)',
         },
-        success: '#1DBF73',
-        warn: '#F5A524',
-        danger: '#E5484D',
+        lime: { DEFAULT: 'var(--lime)', ink: 'var(--lime-ink)' },
+        now: {
+          bg: 'var(--now-bg)',
+          'bg-2': 'var(--now-bg-2)',
+          ink: 'var(--now-ink)',
+          muted: 'var(--now-muted)',
+          accent: 'var(--now-accent)',
+          'accent-ink': 'var(--now-accent-ink)',
+        },
+        ok: { DEFAULT: 'var(--ok)', soft: 'var(--ok-soft)' },
+        warn: { DEFAULT: 'var(--warn)', soft: 'var(--warn-soft)' },
+        bad: { DEFAULT: 'var(--bad)', soft: 'var(--bad-soft)' },
+        info: { DEFAULT: 'var(--info)', soft: 'var(--info-soft)' },
       },
       borderRadius: {
         xl: '14px',
-        '2xl': '18px',
+        '2xl': '20px',
         '3xl': '24px',
       },
       boxShadow: {
-        card: '0 1px 2px rgba(14, 16, 19, 0.04), 0 4px 16px rgba(14, 16, 19, 0.04)',
-        bar: '0 -4px 24px rgba(14, 16, 19, 0.06)',
+        card: 'var(--shadow)',
+        bar: 'var(--shadow-bar)',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        sans: ['var(--font-body)'],
+        display: ['var(--font-display)'],
+        mono: ['ui-monospace', 'SF Mono', 'Menlo', 'monospace'],
       },
     },
   },

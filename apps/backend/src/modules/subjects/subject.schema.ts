@@ -46,6 +46,8 @@ export class Subject {
 
   @Prop({ required: true }) name!: string;
   @Prop() shortName?: string;
+  /** Tile icon override (frontend SUBJECT_ICONS name); unset = picked from the name. */
+  @Prop() icon?: string;
   @Prop({ index: true }) campusSubjectId?: string;
 
   @Prop({ type: [SubjectTeacherSubSchema], default: [] })

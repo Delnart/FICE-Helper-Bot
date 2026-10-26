@@ -2,18 +2,20 @@
 
 import type { Route } from 'next';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../../../../lib/api';
 import { PageHeader } from '../../../../../components/PageHeader';
+import { ErrorState, Loading } from '../../../../../components/Empty';
+import { Section } from '../../../../../components/ui/Section';
 import { haptic } from '../../../../../lib/telegram';
 
 interface HwDetail {
   _id: string;
   title: string;
   description?: string;
-  deadline: string;
+  deadline?: string;
   points?: number;
   teamSize: number;
   subjectId: string;
@@ -34,7 +36,7 @@ export default function EditHomeworkPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, isError, error: loadError, refetch } = useQuery({
     queryKey: ['hw', id],
     queryFn: () => api<HwDetail>(`/homework/${id}`),
   });
@@ -47,9 +49,12 @@ export default function EditHomeworkPage() {
   const [teamSize, setTeamSize] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
 
-  // Hydrate form from loaded data
+  // Hydrate the form once per id — a background refetch (e.g. window focus)
+  // must not overwrite unsaved edits.
+  const hydratedId = useRef<string | null>(null);
   useEffect(() => {
-    if (!data) return;
+    if (!data || hydratedId.current === id) return;
+    hydratedId.current = id;
     setTitle(data.title ?? '');
     setDescription(data.description ?? '');
     if (data.deadline) {
@@ -61,7 +66,7 @@ export default function EditHomeworkPage() {
     }
     setPoints(data.points ?? '');
     setTeamSize(typeof data.teamSize === 'number' ? data.teamSize : '');
-  }, [data]);
+  }, [data, id]);
 
   const invalidateHwLists = () => {
     qc.invalidateQueries({ queryKey: ['hw', id] });
@@ -84,11 +89,18 @@ export default function EditHomeworkPage() {
     },
   });
 
-  if (!data) return <div className="card text-sm text-ink-500">Завантаження…</div>;
-  if (!data.canManage) {
+  if (!data && !isError) return <Loading />;
+  if (!data || !data.canManage) {
     return (
-      <div className="card text-sm text-danger">
-        Лише староста, заступник чи викладач може редагувати ДЗ.
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Редагування" />
+        {data ? (
+          <div className="card-flat small text-bad">
+            Лише староста, заступник чи викладач може редагувати ДЗ.
+          </div>
+        ) : (
+          <ErrorState error={loadError} onRetry={() => refetch()} title="Не вдалося завантажити завдання" />
+        )}
       </div>
     );
   }
@@ -114,53 +126,78 @@ export default function EditHomeworkPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="Редагувати ДЗ" subtitle={data.subjectName} />
+    <div className="flex flex-col gap-4">
+      <PageHeader title="Редагування" subtitle={data.subjectName} />
 
-      <section className="card space-y-3">
+      <section className="card-flat flex flex-col gap-3.5">
         <div>
-          <div className="label">Назва</div>
+          <label className="label" htmlFor="hw-title">
+            Назва
+          </label>
           <input
+            id="hw-title"
             className="input"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
         </div>
         <div>
-          <div className="label">Опис</div>
+          <label className="label" htmlFor="hw-desc">
+            Опис
+          </label>
           <textarea
-            className="input min-h-[96px]"
+            id="hw-desc"
+            className="textarea"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
         </div>
-        <div>
-          <div className="label">Дедлайн</div>
-          <div className="flex gap-2">
-            <input
-              type="date"
-              className="input flex-1"
-              value={deadlineDate}
-              onChange={(e) => setDeadlineDate(e.target.value)}
-            />
-            <input
-              type="time"
-              className="input w-28"
-              value={deadlineTime}
-              onChange={(e) => setDeadlineTime(e.target.value)}
-              disabled={!deadlineDate}
-            />
+      </section>
+
+      <Section title="Дедлайн">
+        <div className="card-flat">
+          <div className="flex gap-2.5">
+            <div className="min-w-0 flex-1">
+              <label className="label" htmlFor="hw-date">
+                Дата
+              </label>
+              <input
+                id="hw-date"
+                type="date"
+                className="input num"
+                value={deadlineDate}
+                onChange={(e) => setDeadlineDate(e.target.value)}
+              />
+            </div>
+            <div className="w-28">
+              <label className="label" htmlFor="hw-time">
+                Час
+              </label>
+              <input
+                id="hw-time"
+                type="time"
+                className="input num"
+                value={deadlineTime}
+                onChange={(e) => setDeadlineTime(e.target.value)}
+                disabled={!deadlineDate}
+              />
+            </div>
           </div>
-          {!deadlineDate ? (
-            <div className="text-xs text-ink-500 mt-1">Без дати — без дедлайну</div>
-          ) : null}
+          {!deadlineDate ? <div className="hint">Без дати — без дедлайну</div> : null}
         </div>
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <div className="label">Балів</div>
+      </Section>
+
+      <Section title="Оцінювання">
+        <div className="card-flat flex gap-2.5">
+          <div className="min-w-0 flex-1">
+            <label className="label" htmlFor="hw-points">
+              Балів
+            </label>
             <input
+              id="hw-points"
               type="number"
-              className="input"
+              inputMode="numeric"
+              className="input num"
               min={0}
               max={100}
               value={points}
@@ -170,11 +207,15 @@ export default function EditHomeworkPage() {
               }}
             />
           </div>
-          <div className="flex-1">
-            <div className="label">Команда</div>
+          <div className="min-w-0 flex-1">
+            <label className="label" htmlFor="hw-team">
+              Команда (осіб)
+            </label>
             <input
+              id="hw-team"
               type="number"
-              className="input"
+              inputMode="numeric"
+              className="input num"
               min={0}
               max={50}
               value={teamSize}
@@ -185,17 +226,17 @@ export default function EditHomeworkPage() {
             />
           </div>
         </div>
-      </section>
+      </Section>
 
-      {error ? <div className="card text-sm text-danger">{error}</div> : null}
+      {error ? <div className="card-flat small text-bad">{error}</div> : null}
 
-      <div className="flex gap-2">
-        <button type="button" className="btn-secondary flex-1" onClick={() => router.back()}>
+      <div className="action-bar">
+        <button type="button" className="btn btn-secondary flex-1" onClick={() => router.back()}>
           Скасувати
         </button>
         <button
           type="button"
-          className="btn-primary flex-1"
+          className="btn btn-primary flex-[2]"
           onClick={submit}
           disabled={update.isPending}
         >

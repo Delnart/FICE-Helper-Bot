@@ -26,6 +26,7 @@ export interface SubjectDto {
     groupId: string;
     name: string;
     shortName?: string;
+    icon?: string;
     campusSubjectId?: string;
     teachers: SubjectTeacherRef[];
     links: SubjectLink[];

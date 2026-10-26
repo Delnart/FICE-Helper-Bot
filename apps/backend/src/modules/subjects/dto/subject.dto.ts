@@ -40,6 +40,7 @@ export class CreateSubjectDto {
   @IsMongoId() groupId!: string;
   @IsString() @MinLength(2) @MaxLength(200) name!: string;
   @IsOptional() @IsString() @MaxLength(50) shortName?: string;
+  @IsOptional() @IsString() @MaxLength(32) icon?: string;
   @IsOptional() @IsString() campusSubjectId?: string;
 
   @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SubjectTeacherDto)
@@ -52,6 +53,7 @@ export class CreateSubjectDto {
 export class UpdateSubjectDto {
   @IsOptional() @IsString() @MaxLength(200) name?: string;
   @IsOptional() @IsString() @MaxLength(50) shortName?: string;
+  @IsOptional() @IsString() @MaxLength(32) icon?: string;
 
   @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SubjectTeacherDto)
   teachers?: SubjectTeacherDto[];

@@ -4,12 +4,20 @@ import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
+import { Icon } from '../../../components/icons';
+import { Empty, ErrorState, Loading } from '../../../components/Empty';
+import { Section } from '../../../components/ui/Section';
 import { cn } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
-import { useCanManage, useIsTeacherOnly } from '../../../hooks/useMe';
+import {
+  useActiveMembership,
+  useCanManage,
+  useIsTeacherOnly,
+  useMe,
+} from '../../../hooks/useMe';
 
 dayjs.locale('uk');
 
@@ -51,15 +59,20 @@ interface SessionItem {
   teacherNames?: string[];
 }
 
+interface ElectiveSummary {
+  _id: string;
+  electiveStudentIds: string[];
+}
+
 const SESSION_TYPE_LABEL: Record<SessionItem['type'], string> = {
   exam: 'Іспит',
   credit: 'Залік',
   other: 'ПМК',
 };
 const SESSION_TYPE_TONE: Record<SessionItem['type'], string> = {
-  exam: 'bg-danger/10 text-danger',
-  credit: 'bg-accent-soft text-accent',
-  other: 'bg-paper-200 text-zinc-700',
+  exam: 'chip-bad',
+  credit: 'chip-accent',
+  other: '',
 };
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
@@ -75,17 +88,40 @@ const KPI_PAIRS = [
   { start: '20:00', end: '21:35' },
 ];
 
-const TYPE_CHIP: Record<string, { label: string; cls: string }> = {
-  lecture: { label: 'Лекція', cls: 'bg-paper-200 text-zinc-700' },
-  practice: { label: 'Практика', cls: 'bg-paper-200 text-zinc-700' },
-  lab: { label: 'Лабораторна', cls: 'bg-zinc-100 text-zinc-900' },
-  seminar: { label: 'Семінар', cls: 'bg-paper-200 text-zinc-700' },
-  other: { label: 'Інше', cls: 'bg-paper-200 text-zinc-700' },
+const TYPE_LABEL: Record<string, string> = {
+  lecture: 'Лекція',
+  practice: 'Практика',
+  lab: 'Лабораторна',
+  seminar: 'Семінар',
+  other: 'Інше',
 };
+
+const ROMAN = { 1: 'I', 2: 'II' } as const;
+
+/** "08:30" → minutes since midnight. */
+const toMin = (t: string) => {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + (m || 0);
+};
+
+/** Next KPI slot after the last lesson (the first slot with no lessons), else its end. */
+const endOfDay = (end: string) =>
+  KPI_PAIRS.find((p) => toMin(p.start) >= toMin(end))?.start ?? end;
+
+const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+function meetingLabel(url: string): string {
+  if (/meet\.google/i.test(url)) return 'Google Meet';
+  if (/zoom\./i.test(url)) return 'Zoom';
+  if (/teams\.(microsoft|live)/i.test(url)) return 'Teams';
+  return 'Зустріч';
+}
 
 export default function SchedulePage() {
   const isTeacher = useIsTeacherOnly();
   const canManage = useCanManage();
+  const membership = useActiveMembership();
+  const me = useMe();
   const today = Math.min(6, ((dayjs().day() + 6) % 7) + 1);
   // Two top-level views on this page: weekly schedule and the exam (session) one.
   const [view, setView] = useState<'week' | 'sessions'>('week');
@@ -116,7 +152,14 @@ export default function SchedulePage() {
     }
   }, [now.data?.weekType]);
 
-  const { data, isLoading } = useQuery({
+  // Minute-resolution clock for the "зараз" card and past-lesson dimming.
+  const [clock, setClock] = useState(() => dayjs());
+  useEffect(() => {
+    const t = setInterval(() => setClock(dayjs()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['schedule', week, isTeacher],
     queryFn: () => api<Lesson[]>(weekEndpoint, { query: { week } }),
     enabled: view === 'week',
@@ -128,161 +171,177 @@ export default function SchedulePage() {
     enabled: view === 'sessions',
   });
 
+  // Same cache entry as /schedule/electives — feeds the "Обрано X з Y" line.
+  const electives = useQuery({
+    queryKey: ['schedule-electives'],
+    queryFn: () => api<ElectiveSummary[]>('/schedule/electives'),
+    enabled: !!me.data && !isTeacher && view === 'week',
+  });
+
   const dayLessons = useMemo(() => {
     return (data ?? [])
       .filter((l) => l.dayOfWeek === day)
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
   }, [data, day]);
 
-  const slotMap = useMemo(() => {
-    const m = new Map<string, Lesson>();
-    for (const l of dayLessons) m.set(l.startTime, l);
-    return m;
-  }, [dayLessons]);
+  // Calendar dates for the strip: this week, or the next one when the other
+  // week type is selected (weeks alternate).
+  const monday = dayjs()
+    .subtract((dayjs().day() + 6) % 7, 'day')
+    .add(now.data && week !== currentWeek ? 7 : 0, 'day');
+  const selectedDate = monday.add(day - 1, 'day');
+
+  const isLiveDay = !!now.data && week === currentWeek && clock.day() === day;
+  const nowMin = clock.hour() * 60 + clock.minute();
+
+  const enrolledCount = electives.data?.filter((e) =>
+    e.electiveStudentIds.includes(me.data?._id ?? ''),
+  ).length;
+
+  // Teachers see several groups at once — no single group in the subtitle.
+  const groupName = isTeacher ? undefined : membership?.groupName;
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-4">
       <PageHeader
         title="Розклад"
         subtitle={
           view === 'week'
-            ? `Поточний тиждень: ${currentWeek === 1 ? 'перший' : 'другий'}`
+            ? `${capitalize(selectedDate.format('MMMM YYYY'))}${groupName ? ` · ${groupName}` : ''}`
             : 'Іспити та заліки'
         }
+        action={
+          view === 'week' ? (
+            <button
+              type="button"
+              className="btn btn-outline btn-md"
+              onClick={() => setView('sessions')}
+            >
+              <Icon name="calendarCheck" size={18} />
+              Сесія
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-outline btn-md"
+              onClick={() => setView('week')}
+            >
+              <Icon name="calendar" size={18} />
+              Семестр
+            </button>
+          )
+        }
       />
-
-      {/* Top-level view tabs: semester schedule vs session (exam) schedule */}
-      <div className="flex bg-paper-100 rounded-2xl p-1 gap-1">
-        <button
-          onClick={() => setView('week')}
-          className={cn(
-            'flex-1 h-9 rounded-xl text-sm font-medium transition-colors',
-            view === 'week'
-              ? 'bg-paper-50 text-zinc-900 shadow-sm'
-              : 'text-zinc-500 hover:text-zinc-700',
-          )}
-        >
-          Семестр
-        </button>
-        <button
-          onClick={() => setView('sessions')}
-          className={cn(
-            'flex-1 h-9 rounded-xl text-sm font-medium transition-colors',
-            view === 'sessions'
-              ? 'bg-paper-50 text-zinc-900 shadow-sm'
-              : 'text-zinc-500 hover:text-zinc-700',
-          )}
-        >
-          Сесія
-        </button>
-      </div>
 
       {view === 'sessions' ? (
         <SessionsView query={sessions} />
       ) : (
         <>
-          {/* Week tabs */}
-          <div className="flex bg-paper-100 rounded-2xl p-1 gap-1">
-            {([1, 2] as const).map((w) => (
-              <button
-                key={w}
-                onClick={() => setWeek(w)}
-                className={cn(
-                  'flex-1 h-9 rounded-xl text-sm font-medium transition-colors',
-                  week === w
-                    ? 'bg-paper-50 text-zinc-900 shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-700',
-                )}
-              >
-                {w === 1 ? 'Перший тиждень' : 'Другий тиждень'}
-              </button>
-            ))}
-          </div>
-
-          {/* Day capsules */}
-          <div className="overflow-x-auto -mx-1 px-1">
-            <div className="inline-flex gap-1.5 p-1 bg-paper-100 rounded-full">
+          <section aria-label="Дні тижня" className="flex flex-col gap-2.5">
+            <div className="flex gap-1.5">
               {WEEKDAYS.map((w, i) => {
                 const d = i + 1;
                 const isToday = d === today && week === currentWeek;
                 return (
                   <button
                     key={d}
+                    type="button"
                     onClick={() => setDay(d)}
-                    className={cn(
-                      'min-w-[44px] h-9 px-3 rounded-full text-sm font-semibold transition-colors',
-                      day === d
-                        ? 'bg-zinc-900 text-white shadow-sm ring-1 ring-zinc-900/10'
-                        : isToday
-                          ? 'text-zinc-900 underline underline-offset-4'
-                          : 'text-zinc-700 hover:bg-zinc-100',
-                    )}
+                    aria-pressed={day === d}
+                    className={cn('day flex-1', day === d && 'on', isToday && 'today')}
                   >
-                    {w}
+                    <span className="dow">{w}</span>
+                    <span className="dnum">{monday.add(i, 'day').date()}</span>
                   </button>
                 );
               })}
             </div>
-          </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className={cn('chip', now.data && week === currentWeek && 'chip-accent')}>
+                {ROMAN[week]} тиждень
+                {now.data && week === currentWeek ? ' · поточний' : ''}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setWeek(week === 1 ? 2 : 1)}
+              >
+                Показати {ROMAN[week === 1 ? 2 : 1]} тиждень
+              </button>
+            </div>
+          </section>
 
           {isLoading ? (
-            <div className="card text-sm text-ink-500">Завантаження…</div>
+            <Loading />
+          ) : isError ? (
+            <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити розклад" />
+          ) : dayLessons.length === 0 ? (
+            <Empty
+              title="Пар немає"
+              hint={`${capitalize(selectedDate.format('dddd, D MMMM'))} — вільний день.`}
+              icon="calendar"
+            />
           ) : (
-            <div className="relative pl-[60px] pr-1 pb-2">
-              {/* Vertical dashed line */}
-              <div className="absolute left-[35px] top-2 bottom-2 border-l-2 border-dashed border-paper-300" />
-
-              {KPI_PAIRS.map((slot) => {
-                const lesson = slotMap.get(slot.start);
+            <section aria-label="Пари" className="flex flex-col gap-2.5">
+              {dayLessons.map((l, i) => {
+                const prev = dayLessons[i - 1];
+                // Free KPI slots between two lessons ("вікно").
+                const gaps = prev
+                  ? KPI_PAIRS.filter(
+                      (p) =>
+                        toMin(p.start) >= toMin(prev.endTime) &&
+                        toMin(p.end) <= toMin(l.startTime),
+                    )
+                  : [];
+                const start = toMin(l.startTime);
+                const end = toMin(l.endTime);
+                const isNow = isLiveDay && start <= nowMin && nowMin < end;
+                const isPast = isLiveDay && nowMin >= end;
                 return (
-                  <div key={slot.start} className="relative flex items-start gap-3 mb-3 last:mb-0">
-                    {/* Time badge */}
-                    <div className="absolute -left-[60px] top-0">
-                      <span className="inline-flex items-center justify-center min-w-[50px] h-6 px-2 rounded-full bg-zinc-900 text-white text-[11px] font-bold tabular-nums shadow-sm ring-1 ring-zinc-900/10">
-                        {slot.start}
-                      </span>
-                    </div>
-                    {/* Card or empty space */}
-                    <div className="flex-1 min-h-[48px]">
-                      {lesson ? <LessonCard l={lesson} canManage={canManage} /> : null}
-                    </div>
-                  </div>
+                  <Fragment key={l._id}>
+                    {gaps.map((g) => (
+                      <TimelineMark key={g.start} time={g.start} label="вікно" />
+                    ))}
+                    <LessonRow
+                      l={l}
+                      canManage={canManage}
+                      past={isPast}
+                      live={
+                        isNow
+                          ? {
+                              left: end - nowMin,
+                              progress: Math.round(((nowMin - start) / (end - start)) * 100),
+                            }
+                          : undefined
+                      }
+                    />
+                  </Fragment>
                 );
               })}
-
-              {/* Lessons that don't match a known KPI start time (rare) */}
-              {dayLessons
-                .filter((l) => !KPI_PAIRS.find((p) => p.start === l.startTime))
-                .map((l) => (
-                  <div key={l._id} className="relative flex items-start gap-3 mb-3">
-                    <div className="absolute -left-[60px] top-0">
-                      <span className="inline-flex items-center justify-center min-w-[50px] h-6 px-2 rounded-full bg-zinc-200 text-zinc-700 text-[11px] font-bold tabular-nums">
-                        {l.startTime}
-                      </span>
-                    </div>
-                    <div className="flex-1">
-                      <LessonCard l={l} canManage={canManage} />
-                    </div>
-                  </div>
-                ))}
-            </div>
+              <TimelineMark
+                time={endOfDay(dayLessons[dayLessons.length - 1].endTime)}
+                label="пар більше немає"
+              />
+            </section>
           )}
 
           {/* Electives link — visible to students and heads, not teachers */}
           {!isTeacher && (
-            <Link
-              href="/schedule/electives"
-              className="flex items-center justify-between card hover:bg-paper-100 transition-colors mt-1"
-            >
-              <div>
-                <div className="font-medium text-sm">Вибіркові дисципліни</div>
-                <div className="text-[12px] text-zinc-500 mt-0.5">
-                  Обери, які вибіркові відображати в розкладі
+            <Link href="/schedule/electives" className="row justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="tile tile-soft h-10 w-10 rounded-[12px]">
+                  <Icon name="star" size={20} />
+                </span>
+                <div className="flex min-w-0 flex-col">
+                  <span className="h3 text-ink">Вибіркові дисципліни</span>
+                  <span className="tiny faint">
+                    {electives.data?.length
+                      ? `Обрано ${enrolledCount} з ${electives.data.length} · впливає на ваш розклад`
+                      : 'Обери, які вибіркові відображати в розкладі'}
+                  </span>
                 </div>
               </div>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 text-zinc-400 flex-shrink-0">
-                <path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <Icon name="chevronRight" size={20} className="chev" />
             </Link>
           )}
         </>
@@ -291,137 +350,33 @@ export default function SchedulePage() {
   );
 }
 
-/**
- * "Сесія" tab — vertical list of upcoming exams grouped by month.
- * Past exams are hidden by default; user can toggle to see them too.
- */
-function SessionsView({
-  query,
-}: {
-  query: ReturnType<typeof useQuery<SessionItem[], Error, SessionItem[]>>;
-}) {
-  const [showPast, setShowPast] = useState(false);
-  const today = dayjs().format('YYYY-MM-DD');
-  const all = query.data ?? [];
-  const visible = showPast ? all : all.filter((s) => s.date >= today);
-  const past = all.length - visible.length;
-
-  if (query.isLoading) {
-    return <div className="card text-sm text-ink-500">Завантаження…</div>;
-  }
-  if (query.isError) {
-    return (
-      <div className="card text-sm text-danger">
-        Не вдалося завантажити розклад сесії.
-      </div>
-    );
-  }
-  if (all.length === 0) {
-    return (
-      <div className="card text-sm text-ink-500">
-        Кампус ще не опублікував розклад сесії для цієї групи.
-      </div>
-    );
-  }
-
-  // Group by ISO YYYY-MM for visual breaks.
-  const groups = new Map<string, SessionItem[]>();
-  for (const s of visible) {
-    const key = s.date.slice(0, 7);
-    const arr = groups.get(key) ?? [];
-    arr.push(s);
-    groups.set(key, arr);
-  }
-
+function TimelineMark({ time, label }: { time: string; label: string }) {
   return (
-    <div className="space-y-4">
-      {[...groups.entries()].map(([month, list]) => (
-        <section key={month} className="space-y-2">
-          <div className="section-title">{formatMonthLabel(month)}</div>
-          <div className="space-y-2">
-            {list.map((s) => (
-              <SessionCard key={s._id} s={s} />
-            ))}
-          </div>
-        </section>
-      ))}
-      {!showPast && past > 0 ? (
-        <button
-          type="button"
-          className="btn-secondary w-full text-sm"
-          onClick={() => setShowPast(true)}
-        >
-          Показати минулі ({past})
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function SessionCard({ s }: { s: SessionItem }) {
-  const date = dayjs(s.date);
-  const isPast = date.isBefore(dayjs().startOf('day'));
-  const card = (
-    <div
-      className={cn(
-        'card flex items-start gap-3',
-        isPast && 'opacity-60',
-        s.subjectId && 'hover:bg-paper-100 cursor-pointer',
-      )}
-    >
-      <div className="flex-shrink-0 w-12 text-center">
-        <div className="text-[11px] uppercase font-semibold text-zinc-500 tracking-wide">
-          {date.format('MMM')}
-        </div>
-        <div className="text-[22px] font-bold leading-none mt-0.5 tabular-nums">
-          {date.format('DD')}
-        </div>
-        <div className="text-[10px] text-zinc-500 mt-0.5">{date.format('dd')}</div>
+    <div className="flex items-center gap-3">
+      <div className="w-[50px] flex-shrink-0">
+        <span className="num faint text-[13px]">{time}</span>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap mb-1">
-          <span className={cn('chip text-[10px]', SESSION_TYPE_TONE[s.type])}>
-            {SESSION_TYPE_LABEL[s.type]}
-          </span>
-          {s.startTime ? (
-            <span className="text-[11px] text-zinc-500 tabular-nums">
-              {s.startTime}
-              {s.endTime ? ` – ${s.endTime}` : ''}
-            </span>
-          ) : null}
-          {s.groupName ? (
-            <span className="text-[11px] text-zinc-500">{s.groupName}</span>
-          ) : null}
-        </div>
-        <div className="font-semibold text-[14px] leading-snug">{s.subjectName}</div>
-        {s.room ? (
-          <div className="text-[12px] text-zinc-500 mt-0.5">📍 {s.room}</div>
-        ) : null}
-        {s.teacherNames?.length ? (
-          <div className="text-[12px] text-zinc-500 mt-0.5 truncate">
-            {s.teacherNames.join(', ')}
-          </div>
-        ) : null}
+      <div className="flex flex-1 items-center gap-2.5">
+        <span className="h-0 flex-1 border-t border-dashed border-line-2" />
+        <span className="tiny faint">{label}</span>
+        <span className="h-0 flex-1 border-t border-dashed border-line-2" />
       </div>
     </div>
   );
-
-  if (s.subjectId) {
-    return (
-      <Link href={`/subjects/${s.subjectId}` as unknown as never}>{card}</Link>
-    );
-  }
-  return card;
 }
 
-function formatMonthLabel(month: string): string {
-  const d = dayjs(`${month}-01`);
-  // "Січень 2026"
-  const m = d.format('MMMM');
-  return `${m[0].toUpperCase()}${m.slice(1)} ${d.format('YYYY')}`;
-}
-
-function LessonCard({ l, canManage }: { l: Lesson; canManage?: boolean }) {
+function LessonRow({
+  l,
+  canManage,
+  past,
+  live,
+}: {
+  l: Lesson;
+  canManage?: boolean;
+  past?: boolean;
+  /** Set while the lesson is in progress: minutes left and % elapsed. */
+  live?: { left: number; progress: number };
+}) {
   const qc = useQueryClient();
   const toggleElective = useMutation({
     mutationFn: (isElective: boolean) =>
@@ -436,87 +391,217 @@ function LessonCard({ l, canManage }: { l: Lesson; canManage?: boolean }) {
     },
   });
 
-  const chip = TYPE_CHIP[l.type ?? 'other'] ?? TYPE_CHIP.other;
-  const linkable = !!l.subjectId;
+  const typeLabel = TYPE_LABEL[l.type ?? 'other'] ?? TYPE_LABEL.other;
+  const teachers = l.teacherNames.map(shortenName).join(', ');
+  const meta = [l.groupName, l.room, teachers].filter(Boolean).join(' · ');
 
-  const card = (
-    <div
-      className={cn(
-        'card transition-colors space-y-1.5',
-        linkable && 'hover:bg-paper-100 cursor-pointer',
-      )}
-    >
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className={cn('chip text-[11px]', chip.cls)}>{chip.label}</span>
-        <span className="text-[11px] text-zinc-500 tabular-nums">
-          {l.startTime} – {l.endTime}
+  const electiveBtn = canManage ? (
+    <>
+      <button
+        type="button"
+        disabled={toggleElective.isPending}
+        onClick={() => toggleElective.mutate(!l.isElective)}
+        className={cn(
+          'btn relative z-[1] self-start',
+          live ? 'btn-now-ghost btn-md' : 'btn-ghost btn-sm px-1',
+          !live && !l.isElective && 'text-ink-3',
+        )}
+      >
+        <Icon name="star" size={14} className={l.isElective ? 'fill-current' : undefined} />
+        {l.isElective ? 'Вибіркова' : 'Позначити вибірковою'}
+      </button>
+      {toggleElective.isError ? (
+        <span role="alert" className="chip chip-bad h-auto self-start whitespace-normal py-1">
+          {toggleElective.error.message}
         </span>
-        {l.isElective ? (
-          <span className="chip text-[11px] bg-accent-soft text-accent">вибіркова</span>
-        ) : null}
-      </div>
-      <div className="font-semibold text-[14px] leading-snug">{l.subjectName}</div>
-      {l.groupName ? <div className="text-[12px] text-zinc-500">{l.groupName}</div> : null}
-      {l.teacherNames.length ? (
-        <div className="flex items-center gap-1.5 text-[12px] text-zinc-700">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4 text-zinc-500 flex-shrink-0">
-            <path d="M22 10L12 4 2 10l10 6 10-6zM6 12v5c0 1 3 3 6 3s6-2 6-3v-5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span className="truncate" title={l.teacherNames.join(', ')}>
-            {l.teacherNames.map(shortenName).join(', ')}
-          </span>
-        </div>
       ) : null}
-      {l.room ? (
-        <div className="flex items-center gap-1.5 text-[12px] text-zinc-700">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4 text-zinc-500 flex-shrink-0">
-            <path d="M12 22s7-7 7-12a7 7 0 0 0-14 0c0 5 7 12 7 12z" strokeLinejoin="round" />
-            <circle cx="12" cy="10" r="2.5" />
-          </svg>
-          <span className="underline decoration-dotted">{l.room}</span>
-        </div>
-      ) : null}
-      {l.meetingUrl ? (
-        <a
-          href={l.meetingUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-block text-[12px] text-zinc-900 underline underline-offset-2 mt-0.5 hover:text-zinc-700"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Перейти до зустрічі ↗
-        </a>
+    </>
+  ) : null;
+
+  return (
+    <div className={cn('relative flex gap-3', past && 'opacity-60')}>
+      {/* Whole row opens the subject; buttons/links sit above this overlay. */}
+      {l.subjectId ? (
+        <Link
+          href={`/subjects/${l.subjectId}`}
+          aria-label={l.subjectName}
+          className="absolute inset-0 rounded-2xl"
+        />
       ) : null}
 
-      {/* Head / deputy: toggle elective flag */}
-      {canManage ? (
+      <div className="flex w-[50px] flex-shrink-0 flex-col gap-0.5 pt-3.5">
+        <span className={cn('num text-[13px]', live && 'text-accent-text')}>{l.startTime}</span>
+        <span className="tiny faint">{l.endTime}</span>
+      </div>
+
+      {live ? (
+        <div className="now flex min-w-0 flex-1 flex-col gap-2.5 p-4">
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-[18px] font-bold leading-tight">{l.subjectName}</span>
+            <span className="chip flex-shrink-0 gap-1.5 bg-now-accent text-now-accent-ink">
+              <span className="dot bg-current" />
+              зараз · ще {live.left} хв
+            </span>
+          </div>
+          <span className="small now-muted" title={l.teacherNames.join(', ')}>
+            {[typeLabel, l.isElective ? 'вибіркова' : '', meta].filter(Boolean).join(' · ')}
+          </span>
+          <div className="bar" aria-hidden="true">
+            <span style={{ width: `${live.progress}%` }} />
+          </div>
+          {l.meetingUrl || electiveBtn ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {l.meetingUrl ? (
+                <a
+                  href={l.meetingUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-now btn-md relative z-[1] flex-1"
+                >
+                  {meetingLabel(l.meetingUrl)}
+                  <Icon name="arrowUpRight" size={16} />
+                </a>
+              ) : null}
+              {electiveBtn}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="card-flat flex min-w-0 flex-1 flex-col gap-1.5 p-3.5">
+          <div className="meta">
+            <span className="chip">{typeLabel}</span>
+            {l.isElective ? <span className="chip chip-accent">вибіркова</span> : null}
+            {l.meetingUrl ? <span className="chip chip-info">онлайн</span> : null}
+          </div>
+          <span className="h3">{l.subjectName}</span>
+          {meta || l.meetingUrl ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="small muted min-w-0" title={l.teacherNames.join(', ')}>
+                {meta}
+              </span>
+              {l.meetingUrl ? (
+                <a
+                  href={l.meetingUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-ghost btn-sm relative z-[1] -mr-2 flex-shrink-0 gap-1 px-2"
+                >
+                  {meetingLabel(l.meetingUrl)}
+                  <Icon name="arrowUpRight" size={14} strokeWidth={2.2} />
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+          {electiveBtn}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "Сесія" view — vertical list of upcoming exams grouped by month.
+ * Past exams are hidden by default; user can toggle to see them too.
+ */
+function SessionsView({
+  query,
+}: {
+  query: ReturnType<typeof useQuery<SessionItem[], Error, SessionItem[]>>;
+}) {
+  const [showPast, setShowPast] = useState(false);
+  const today = dayjs().format('YYYY-MM-DD');
+  const all = query.data ?? [];
+  const visible = showPast ? all : all.filter((s) => s.date >= today);
+  const past = all.length - visible.length;
+
+  if (query.isLoading) {
+    return <Loading />;
+  }
+  if (query.isError) {
+    return (
+      <ErrorState
+        error={query.error}
+        onRetry={() => query.refetch()}
+        title="Не вдалося завантажити розклад сесії"
+      />
+    );
+  }
+  if (all.length === 0) {
+    return (
+      <Empty
+        title="Розкладу сесії ще немає"
+        hint="Кампус ще не опублікував розклад сесії для цієї групи."
+        icon="calendarCheck"
+      />
+    );
+  }
+
+  // Group by ISO YYYY-MM for visual breaks.
+  const groups = new Map<string, SessionItem[]>();
+  for (const s of visible) {
+    const key = s.date.slice(0, 7);
+    const arr = groups.get(key) ?? [];
+    arr.push(s);
+    groups.set(key, arr);
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      {[...groups.entries()].map(([month, list]) => (
+        <Section key={month} title={formatMonthLabel(month)}>
+          <div className="flex flex-col gap-2.5">
+            {list.map((s) => (
+              <SessionCard key={s._id} s={s} />
+            ))}
+          </div>
+        </Section>
+      ))}
+      {!showPast && past > 0 ? (
         <button
           type="button"
-          disabled={toggleElective.isPending}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleElective.mutate(!l.isElective);
-          }}
-          className={cn(
-            'mt-1 flex items-center gap-1.5 text-[11px] font-medium transition-colors rounded-md px-2 py-1',
-            l.isElective
-              ? 'bg-accent-soft text-accent hover:bg-accent/20'
-              : 'bg-paper-200 text-zinc-500 hover:bg-zinc-200',
-          )}
+          className="btn btn-secondary btn-md btn-block"
+          onClick={() => setShowPast(true)}
         >
-          <svg viewBox="0 0 24 24" fill={l.isElective ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" className="h-3 w-3">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" strokeLinejoin="round" />
-          </svg>
-          {l.isElective ? 'Вибіркова' : 'Позначити вибірковою'}
+          Показати минулі ({past})
         </button>
       ) : null}
     </div>
   );
+}
 
-  if (l.subjectId) {
+function SessionCard({ s }: { s: SessionItem }) {
+  const date = dayjs(s.date);
+  const isPast = date.isBefore(dayjs().startOf('day'));
+  const meta = [s.room, s.teacherNames?.join(', ')].filter(Boolean).join(' · ');
+  const card = (
+    <div className={cn('card-flat flex items-start gap-3 p-3.5', isPast && 'opacity-60')}>
+      <div className="flex w-12 flex-shrink-0 flex-col items-center gap-0.5 rounded-xl bg-surface-2 py-2">
+        <span className="eyebrow text-[10px]">{date.format('MMM')}</span>
+        <span className="num text-[20px] leading-none">{date.format('DD')}</span>
+        <span className="tiny faint">{date.format('dd')}</span>
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="meta">
+          <span className={cn('chip', SESSION_TYPE_TONE[s.type])}>
+            {SESSION_TYPE_LABEL[s.type]}
+          </span>
+          {s.startTime ? (
+            <span className="num tiny muted whitespace-nowrap">
+              {s.startTime}
+              {s.endTime ? `–${s.endTime}` : ''}
+            </span>
+          ) : null}
+          {s.groupName ? <span className="tiny faint">{s.groupName}</span> : null}
+        </div>
+        <span className="h3">{s.subjectName}</span>
+        {meta ? <span className="small muted truncate">{meta}</span> : null}
+      </div>
+    </div>
+  );
+
+  if (s.subjectId) {
     return (
-      <Link href={`/subjects/${l.subjectId}`} className="block">
+      <Link href={`/subjects/${s.subjectId}` as unknown as never} className="block">
         {card}
       </Link>
     );
@@ -524,4 +609,8 @@ function LessonCard({ l, canManage }: { l: Lesson; canManage?: boolean }) {
   return card;
 }
 
-
+function formatMonthLabel(month: string): string {
+  const d = dayjs(`${month}-01`);
+  // "Січень 2026"
+  return `${capitalize(d.format('MMMM'))} ${d.format('YYYY')}`;
+}

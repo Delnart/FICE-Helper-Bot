@@ -3,7 +3,11 @@
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../../lib/api';
+import { initials } from '../../../../../lib/name';
 import { PageHeader } from '../../../../../components/PageHeader';
+import { Empty, ErrorState, Loading } from '../../../../../components/Empty';
+import { Icon } from '../../../../../components/icons';
+import { pluralUk } from '../../../../../components/subjects/helpers';
 
 interface Student {
   _id: string;
@@ -34,65 +38,52 @@ export default function SubjectStudentsPage() {
   });
 
   const displayName = subject.data?.shortName ?? subject.data?.name ?? '…';
+  const count = students.data?.length ?? 0;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <PageHeader title="Список студентів" subtitle={displayName} />
 
       {students.isLoading ? (
-        <div className="card text-sm text-ink-500">Завантаження…</div>
+        <Loading />
       ) : students.isError ? (
-        <div className="card text-sm text-danger">Не вдалося завантажити список.</div>
-      ) : !students.data?.length ? (
-        <div className="card text-sm text-ink-500">У цій групі немає студентів.</div>
+        <ErrorState
+          error={students.error}
+          onRetry={() => students.refetch()}
+          title="Не вдалося завантажити список"
+        />
+      ) : !count ? (
+        <Empty title="У цій групі немає студентів" icon="users" />
       ) : (
-        <div className="space-y-1.5">
-          {students.data.map((s) => {
-            const name =
-              s.fullName?.trim() ||
-              [s.firstName, s.lastName].filter(Boolean).join(' ').trim() ||
-              s.username ||
-              String(s.telegramId);
-            const tgUrl = s.username
-              ? `https://t.me/${s.username.replace(/^@/, '')}`
-              : `tg://user?id=${s.telegramId}`;
+        <>
+          <div>
+            {students.data!.map((s) => {
+              const name =
+                s.fullName?.trim() ||
+                [s.firstName, s.lastName].filter(Boolean).join(' ').trim() ||
+                s.username ||
+                String(s.telegramId);
+              const username = s.username?.replace(/^@/, '');
+              const tgUrl = username ? `https://t.me/${username}` : `tg://user?id=${s.telegramId}`;
 
-            return (
-              <a
-                key={s._id}
-                href={tgUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="card flex items-center justify-between gap-3 hover:bg-paper-100 active:scale-[0.99] transition-transform no-underline"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="h-9 w-9 rounded-full bg-accent-soft text-accent flex items-center justify-center font-bold text-sm flex-shrink-0">
-                    {initials(name)}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm truncate">{name}</div>
-                    {s.username ? (
-                      <div className="text-xs text-ink-500 truncate">@{s.username.replace(/^@/, '')}</div>
-                    ) : null}
+              return (
+                <a key={s._id} href={tgUrl} target="_blank" rel="noreferrer" className="row">
+                  <span className="avatar">{initials(name)}</span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="h3 truncate">{name}</span>
+                    {username ? <span className="tiny faint truncate">@{username}</span> : null}
                   </div>
-                </div>
-                <span className="text-ink-300 flex-shrink-0 text-lg">↗</span>
-              </a>
-            );
-          })}
-        </div>
+                  <Icon name="arrowUpRight" size={18} className="chev" />
+                </a>
+              );
+            })}
+          </div>
+          <div className="tiny faint pb-2 text-center">
+            <span className="num">{count}</span>{' '}
+            {pluralUk(count, ['студент', 'студенти', 'студентів'])}
+          </div>
+        </>
       )}
-
-      <div className="text-xs text-ink-400 text-center pb-2">
-        {students.data?.length ?? 0} студентів
-      </div>
     </div>
   );
-}
-
-function initials(name: string): string {
-  const parts = name.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  const p = name.toUpperCase();
-  return p.length <= 2 ? p : p.slice(0, 2);
 }

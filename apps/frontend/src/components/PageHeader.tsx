@@ -1,43 +1,65 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
+import { getWebApp } from '../lib/telegram';
 
 interface PageHeaderProps {
-  title: string;
-  subtitle?: string;
+  title: ReactNode;
+  /** Context line under the title (date, group, discipline…). */
+  subtitle?: ReactNode;
+  /** Right-aligned slot: an icon button, a chip, a primary action. */
   action?: ReactNode;
-  /** Force-show or hide the back button. By default, shown on every non-root page (root = bottom-bar tabs). */
+  /** Status chips rendered under the title — never above it. */
+  chips?: ReactNode;
+  /** Force-show or hide Telegram's native back button. Default: shown off the tab roots. */
   back?: boolean;
 }
 
-/** Top-level routes reachable from the bottom navigation. No back button on these. */
-const ROOT_PATHS = new Set<string>(['/', '/schedule', '/attendance', '/profile']);
+/** Tab roots (reachable from the bottom bar). Telegram's back button is hidden there. */
+const ROOT_PATHS = new Set<string>(['/', '/schedule', '/subjects', '/homework', '/profile']);
 
-export function PageHeader({ title, subtitle, action, back }: PageHeaderProps) {
-  const router = useRouter();
-  const pathname = usePathname();
+/**
+ * Screen title. Per the design system nothing sits above the title, and "back"
+ * is Telegram's native BackButton rather than an in-page arrow.
+ */
+export function PageHeader({ title, subtitle, action, chips, back }: PageHeaderProps) {
+  const pathname = usePathname() ?? '/';
   const showBack = back ?? !ROOT_PATHS.has(pathname);
+  useTelegramBackButton(showBack);
 
   return (
-    <header className="flex items-start gap-3 mb-4">
-      {showBack ? (
-        <button
-          type="button"
-          onClick={() => router.back()}
-          aria-label="Назад"
-          className="h-9 w-9 -ml-1 rounded-full bg-paper-200 text-ink-700 hover:bg-paper-300 flex items-center justify-center flex-shrink-0 active:scale-95 transition"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
-            <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      ) : null}
-      <div className="flex-1 min-w-0">
-        <h1 className="text-[22px] font-semibold tracking-tight leading-tight truncate">{title}</h1>
-        {subtitle ? <p className="text-[14px] text-ink-500 mt-1">{subtitle}</p> : null}
+    <header className="flex items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h1 className="h1 break-words">{title}</h1>
+        {subtitle ? <div className="small muted font-medium">{subtitle}</div> : null}
+        {chips ? <div className="meta mt-1">{chips}</div> : null}
       </div>
-      {action ? <div className="pt-0.5 flex-shrink-0">{action}</div> : null}
+      {action ? <div className="flex flex-shrink-0 items-center gap-2">{action}</div> : null}
     </header>
   );
+}
+
+/** Show Telegram's native back button while mounted (navigates with router.back()). */
+export function useTelegramBackButton(show = true) {
+  const router = useRouter();
+  useEffect(() => {
+    const wa = getWebApp();
+    if (!wa || !show) return;
+    const onBack = () => router.back();
+    try {
+      wa.BackButton.onClick(onBack);
+      wa.BackButton.show();
+    } catch {
+      return;
+    }
+    return () => {
+      try {
+        wa.BackButton.offClick(onBack);
+        wa.BackButton.hide();
+      } catch {
+        /* older clients */
+      }
+    };
+  }, [show, router]);
 }
