@@ -20,6 +20,7 @@ import { ApplyTeacherDto, GroupJoinRequestDto, IdentifyTeacherDto, InviteTeacher
 import { BotService } from '../bot/bot.service';
 import { CampusService } from '../campus/campus.service';
 import { SheetsService } from '../sheets/sheets.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class TeachersService implements OnModuleInit {
@@ -33,6 +34,7 @@ export class TeachersService implements OnModuleInit {
     @Inject(forwardRef(() => BotService)) private readonly bot: BotService,
     private readonly campus: CampusService,
     private readonly sheets: SheetsService,
+    private readonly usersService: UsersService,
   ) {}
 
   onModuleInit(): void {
@@ -265,18 +267,12 @@ export class TeachersService implements OnModuleInit {
     await app.save();
 
     if (action === 'approve') {
-      // Grant teacher membership in the group (pull+push to upsert role)
-      await this.users.updateOne(
-        { _id: app.teacherUserId },
-        { $pull: { memberships: { groupId: targetGroupId } } },
-      );
-      await this.users.updateOne(
-        { _id: app.teacherUserId },
-        {
-          $push: {
-            memberships: { groupId: targetGroupId, role: Role.Teacher, joinedAt: new Date() },
-          },
-        },
+      // Grant teacher membership, upgrade-only: approving a (subject) application
+      // from a head/deputy of this group must not demote them to teacher.
+      await this.usersService.ensureMembership(
+        String(app.teacherUserId),
+        String(targetGroupId),
+        Role.Teacher,
       );
 
       // Notify the teacher via bot DM
@@ -317,7 +313,10 @@ export class TeachersService implements OnModuleInit {
     }>
   > {
     const mySubjects = await this.subjects
-      .find({ 'teachers.teacherUserId': new Types.ObjectId(userId) })
+      .find(
+        { 'teachers.teacherUserId': new Types.ObjectId(userId) },
+        { name: 1, shortName: 1, groupId: 1 },
+      )
       .lean()
       .exec();
 
@@ -367,25 +366,29 @@ export class TeachersService implements OnModuleInit {
     const user = await this.users.findById(userId).lean().exec();
     if (!user) throw new NotFoundException('User not found');
 
-    // Access control: if the Sheets table is configured, only allow users whose
-    // Telegram @username appears in the "Викладачі" sheet. This prevents students
-    // from impersonating teachers. When Sheets are not configured (dev mode),
-    // anyone can identify.
-    if (this.sheets.isConfigured()) {
-      const username = user.username;
-      if (!username) {
-        throw new ForbiddenException(
-          'Ваш акаунт не має @username у Telegram. Додайте його і спробуйте ще раз.',
-        );
-      }
-      const inSheet = await this.sheets.findTeacherByUsername(username).catch(() => undefined);
-      if (!inSheet) {
-        throw new ForbiddenException(
-          'Ваш Telegram-тег не знайдено серед викладачів. ' +
-            'Зверніться до адміністратора системи.',
-        );
-      }
+    // Access control: the user's @username must be in the "Викладачі" sheet, and
+    // the Campus lecturer they link must carry that row's name (below) — else any
+    // roster member could claim any lecturer's groups. Without Sheets there is
+    // nothing to verify against, so identification is refused.
+    if (!this.sheets.isConfigured()) {
+      throw new ForbiddenException(
+        'Верифікацію викладачів не налаштовано. Зверніться до адміністратора системи.',
+      );
     }
+    const username = user.username;
+    if (!username) {
+      throw new ForbiddenException(
+        'Ваш акаунт не має @username у Telegram. Додайте його і спробуйте ще раз.',
+      );
+    }
+    const inSheet = await this.sheets.findTeacherByUsername(username).catch(() => undefined);
+    if (!inSheet) {
+      throw new ForbiddenException(
+        'Ваш Telegram-тег не знайдено серед викладачів. ' +
+          'Зверніться до адміністратора системи.',
+      );
+    }
+    const isMe = (l: { name: string }) => sameLecturerName(l.name, inSheet.fullName);
 
     let lecturer: { id: string; name: string } | null = null;
 
@@ -393,6 +396,12 @@ export class TeachersService implements OnModuleInit {
       // User explicitly confirmed a candidate from a previous search
       const all = await this.campus.getLecturers();
       lecturer = all.find((l) => l.id === dto.lecturerId) ?? null;
+      if (lecturer && !isMe(lecturer)) {
+        throw new ForbiddenException(
+          'Цей профіль Кампусу не збігається з вашим ПІБ у таблиці викладачів. ' +
+            'Зверніться до адміністратора системи.',
+        );
+      }
     } else {
       // Auto-match by name
       const name =
@@ -402,7 +411,8 @@ export class TeachersService implements OnModuleInit {
       if (!name) return { matched: false, linked: 0 };
 
       lecturer = await this.campus.findLecturerByName(name);
-      if (!lecturer) {
+      // Someone else's name → no auto-link; candidates are re-checked on confirm.
+      if (!lecturer || !isMe(lecturer)) {
         const candidates = await this.campus.searchLecturers(name, 10);
         return { matched: false, linked: 0, candidates };
       }
@@ -464,8 +474,9 @@ export class TeachersService implements OnModuleInit {
         (t) => t.teacherUserId && String(t.teacherUserId) === userId,
       );
       if (!alreadyIn) {
-        await this.subjects.updateOne(
-          { _id: subject._id },
+        // $ne guard: a concurrent identify (auto + manual) must not push a duplicate.
+        const res = await this.subjects.updateOne(
+          { _id: subject._id, 'teachers.teacherUserId': { $ne: new Types.ObjectId(userId) } },
           {
             $push: {
               teachers: {
@@ -478,7 +489,7 @@ export class TeachersService implements OnModuleInit {
             },
           },
         );
-        linked++;
+        if (res.modifiedCount) linked++;
       }
 
       // Grant teacher membership in the group (idempotent per group)
@@ -489,12 +500,9 @@ export class TeachersService implements OnModuleInit {
           (m) => String(m.groupId) === groupIdStr,
         );
         if (!hasMembership) {
+          // $ne guard: never touch a membership added since `user` was read.
           await this.users.updateOne(
-            { _id: user._id },
-            { $pull: { memberships: { groupId: group._id } } },
-          );
-          await this.users.updateOne(
-            { _id: user._id },
+            { _id: user._id, 'memberships.groupId': { $ne: group._id } },
             {
               $push: {
                 memberships: { groupId: group._id, role: Role.Teacher, joinedAt: new Date() },
@@ -516,7 +524,10 @@ export class TeachersService implements OnModuleInit {
     Array<{ _id: string; name: string; shortName?: string; groupId: string; groupName: string }>
   > {
     const mySubjects = await this.subjects
-      .find({ 'teachers.teacherUserId': new Types.ObjectId(userId) })
+      .find(
+        { 'teachers.teacherUserId': new Types.ObjectId(userId) },
+        { name: 1, shortName: 1, groupId: 1 },
+      )
       .lean()
       .exec();
 
@@ -601,6 +612,27 @@ export class TeachersService implements OnModuleInit {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Every ≥3-char word of the verified sheet name is a word of the Campus name,
+ * and there are at least two (surname + name — a bare surname would match every
+ * namesake). Normalised like CampusService's normalizePersonName (case, і/ї→и,
+ * є/ё→е) plus ґ→г and apostrophe variants (Мар'яна / Мар’яна / Марʼяна).
+ */
+function sameLecturerName(campusName: string, sheetName: string): boolean {
+  const words = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[їі]/g, 'и')
+      .replace(/[єё]/g, 'е')
+      .replace(/ґ/g, 'г')
+      .replace(/['’ʼ`]/g, '')
+      .split(/\s+/);
+  const campus = new Set(words(campusName));
+  const sheet = words(sheetName).filter((w) => w.length >= 3);
+  return sheet.length >= 2 && sheet.every((w) => campus.has(w));
 }
 
 /** Strip whitespace/dashes and lowercase for loose subject-name matching. */

@@ -9,8 +9,13 @@ import { BotService } from '../bot/bot.service';
 import { SheetsService } from '../sheets/sheets.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
-/** How long a `membershipsValidatedAt` timestamp is considered fresh. */
-const REVALIDATE_TTL_MS = 60 * 1000; // 1 min
+/**
+ * How long a `membershipsValidatedAt` timestamp is considered fresh. Each check
+ * costs one Telegram call per group; leaves are also caught by the bot's
+ * left_chat_member handling and the twice-daily cron, so /me doesn't need to
+ * re-check often.
+ */
+const REVALIDATE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
 
 @Injectable()
 export class UsersService {
@@ -43,6 +48,21 @@ export class UsersService {
   }): Promise<UserDocument> {
     // Look up first so we can detect username changes.
     const existing = await this.users.findOne({ telegramId: params.telegramId }).exec();
+
+    // Nothing changed → skip the write (timestamps would bump updatedAt on every
+    // group message otherwise). `undefined` params are stripped from $set by
+    // Mongoose, so they count as "unchanged".
+    const same = (next: string | undefined, prev: string | undefined) =>
+      next === undefined || next === prev;
+    if (
+      existing &&
+      existing.firstName === params.firstName &&
+      same(params.lastName, existing.lastName) &&
+      same(params.username, existing.username) &&
+      (!params.avatarUrl || params.avatarUrl === existing.avatarUrl)
+    ) {
+      return existing;
+    }
 
     const newUsername = params.username?.replace(/^@+/, '').toLowerCase() || undefined;
     const oldUsername = existing?.username?.replace(/^@+/, '').toLowerCase() || undefined;
@@ -84,30 +104,18 @@ export class UsersService {
    * If the user has no membership yet — adds one.
    */
   async ensureMembership(userId: string, groupId: string, role: Role): Promise<void> {
-    const u = await this.users.findById(userId).lean().exec();
-    if (!u) return;
-    const existing = (u.memberships ?? []).find((m) => String(m.groupId) === groupId);
-    if (existing) {
-      // Already has a higher or equal role — no change needed.
-      if (ROLE_LEVEL[existing.role] >= ROLE_LEVEL[role]) return;
-      // Lower role found — upgrade it by replacing the membership.
-      await this.users.updateOne(
-        { _id: new Types.ObjectId(userId) },
-        { $pull: { memberships: { groupId: new Types.ObjectId(groupId) } } },
-      );
-    }
-    await this.users.updateOne(
-      { _id: new Types.ObjectId(userId) },
-      {
-        $push: {
-          memberships: {
-            groupId: new Types.ObjectId(groupId),
-            role,
-            joinedAt: new Date(),
-          },
-        },
-      },
+    const _id = new Types.ObjectId(userId);
+    const gid = new Types.ObjectId(groupId);
+    const lower = Object.values(Role).filter((r) => ROLE_LEVEL[r] < ROLE_LEVEL[role]);
+    // Single-statement writes: a $pull+$push pair left a window where readers
+    // saw no membership (403 / missing role) and concurrent calls pushed dupes.
+    const up = await this.users.updateOne(
+      { _id, memberships: { $elemMatch: { groupId: gid, role: { $in: lower } } } },
+      { $set: { 'memberships.$.role': role } },
     );
+    if (up.matchedCount) return;
+    // No membership yet — or an equal/higher one, which the $ne guard leaves alone.
+    await this.pushMembership(_id, gid, role);
   }
 
   /**
@@ -124,6 +132,9 @@ export class UsersService {
       (m) => String(m.groupId) === groupId,
     );
     if (!membership) return; // already gone — nothing to do
+    // Same rule as BotService.revalidateUserMemberships: teacher access isn't
+    // tied to being in the students' chat (join-request / Campus / subject link).
+    if (membership.role === Role.Teacher) return;
 
     // Drop the membership
     await this.users.updateOne(
@@ -165,14 +176,31 @@ export class UsersService {
     const validatedAt = (user as { membershipsValidatedAt?: Date }).membershipsValidatedAt;
     const stale = !validatedAt || Date.now() - validatedAt.getTime() > REVALIDATE_TTL_MS;
     if (stale && (user.memberships?.length ?? 0) > 0) {
-      void this.bot.revalidateUserMemberships(String(user._id)).catch((err) => {
-        this.logger.warn(`background revalidation failed: ${(err as Error).message}`);
-      });
+      // Claim the slot atomically first so parallel /me calls (the app fires
+      // several on open) start only one revalidation.
+      const now = new Date();
+      void this.users
+        .updateOne(
+          {
+            _id: user._id,
+            $or: [
+              { membershipsValidatedAt: { $lt: new Date(now.getTime() - REVALIDATE_TTL_MS) } },
+              { membershipsValidatedAt: { $exists: false } },
+            ],
+          },
+          { $set: { membershipsValidatedAt: now } },
+        )
+        .then((claim) =>
+          claim.modifiedCount ? this.bot.revalidateUserMemberships(String(user._id)) : undefined,
+        )
+        .catch((err) => {
+          this.logger.warn(`background revalidation failed: ${(err as Error).message}`);
+        });
     }
 
     const groupIds = (user.memberships ?? []).map((m) => m.groupId);
     const groups = groupIds.length
-      ? await this.groups.find({ _id: { $in: groupIds } }).lean().exec()
+      ? await this.groups.find({ _id: { $in: groupIds } }, { academicName: 1 }).lean().exec()
       : [];
     const groupName = new Map(groups.map((g) => [String(g._id), g.academicName]));
 
@@ -193,10 +221,8 @@ export class UsersService {
     if (memberships.length > 0) {
       accessReason = 'member';
     } else {
-      const teaching = await this.subjects
-        .countDocuments({ 'teachers.teacherUserId': user._id })
-        .exec();
-      if (teaching > 0) {
+      const teaching = await this.subjects.exists({ 'teachers.teacherUserId': user._id }).exec();
+      if (teaching) {
         accessReason = 'teacher';
       } else if (user.username && this.sheets.isConfigured()) {
         const inSheet = await this.sheets
@@ -235,24 +261,27 @@ export class UsersService {
     return this.profileFor(id);
   }
 
+  /** Set the user's role in a group to exactly `role` (adds the membership if missing). */
   async addMembership(userId: string, groupId: string, role: Role): Promise<void> {
-    await this.users.updateOne(
-      { _id: new Types.ObjectId(userId) },
-      {
-        $pull: { memberships: { groupId: new Types.ObjectId(groupId) } },
-      },
+    const _id = new Types.ObjectId(userId);
+    const gid = new Types.ObjectId(groupId);
+    // $[m] (not $) so duplicate entries left by the old pull+push race all get
+    // the new role — RolesGuard takes the max, so a stale higher dupe would
+    // survive a downgrade (e.g. removeDeputy).
+    const set = await this.users.updateOne(
+      { _id, 'memberships.groupId': gid },
+      { $set: { 'memberships.$[m].role': role } },
+      { arrayFilters: [{ 'm.groupId': gid }] },
     );
+    if (set.matchedCount) return;
+    await this.pushMembership(_id, gid, role);
+  }
+
+  /** Push a membership only if the user has none for this group (race-safe). */
+  private async pushMembership(_id: Types.ObjectId, groupId: Types.ObjectId, role: Role): Promise<void> {
     await this.users.updateOne(
-      { _id: new Types.ObjectId(userId) },
-      {
-        $push: {
-          memberships: {
-            groupId: new Types.ObjectId(groupId),
-            role,
-            joinedAt: new Date(),
-          },
-        },
-      },
+      { _id, 'memberships.groupId': { $ne: groupId } },
+      { $push: { memberships: { groupId, role, joinedAt: new Date() } } },
     );
   }
 

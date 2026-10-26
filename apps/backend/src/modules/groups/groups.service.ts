@@ -261,6 +261,11 @@ export class GroupsService {
     if (String(group.headUserId) === targetUserId) {
       throw new BadRequestException('Head cannot be their own deputy');
     }
+    const role = await this.memberRole(targetUserId, String(group._id));
+    // ensureMembership sets the role exactly — don't let it demote a co-head/admin.
+    if (ROLE_LEVEL[role] > ROLE_LEVEL[Role.DeputyHead]) {
+      throw new BadRequestException('User already has a higher role in this group');
+    }
     await this.groups.updateOne(
       { _id: group._id },
       { $addToSet: { deputyUserIds: new Types.ObjectId(targetUserId) } },
@@ -277,15 +282,30 @@ export class GroupsService {
     if (String(group.headUserId) !== requestingUserId) {
       throw new ForbiddenException('Only group head can remove deputies');
     }
+    const role = await this.memberRole(targetUserId, String(group._id));
     await this.groups.updateOne(
       { _id: group._id },
       { $pull: { deputyUserIds: new Types.ObjectId(targetUserId) } },
     );
+    // Only a deputy is demoted — this must not strip a teacher's or co-head's role.
+    if (role !== Role.DeputyHead) return;
     await this.ensureMembership(
       new Types.ObjectId(targetUserId),
       group._id as Types.ObjectId,
       Role.Student,
     );
+  }
+
+  /** The user's highest role in the group (RolesGuard semantics); 404 if not a member. */
+  private async memberRole(userId: string, groupId: string): Promise<Role> {
+    const user = Types.ObjectId.isValid(userId)
+      ? await this.users.findById(userId, { memberships: 1 }).lean().exec()
+      : null;
+    const roles = (user?.memberships ?? [])
+      .filter((m) => String(m.groupId) === groupId)
+      .map((m) => m.role);
+    if (!roles.length) throw new NotFoundException('User is not a member of this group');
+    return roles.reduce((a, b) => (ROLE_LEVEL[b] > ROLE_LEVEL[a] ? b : a));
   }
 
   async updateReminderSettings(
@@ -308,22 +328,27 @@ export class GroupsService {
     return group;
   }
 
+  /**
+   * Set the user's role in the group to exactly `role`. Same pattern as
+   * UsersService.addMembership — duplicated because GroupsModule can't import
+   * UsersModule (UsersModule → BotModule → GroupsModule cycle). Two single-
+   * statement writes, so readers never see the membership missing.
+   */
   private async ensureMembership(
     userId: Types.ObjectId,
     groupId: Types.ObjectId,
     role: Role,
   ): Promise<void> {
-    await this.users.updateOne(
-      { _id: userId },
-      { $pull: { memberships: { groupId } } },
+    // $[m] so any duplicate entries get the role too (RolesGuard takes the max).
+    const set = await this.users.updateOne(
+      { _id: userId, 'memberships.groupId': groupId },
+      { $set: { 'memberships.$[m].role': role } },
+      { arrayFilters: [{ 'm.groupId': groupId }] },
     );
+    if (set.matchedCount) return;
     await this.users.updateOne(
-      { _id: userId },
-      {
-        $push: {
-          memberships: { groupId, role, joinedAt: new Date() },
-        },
-      },
+      { _id: userId, 'memberships.groupId': { $ne: groupId } },
+      { $push: { memberships: { groupId, role, joinedAt: new Date() } } },
     );
   }
 
@@ -336,9 +361,10 @@ export class GroupsService {
 
   /** Return minimal group info for the join-request picker (no sensitive fields). */
   async searchPublic(q: string): Promise<Array<{ _id: string; academicName: string }>> {
-    const filter = q.trim()
-      ? { academicName: { $regex: q.trim(), $options: 'i' } }
-      : {};
+    // Literal match: raw input as a pattern allows ReDoS and 500s on invalid regex.
+    // Non-string (?q[]=…) is treated as empty.
+    const term = typeof q === 'string' ? q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+    const filter = term ? { academicName: { $regex: term, $options: 'i' } } : {};
     const results = await this.groups
       .find(filter, { academicName: 1 })
       .sort({ academicName: 1 })

@@ -2,7 +2,7 @@ import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit }
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Bot, Context, GrammyError, InlineKeyboard, Keyboard } from 'grammy';
 import { GroupsService } from '../groups/groups.service';
 import { UsersService } from '../users/users.service';
@@ -10,13 +10,24 @@ import { CampusService } from '../campus/campus.service';
 import { SheetsService, SheetGroupHead } from '../sheets/sheets.service';
 import { ScheduleService } from '../schedule/schedule.service';
 import { User, UserDocument } from '../users/user.schema';
+import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { SupportTicket, SupportTicketDocument } from './support-ticket.schema';
 import { Role, ROLE_LEVEL } from '@fice/shared';
+
+/** How long a group member's auto-onboarding result is trusted (see recentMembers). */
+const MEMBER_RECHECK_MS = 30 * 60_000;
 
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BotService.name);
   private bot?: Bot;
+  /**
+   * `chat:user` pairs auto-onboarded recently → timestamp. Every group message
+   * used to cost 4 Mongo round-trips (incl. a write); a member only needs
+   * re-checking every MEMBER_RECHECK_MS.
+   */
+  // ponytail: wholesale clear at 5k entries instead of an LRU — plenty for a few hundred groups.
+  private readonly recentMembers = new Map<string, number>();
 
   constructor(
     private readonly config: ConfigService,
@@ -27,6 +38,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly sheets: SheetsService,
     private readonly schedule: ScheduleService,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @InjectModel(AcademicGroup.name) private readonly groupModel: Model<AcademicGroupDocument>,
     @InjectModel(SupportTicket.name) private readonly tickets: Model<SupportTicketDocument>,
   ) {}
 
@@ -63,7 +75,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.bot = new Bot(token);
+    // grammy's default request timeout is 500 s — a stuck call would hang
+    // reminders/revalidation for ~8 min. Must stay above the 30 s getUpdates long-poll.
+    this.bot = new Bot(token, { client: { timeoutSeconds: 45 } });
     this.registerHandlers(this.bot);
     await this.cleanupLegacySupportTicketIndexes();
 
@@ -306,6 +320,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       if (['member', 'administrator', 'creator'].includes(update.new_chat_member.status)) {
         await this.ensureMember(group, user);
       } else if (['left', 'kicked'].includes(update.new_chat_member.status)) {
+        this.recentMembers.delete(`${ctx.chat.id}:${user.id}`);
         await this.removeMember(group, user);
       }
     });
@@ -332,11 +347,28 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
         // ── Group chat: auto-onboarding ─────────────────────────────────────
         if (chatType && isGroupChatType(chatType)) {
+          // Leave/kick service message: `from` is the leaver (or the kicking
+          // admin), so onboarding it would re-add someone who just left. The
+          // bot doesn't subscribe to chat_member updates (not in Telegram's
+          // default allowed_updates), so this is the prompt leave signal.
+          const left = ctx.message?.left_chat_member;
+          if (left) {
+            if (left.is_bot) return;
+            this.recentMembers.delete(`${ctx.chat!.id}:${left.id}`);
+            const group = await this.groups.findByChat(ctx.chat!.id);
+            if (group) await this.removeMember(group, left);
+            return;
+          }
           const from = ctx.from;
           if (!from || from.is_bot) return;
+          const key = `${ctx.chat!.id}:${from.id}`;
+          const seenAt = this.recentMembers.get(key);
+          if (seenAt && Date.now() - seenAt < MEMBER_RECHECK_MS) return;
           const group = await this.groups.findByChat(ctx.chat!.id);
           if (!group) return;
           await this.ensureMember(group, from);
+          if (this.recentMembers.size >= 5000) this.recentMembers.clear();
+          this.recentMembers.set(key, Date.now());
           return;
         }
 
@@ -401,6 +433,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const group = await this.groups.findByChat(chatId);
     if (!group) return;
     const groupId = String(group._id);
+    // Memberships are stripped below; if the bot is re-added within
+    // MEMBER_RECHECK_MS the cache would otherwise skip re-onboarding everyone.
+    this.recentMembers.clear();
     await this.groups.markInactive(groupId);
     // Wipe memberships for this group from every user (idempotent $pull).
     const result = await this.userModel
@@ -1264,32 +1299,40 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    * Cross-check a user's memberships against Telegram. If they're no longer in
    * a chat (status `left`/`kicked`), drop that membership. Updates
    * `membershipsValidatedAt` even if nothing changed so callers can use it as a
-   * cache key. Safe to call concurrently — Mongo upserts are idempotent.
+   * cache key. Always checks — the /me TTL claim lives in UsersService.profileFor.
+   *
+   * Teacher memberships are skipped: teachers get them via join-request approval,
+   * Campus identify or subject linking without joining the students' chat, so
+   * Telegram reports them as `left`.
    */
   async revalidateUserMemberships(userId: string): Promise<{ removed: number }> {
     if (!this.bot) return { removed: 0 };
-    const user = await this.userModel.findById(userId).exec();
+    const user = await this.userModel
+      .findById(userId, { telegramId: 1, memberships: 1 })
+      .lean()
+      .exec();
     if (!user) return { removed: 0 };
-    if (!user.memberships?.length) {
-      user.membershipsValidatedAt = new Date();
-      await user.save();
-      return { removed: 0 };
-    }
 
-    const stale: string[] = [];
-    for (const m of user.memberships) {
-      const group = await this.groups.findById(String(m.groupId)).catch(() => null);
-      if (!group?.telegramChatId) continue;
+    const groupIds = (user.memberships ?? [])
+      .filter((m) => m.role !== Role.Teacher)
+      .map((m) => m.groupId);
+    const groups = groupIds.length
+      ? await this.groupModel.find({ _id: { $in: groupIds } }, { telegramChatId: 1 }).lean().exec()
+      : [];
+
+    const stale: Types.ObjectId[] = [];
+    for (const group of groups) {
+      if (!group.telegramChatId) continue;
       try {
         const status = await this.bot.api.getChatMember(group.telegramChatId, user.telegramId);
         if (status.status === 'left' || status.status === 'kicked') {
-          stale.push(String(m.groupId));
+          stale.push(group._id);
         }
       } catch (err) {
         // 400 "user not found" / "chat not found" → also treat as gone.
         const msg = (err as Error).message ?? '';
         if (/user not found|member.*not found/i.test(msg)) {
-          stale.push(String(m.groupId));
+          stale.push(group._id);
         } else {
           this.logger.warn(
             `getChatMember failed for u=${user.telegramId} g=${group.telegramChatId}: ${msg}`,
@@ -1298,13 +1341,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (stale.length) {
-      user.memberships = user.memberships.filter(
-        (m) => !stale.includes(String(m.groupId)),
-      );
-    }
-    user.membershipsValidatedAt = new Date();
-    await user.save();
+    // Targeted $pull instead of save(): a whole-array save would revert role
+    // changes made by other requests while the Telegram calls were in flight.
+    await this.userModel.updateOne(
+      { _id: user._id },
+      {
+        $set: { membershipsValidatedAt: new Date() },
+        ...(stale.length
+          ? { $pull: { memberships: { groupId: { $in: stale }, role: { $ne: Role.Teacher } } } }
+          : {}),
+      },
+    );
     if (stale.length) {
       this.logger.log(
         `Revalidated u=${user.telegramId}: removed ${stale.length} stale membership(s)`,
@@ -1313,8 +1360,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     return { removed: stale.length };
   }
 
-  /** 12-hour bulk revalidation of every user that has at least one membership. */
-  @Cron('0 0 */12 * * *')
+  /** Twice-daily bulk revalidation of every user that has at least one membership. */
+  // Off-peak (03:50/15:50) so it doesn't pile onto the 12:00 schedule/sheets jobs.
+  @Cron('0 50 3,15 * * *')
   async revalidateAllMemberships(): Promise<void> {
     if (!this.bot) return;
     try {
