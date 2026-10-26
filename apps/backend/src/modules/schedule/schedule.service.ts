@@ -542,6 +542,7 @@ export class ScheduleService {
       });
     }
     if (ops.length) await this.lessons.bulkWrite(ops);
+    await this.groups.updateOne({ _id: group._id }, { $set: { scheduleSyncedAt: new Date() } }).exec();
 
     return items.length;
   }

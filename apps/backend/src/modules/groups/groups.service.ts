@@ -14,6 +14,8 @@ export interface GroupSettingsView {
   birthdayAnnouncementsEnabled: boolean;
   lessonReminderMinutes: number;
   campusGroupId?: string;
+  /** ISO time of the last successful Campus schedule sync. */
+  scheduleSyncedAt?: string;
   canEdit: boolean;
   iAmHead: boolean;
   headUserId: string;
@@ -60,6 +62,7 @@ export class GroupsService {
       birthdayAnnouncementsEnabled: group.birthdayAnnouncementsEnabled,
       lessonReminderMinutes: group.lessonReminderMinutes,
       campusGroupId: group.campusGroupId,
+      scheduleSyncedAt: group.scheduleSyncedAt?.toISOString(),
       canEdit,
       iAmHead,
       headUserId: String(group.headUserId),

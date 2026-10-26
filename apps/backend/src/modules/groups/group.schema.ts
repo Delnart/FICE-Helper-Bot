@@ -13,6 +13,8 @@ export class AcademicGroup {
   @Prop() messageThreadId?: number;
 
   @Prop() campusGroupId?: string;
+  /** Last successful schedule sync with Campus (shown as «Кампус синхр. N год тому»). */
+  @Prop() scheduleSyncedAt?: Date;
 
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User' })
   headUserId?: Types.ObjectId;
