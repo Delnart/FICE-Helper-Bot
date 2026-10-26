@@ -9,12 +9,15 @@ import { Toggle } from '../../../../components/ui/Toggle';
 import { ErrorState, Loading } from '../../../../components/Empty';
 import { Icon } from '../../../../components/icons';
 import { haptic } from '../../../../lib/telegram';
+import { useActiveGroup } from '../../../../hooks/useMe';
 
 interface Prefs {
   dmQueueOpen: boolean;
   dmNextInQueue: boolean;
   dmDeadlineTomorrow: boolean;
   dmSwapRequests: boolean;
+  dmMorningDigest: boolean;
+  dmLessonReminder: boolean;
 }
 
 const GROUPS: Array<{ title: string; items: Array<{ k: keyof Prefs; title: string; hint: string }> }> = [
@@ -22,13 +25,21 @@ const GROUPS: Array<{ title: string; items: Array<{ k: keyof Prefs; title: strin
     title: 'Черги',
     items: [
       { k: 'dmQueueOpen', title: 'Відкриття черги', hint: 'За 5 хв до відкриття — встигнете записатись' },
-      { k: 'dmNextInQueue', title: 'Ви наступний у черзі', hint: 'Коли попередній почав здавати' },
+      { k: 'dmNextInQueue', title: 'Ви наступний', hint: 'Коли попередній почав здавати' },
       { k: 'dmSwapRequests', title: 'Запити на обмін', hint: 'Коли хтось пропонує помінятись місцями' },
     ],
   },
   {
     title: 'Завдання',
-    items: [{ k: 'dmDeadlineTomorrow', title: 'Дедлайн завтра', hint: 'Ранкове нагадування о 9:00, лише невиконані' }],
+    items: [
+      { k: 'dmDeadlineTomorrow', title: 'Дедлайн завтра', hint: 'Зранку о 9:00, лише невиконані' },
+      { k: 'dmMorningDigest', title: 'Ранкове нагадування', hint: 'О 8:00 — пари та дедлайни на день' },
+    ],
+  },
+  {
+    title: 'Пари',
+    // hint is replaced at render with the group's actual lead time (lessonHint).
+    items: [{ k: 'dmLessonReminder', title: 'Нагадування про пару в ЛС', hint: '' }],
   },
 ];
 const ALL_KEYS = GROUPS.flatMap((g) => g.items.map((i) => i.k));
@@ -44,6 +55,19 @@ export default function NotificationsSettingsPage() {
     queryKey: PREFS_QUERY_KEY,
     queryFn: () => api<Prefs>('/notifications/prefs'),
   });
+  // Same key as group settings/Home, so the lead time is usually already cached.
+  // No active group (teacher-only) → skip the request (it'd 400); errors → generic hint below.
+  const activeGroupId = useActiveGroup();
+  const groupSettings = useQuery({
+    queryKey: ['group-settings'],
+    queryFn: () => api<{ lessonReminderMinutes?: number; notificationsEnabled?: boolean }>('/groups/current/settings'),
+    enabled: !!activeGroupId,
+  });
+  const minutes = groupSettings.data?.lessonReminderMinutes;
+  // 0 = the scheduler fires right at the start time.
+  const lessonHint = `${
+    typeof minutes !== 'number' ? 'Перед початком пари' : minutes === 0 ? 'На початку пари' : `За ${minutes} хв`
+  }${groupSettings.data?.notificationsEnabled === false ? '' : ' · у чаті групи воно вже є'}`;
 
   /**
    * Optimistic update + final refetch:
@@ -108,7 +132,7 @@ export default function NotificationsSettingsPage() {
                 <span className="flex min-w-0 flex-col">
                   <span className="h3">Сповіщення в ЛС</span>
                   <span className="tiny faint">
-                    <span className="num">{onCount}</span> з <span className="num">{ALL_KEYS.length}</span> увімкнено
+                    {onCount} з {ALL_KEYS.length} увімкнено
                   </span>
                 </span>
               </span>
@@ -130,7 +154,7 @@ export default function NotificationsSettingsPage() {
                     <label className="row-plain cursor-pointer justify-between">
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="h3">{l.title}</span>
-                        <span className="tiny faint">{l.hint}</span>
+                        <span className="tiny faint">{l.k === 'dmLessonReminder' ? lessonHint : l.hint}</span>
                       </span>
                       <Toggle
                         checked={Boolean(data?.[l.k])}
