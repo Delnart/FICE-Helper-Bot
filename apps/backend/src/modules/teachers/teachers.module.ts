@@ -1,6 +1,8 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TeacherApplication, TeacherApplicationSchema } from './teacher-application.schema';
+import { Homework, HomeworkSchema } from '../homework/homework.schema';
+import { ManualStudent, ManualStudentSchema } from '../manual-students/manual-student.schema';
 import { TeachersService } from './teachers.service';
 import { TeachersController } from './teachers.controller';
 import { SubjectsModule } from '../subjects/subjects.module';
@@ -14,6 +16,8 @@ import { SheetsModule } from '../sheets/sheets.module';
   imports: [
     MongooseModule.forFeature([
       { name: TeacherApplication.name, schema: TeacherApplicationSchema },
+      { name: Homework.name, schema: HomeworkSchema },
+      { name: ManualStudent.name, schema: ManualStudentSchema },
     ]),
     SubjectsModule,
     UsersModule,

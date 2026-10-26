@@ -15,6 +15,8 @@ import { TeacherApplication, TeacherApplicationDocument } from './teacher-applic
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
+import { Homework, HomeworkDocument } from '../homework/homework.schema';
+import { ManualStudent, ManualStudentDocument } from '../manual-students/manual-student.schema';
 import { RequestUser } from '../../common/types/request-user';
 import { ApplyTeacherDto, GroupJoinRequestDto, IdentifyTeacherDto, InviteTeacherDto } from './dto/teacher.dto';
 import { BotService } from '../bot/bot.service';
@@ -31,6 +33,8 @@ export class TeachersService implements OnModuleInit {
     @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     @InjectModel(AcademicGroup.name) private readonly groups: Model<AcademicGroupDocument>,
+    @InjectModel(Homework.name) private readonly homework: Model<HomeworkDocument>,
+    @InjectModel(ManualStudent.name) private readonly manualStudents: Model<ManualStudentDocument>,
     @Inject(forwardRef(() => BotService)) private readonly bot: BotService,
     private readonly campus: CampusService,
     private readonly sheets: SheetsService,
@@ -521,12 +525,23 @@ export class TeachersService implements OnModuleInit {
    * Used by the teacher-specific home page.
    */
   async getMySubjects(userId: string): Promise<
-    Array<{ _id: string; name: string; shortName?: string; groupId: string; groupName: string }>
+    Array<{
+      _id: string;
+      name: string;
+      shortName?: string;
+      icon?: string;
+      groupId: string;
+      groupName: string;
+      /** Students in the subject's group: app members (non-teacher roles) + students added by hand. */
+      groupStudentCount: number;
+      /** Homework of this subject that is still due (deadline ahead or none). */
+      activeHomework: number;
+    }>
   > {
     const mySubjects = await this.subjects
       .find(
         { 'teachers.teacherUserId': new Types.ObjectId(userId) },
-        { name: 1, shortName: 1, groupId: 1 },
+        { name: 1, shortName: 1, icon: 1, groupId: 1 },
       )
       .lean()
       .exec();
@@ -540,12 +555,52 @@ export class TeachersService implements OnModuleInit {
       .exec();
     const groupNameMap = new Map(dbGroups.map((g) => [String(g._id), g.academicName]));
 
+    // Three grouped counts instead of a query per group / subject.
+    const gids = groupIds.map((id) => new Types.ObjectId(id));
+    const now = new Date();
+    const [members, manual, homework] = await Promise.all([
+      this.users
+        .aggregate<{ _id: Types.ObjectId; n: number }>([
+          { $match: { 'memberships.groupId': { $in: gids } } },
+          { $unwind: '$memberships' },
+          { $match: { 'memberships.groupId': { $in: gids }, 'memberships.role': { $ne: Role.Teacher } } },
+          { $group: { _id: '$memberships.groupId', n: { $sum: 1 } } },
+        ])
+        .exec(),
+      this.manualStudents
+        .aggregate<{ _id: Types.ObjectId; n: number }>([
+          { $match: { groupId: { $in: gids } } },
+          { $group: { _id: '$groupId', n: { $sum: 1 } } },
+        ])
+        .exec(),
+      this.homework
+        .aggregate<{ _id: Types.ObjectId; n: number }>([
+          {
+            $match: {
+              subjectId: { $in: mySubjects.map((s) => s._id) },
+              // teamSize 0 = info-only posts, also hidden from students' lists.
+              teamSize: { $ne: 0 },
+              $or: [{ deadline: { $gte: now } }, { deadline: null }],
+            },
+          },
+          { $group: { _id: '$subjectId', n: { $sum: 1 } } },
+        ])
+        .exec(),
+    ]);
+    const count = (rows: Array<{ _id: Types.ObjectId; n: number }>) => new Map(rows.map((r) => [String(r._id), r.n]));
+    const memberCount = count(members);
+    const manualCount = count(manual);
+    const homeworkCount = count(homework);
+
     return mySubjects.map((s) => ({
       _id: String(s._id),
       name: s.name,
       shortName: s.shortName,
+      icon: s.icon,
       groupId: String(s.groupId),
       groupName: groupNameMap.get(String(s.groupId)) ?? String(s.groupId),
+      groupStudentCount: (memberCount.get(String(s.groupId)) ?? 0) + (manualCount.get(String(s.groupId)) ?? 0),
+      activeHomework: homeworkCount.get(String(s._id)) ?? 0,
     }));
   }
 
