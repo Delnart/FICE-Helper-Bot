@@ -269,3 +269,12 @@ body::-webkit-scrollbar {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+  /* Mouse users get a thin bar on hover (touch screens keep swiping without one). */
+  @media (hover: hover) and (pointer: fine) {
+    /* No text selection / native link drag while drag-scrolling (lib/scroll-x). */
+    .scroll-x { cursor: grab; user-select: none; }
+    .scroll-x a, .scroll-x img { -webkit-user-drag: none; }
+    .scroll-x:hover { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+    .scroll-x:hover::-webkit-scrollbar { display: block; height: 6px; }
+    .scroll-x:hover::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 999px; }
+  }

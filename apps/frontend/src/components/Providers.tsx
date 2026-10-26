@@ -4,6 +4,7 @@ import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-
 import { useEffect, useState, type ReactNode } from 'react';
 import { ApiError, subscribeActiveGroup } from '../lib/api';
 import { getWebApp, syncTheme } from '../lib/telegram';
+import { enableDesktopScrollX } from '../lib/scroll-x';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(
@@ -23,6 +24,7 @@ export function Providers({ children }: { children: ReactNode }) {
       }),
   );
   useEffect(() => syncTheme(), []);
+  useEffect(() => enableDesktopScrollX(), []);
   // Group-scoped data is cached under keys without the group id (sent as the
   // x-group-id header), so anything fetched before / for another group is
   // wrong once the active group changes — refetch all but the user profile.
