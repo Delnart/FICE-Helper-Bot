@@ -38,7 +38,7 @@ export class HomeworkController {
     @Query('subjectId') subjectId?: string,
   ) {
     if (subjectId) {
-      return this.hw.listBySubject(subjectId, user.userId);
+      return this.hw.listBySubject(user, subjectId);
     }
     if (!activeGroupId) throw new BadRequestException('No active group');
     return this.hw.listAllForUser(activeGroupId, user.userId);
@@ -71,7 +71,7 @@ export class HomeworkController {
     @Param('id') id: string,
     @Body() dto: MarkCompletionDto,
   ) {
-    await this.hw.markCompletion(user.userId, id, dto.done);
+    await this.hw.markCompletion(user, id, dto.done);
     return { ok: true };
   }
 }

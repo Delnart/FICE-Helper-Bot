@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Role, ROLE_LEVEL, TeacherRoleInSubject } from '@fice/shared';
@@ -32,6 +32,7 @@ export class SubjectsService {
       groupId: new Types.ObjectId(dto.groupId),
       name: dto.name,
       shortName: dto.shortName,
+      icon: dto.icon?.trim() || undefined,
       campusSubjectId: dto.campusSubjectId,
       teachers,
       links: this.normalizeLinks(dto.links),
@@ -43,8 +44,12 @@ export class SubjectsService {
     return subject;
   }
 
-  async list(groupId: string): Promise<SubjectDocument[]> {
-    return this.subjects.find({ groupId: new Types.ObjectId(groupId) }).sort({ name: 1 }).exec();
+  async list(groupId: string): Promise<Array<Subject & { _id: Types.ObjectId }>> {
+    return this.subjects
+      .find({ groupId: new Types.ObjectId(groupId) })
+      .sort({ name: 1 })
+      .lean()
+      .exec();
   }
 
   async findById(id: string): Promise<SubjectDocument> {
@@ -62,11 +67,9 @@ export class SubjectsService {
     const canManage = level >= ROLE_LEVEL[Role.DeputyHead];
     // A user is treated as a "teacher of this subject" if either:
     //   (a) they have a teacher-level membership in the group, OR
-    //   (b) they're directly listed in subject.teachers (Campus-only access),
-    //       matched by `teacherUserId`, Telegram username, or full name.
-    // The latter handles teachers who can view a subject without being a
-    // member of its group (read-only Campus-identified case).
-    const isInSubjectTeachers = await this.hasTeacherAccessForSubject(user, subject);
+    //   (b) their account is linked in subject.teachers (`teacherUserId`) —
+    //       Campus-identified teachers who never joined the group.
+    const isInSubjectTeachers = this.hasTeacherAccessForSubject(user, subject);
     const isTeacher =
       (level >= ROLE_LEVEL[Role.Teacher] && level < ROLE_LEVEL[Role.DeputyHead]) ||
       (isInSubjectTeachers && !canManage);
@@ -75,6 +78,7 @@ export class SubjectsService {
       groupId: groupIdStr,
       name: subject.name,
       shortName: subject.shortName,
+      icon: subject.icon,
       campusSubjectId: subject.campusSubjectId,
       teachers: subject.teachers.map((t) => ({
         teacherUserId: t.teacherUserId ? String(t.teacherUserId) : undefined,
@@ -112,6 +116,7 @@ export class SubjectsService {
       const trimmed = dto.shortName?.trim();
       subject.shortName = trimmed ? trimmed : undefined;
     }
+    if (dto.icon !== undefined) subject.icon = dto.icon.trim() || undefined;
     if (dto.teachers) {
       subject.teachers = await this.enrichTeachers(dto.teachers);
       subject.markModified('teachers');
@@ -146,7 +151,7 @@ export class SubjectsService {
   ): Promise<SubjectDocument> {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
     const cleaned = this.normalizeLinks(links);
     subject.links = cleaned;
     subject.markModified('links');
@@ -303,7 +308,7 @@ export class SubjectsService {
   async getGroupStudents(user: RequestUser, subjectId: string) {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
     const members = await this.usersService.listGroupStudents(groupIdStr);
     return members.map((u) => ({
       _id: String(u._id),
@@ -321,7 +326,7 @@ export class SubjectsService {
   async listJournalSessions(user: RequestUser, subjectId: string) {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
     const sessions = await this.attendance
       .find({ subjectId: new Types.ObjectId(subjectId) })
       .sort({ date: -1 })
@@ -340,7 +345,7 @@ export class SubjectsService {
   async getJournalSession(user: RequestUser, subjectId: string, sessionId: string) {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
 
     const session = await this.attendance.findById(sessionId).lean().exec();
     if (!session || String(session.subjectId) !== subjectId) {
@@ -374,14 +379,14 @@ export class SubjectsService {
   ) {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
     const session = await this.attendance.create({
       subjectId: new Types.ObjectId(subjectId),
       teacherUserId: new Types.ObjectId(user.userId),
       date: new Date(dto.date),
       lessonNumber: dto.lessonNumber,
       note: dto.note,
-      presentStudentIds: dto.presentStudentIds.map((id) => new Types.ObjectId(id)),
+      presentStudentIds: await this.groupMemberIds(groupIdStr, dto.presentStudentIds),
     });
     return { _id: String(session._id), date: session.date, presentCount: session.presentStudentIds.length };
   }
@@ -395,12 +400,12 @@ export class SubjectsService {
   ) {
     const subject = await this.findById(subjectId);
     const groupIdStr = String(subject.groupId);
-    await this.assertTeacherAccessForSubject(user, subject);
+    this.assertTeacherAccessForSubject(user, subject);
 
     const update: Record<string, unknown> = {};
     if (dto.note !== undefined) update.note = dto.note;
     if (dto.presentStudentIds) {
-      update.presentStudentIds = dto.presentStudentIds.map((id) => new Types.ObjectId(id));
+      update.presentStudentIds = await this.groupMemberIds(groupIdStr, dto.presentStudentIds);
     }
     await this.attendance.updateOne({ _id: sessionId, subjectId: new Types.ObjectId(subjectId) }, { $set: update });
     return { ok: true };
@@ -408,48 +413,37 @@ export class SubjectsService {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  private assertTeacherAccess(user: RequestUser, groupId: string): void {
-    const m = user.memberships.find((x) => x.groupId === groupId);
-    const level = m ? ROLE_LEVEL[m.role] : 0;
-    if (level < ROLE_LEVEL[Role.Teacher]) {
-      throw new ForbiddenException('Only teachers and above can access the journal');
-    }
-  }
-
   /**
-   * Like `assertTeacherAccess`, but also passes if the user is listed in
-   * `subject.teachers` for *this specific subject* — covers Campus-only
+   * Teacher-level membership in the subject's group (teacher, deputy, head,
+   * admin) or an account linked in `subject.teachers` — covers Campus-only
    * teachers who never joined the group.
    */
-  private async assertTeacherAccessForSubject(user: RequestUser, subject: SubjectDocument): Promise<void> {
-    const allowed = await this.hasTeacherAccessForSubject(user, subject);
-    if (!allowed) {
+  private assertTeacherAccessForSubject(user: RequestUser, subject: SubjectDocument): void {
+    if (!this.hasTeacherAccessForSubject(user, subject)) {
       throw new ForbiddenException('Доступ заборонено: ви не викладач цього предмета.');
     }
   }
 
-  private async hasTeacherAccessForSubject(user: RequestUser, subject: SubjectDocument): Promise<boolean> {
+  private hasTeacherAccessForSubject(user: RequestUser, subject: SubjectDocument): boolean {
     const groupId = String(subject.groupId);
-    const m = user.memberships.find((x) => x.groupId === groupId);
-    if (m && ROLE_LEVEL[m.role] >= ROLE_LEVEL[Role.Teacher]) return true;
+    if (user.memberships.some((m) => m.groupId === groupId && ROLE_LEVEL[m.role] >= ROLE_LEVEL[Role.Teacher])) {
+      return true;
+    }
+    // Only the account link authorizes: fullName is user-editable (PATCH /users/me)
+    // and teacher names are public, so name/@username matching let anyone in.
+    return subject.teachers.some((t) => !!t.teacherUserId && String(t.teacherUserId) === user.userId);
+  }
 
-    const currentUser = await this.usersService.findById(user.userId).catch(() => null);
-    if (!currentUser) return false;
-
-    const currentFullName = normaliseStr(
-      currentUser.fullName?.trim() ||
-        [currentUser.firstName, currentUser.lastName].filter(Boolean).join(' ').trim(),
+  /** `ids` as ObjectIds; 400 if any isn't a member of the group (the journal lists exactly them). */
+  private async groupMemberIds(groupId: string, ids: string[]): Promise<Types.ObjectId[]> {
+    const members = new Map(
+      (await this.usersService.listGroupStudents(groupId)).map((u) => [String(u._id), u._id]),
     );
-    const currentUsername = normaliseUsername(currentUser.username);
-
-    return subject.teachers.some((teacher) => {
-      if (teacher.teacherUserId && String(teacher.teacherUserId) === user.userId) return true;
-      if (currentUsername && normaliseUsername(teacher.telegramUsername) === currentUsername) {
-        return true;
-      }
-      if (currentFullName && normaliseStr(teacher.fullName) === currentFullName) return true;
-      return false;
-    });
+    const out = ids.map((id) => members.get(String(id)));
+    if (out.some((id) => !id)) {
+      throw new BadRequestException('Студент не належить до групи цього предмета');
+    }
+    return [...new Set(out as Types.ObjectId[])];
   }
 
   private assertCanManageGroup(user: RequestUser, groupId: string): void {
@@ -463,10 +457,6 @@ export class SubjectsService {
 /** Lowercase + trim + collapse whitespace for case-insensitive subject matching. */
 function normaliseStr(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-function normaliseUsername(s?: string): string {
-  return (s ?? '').replace(/^@+/, '').trim().toLowerCase();
 }
 
 /** Stable Lecturer → Practice → Lab order so chips render consistently. */

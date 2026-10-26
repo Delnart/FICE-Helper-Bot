@@ -1,10 +1,11 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { IsArray, IsDateString, IsInt, IsOptional, IsString, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SubjectsService } from './subjects.service';
 import { CreateSubjectDto, SubjectLinkDto, UpdateSubjectDto } from './dto/subject.dto';
 import { CurrentUser, ActiveGroupId } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
+import { GroupAccessService } from '../../common/access/group-access';
 
 class UpdateLinksDto {
   @IsArray() @ValidateNested({ each: true }) @Type(() => SubjectLinkDto)
@@ -25,15 +26,18 @@ class UpdateSessionDto {
 
 @Controller('subjects')
 export class SubjectsController {
-  constructor(private readonly subjects: SubjectsService) {}
+  constructor(
+    private readonly subjects: SubjectsService,
+    private readonly access: GroupAccessService,
+  ) {}
 
   @Get()
   async list(
+    @CurrentUser() user: RequestUser,
     @Query('groupId') groupIdQuery: string | undefined,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    const groupId = groupIdQuery ?? activeGroupId;
-    if (!groupId) throw new BadRequestException('No active group');
+    const groupId = await this.access.assertAccess(user, groupIdQuery ?? activeGroupId);
     return this.subjects.list(groupId);
   }
 
@@ -50,16 +54,22 @@ export class SubjectsController {
    */
   @Get('teachers/suggest-from-campus')
   async suggestFromCampus(
+    @CurrentUser() user: RequestUser,
     @Query('groupId') groupId: string,
     @Query('subjectName') subjectName: string,
   ) {
     if (!groupId || !subjectName) return [];
+    await this.access.assertAccess(user, groupId);
     return this.subjects.suggestTeachersFromCampus(groupId, subjectName);
   }
 
   @Get(':id')
   async one(@CurrentUser() user: RequestUser, @Param('id') id: string) {
-    return this.subjects.findOneForUser(user, id);
+    const subject = await this.subjects.findOneForUser(user, id);
+    // Not skipped for isTeacher: that also matches by fullName, which anyone can
+    // set to a teacher's via PATCH /users/me. Real teachers pass via roleIn.
+    await this.access.assertAccess(user, subject.groupId as string);
+    return subject;
   }
 
   @Post()

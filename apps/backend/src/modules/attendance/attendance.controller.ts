@@ -6,6 +6,7 @@ import { UpsertAttendanceDto } from './dto/attendance.dto';
 import { ActiveGroupId, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
 import { SubjectsService } from '../subjects/subjects.service';
+import { GroupAccessService } from '../../common/access/group-access';
 
 /** Throw 403 unless the user can manage the journal (head/deputy/teacher/admin). */
 function assertJournalAccess(user: RequestUser, groupId: string): void {
@@ -31,6 +32,7 @@ export class AttendanceController {
   constructor(
     private readonly attendance: AttendanceService,
     private readonly subjects: SubjectsService,
+    private readonly access: GroupAccessService,
   ) {}
 
   @Get('my')
@@ -98,7 +100,7 @@ export class AttendanceController {
   }
 
   @Get('lesson')
-  lesson(
+  async lesson(
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('lessonId') lessonId: string,
@@ -106,9 +108,11 @@ export class AttendanceController {
     @Query('groupId') groupIdQuery?: string,
     @Query('subjectIds') subjectIdsQuery?: string,
   ) {
-    const groupIdPromise = this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
+    // Validate before starting the lookup: throwing with it in flight left its
+    // rejection unhandled, which kills the Node process.
     if (!lessonId || !date) throw new BadRequestException('lessonId and date are required');
-    return groupIdPromise.then((groupId) => this.attendance.getLessonRecord(groupId, lessonId, new Date(date)));
+    const groupId = await this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
+    return this.attendance.getLessonRecord(groupId, lessonId, new Date(date));
   }
 
   @Post()
@@ -122,13 +126,15 @@ export class AttendanceController {
   }
 
   @Get('stats/:userId')
-  stats(
+  async stats(
+    @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
     @Param('userId') userId: string,
     @Query('groupId') groupIdQuery?: string,
   ) {
-    const groupId = groupIdQuery ?? activeGroupId;
-    if (!groupId) throw new BadRequestException('No active group');
+    // Own stats: any member. Someone else's: journal roles only.
+    const minRole = userId === user.userId ? Role.Student : Role.Teacher;
+    const groupId = await this.access.assertAccess(user, groupIdQuery ?? activeGroupId, minRole);
     return this.attendance.statsForUser(groupId, userId);
   }
 
@@ -150,8 +156,7 @@ export class AttendanceController {
       return String(subject.groupId);
     }
 
-    const groupId = groupIdQuery ?? activeGroupId;
-    if (!groupId) throw new BadRequestException('No active group');
+    const groupId = await this.access.assertAccess(user, groupIdQuery ?? activeGroupId);
     assertJournalAccess(user, groupId);
     return groupId;
   }

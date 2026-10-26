@@ -1,8 +1,8 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { Request } from 'express';
 import { Role, ROLE_LEVEL } from '@fice/shared';
 import { ROLES_KEY } from '../decorators/roles.decorator';
-import { RequestUser } from '../types/request-user';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -15,11 +15,14 @@ export class RolesGuard implements CanActivate {
     ]);
     if (!required || required.length === 0) return true;
 
-    const req = context.switchToHttp().getRequest<{ user?: RequestUser; activeGroupId?: string }>();
+    const req = context.switchToHttp().getRequest<Request>();
     const user = req.user;
     if (!user) throw new ForbiddenException('No user context');
 
-    const groupId = req.activeGroupId;
+    // Raw header, not req.activeGroupId: JwtAuthGuard drops a header naming a
+    // foreign group, and falling back to ALL memberships here would let that
+    // request pass on a role held in some other group.
+    const groupId = req.header('x-group-id');
     const memberships = groupId
       ? user.memberships.filter((m) => m.groupId === groupId)
       : user.memberships;

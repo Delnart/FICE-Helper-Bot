@@ -21,19 +21,23 @@ import {
 } from './dto/queue.dto';
 import { ActiveGroupId, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
+import { GroupAccessService } from '../../common/access/group-access';
 
 @Controller('queues')
 export class QueuesController {
-  constructor(private readonly queues: QueuesService) {}
+  constructor(
+    private readonly queues: QueuesService,
+    private readonly access: GroupAccessService,
+  ) {}
 
   @Get()
-  list(
+  async list(
+    @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('groupId') groupIdQuery?: string,
     @Query('subjectId') subjectId?: string,
   ) {
-    const groupId = groupIdQuery ?? activeGroupId;
-    if (!groupId) throw new BadRequestException('No active group');
+    const groupId = await this.access.assertAccess(user, groupIdQuery ?? activeGroupId);
     return this.queues.list(groupId, subjectId);
   }
 

@@ -1,12 +1,19 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Role } from '@fice/shared';
 import { TeachersService } from './teachers.service';
 import { ApplyTeacherDto, DecideApplicationDto, GroupJoinRequestDto, IdentifyTeacherDto, InviteTeacherDto } from './dto/teacher.dto';
 import { ActiveGroupId, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
+import { GroupAccessService } from '../../common/access/group-access';
+import { SubjectsService } from '../subjects/subjects.service';
 
 @Controller('teachers')
 export class TeachersController {
-  constructor(private readonly svc: TeachersService) {}
+  constructor(
+    private readonly svc: TeachersService,
+    private readonly access: GroupAccessService,
+    private readonly subjects: SubjectsService,
+  ) {}
 
   // ── Group-level join requests ─────────────────────────────────────────────
 
@@ -24,13 +31,12 @@ export class TeachersController {
 
   /** Head/deputy lists pending join requests for their active group. */
   @Get('join-requests')
-  listJoinRequests(
+  async listJoinRequests(
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('groupId') groupIdQuery?: string,
   ) {
-    const groupId = groupIdQuery ?? activeGroupId;
-    if (!groupId) throw new BadRequestException('No active group');
+    const groupId = await this.access.assertAccess(user, groupIdQuery ?? activeGroupId);
     return this.svc.listGroupJoinRequests(user, groupId);
   }
 
@@ -77,7 +83,9 @@ export class TeachersController {
   }
 
   @Get('applications')
-  listApps(@Query('subjectId') subjectId: string) {
+  async listApps(@CurrentUser() user: RequestUser, @Query('subjectId') subjectId: string) {
+    const subject = await this.subjects.findById(subjectId); // 404 on a malformed id
+    await this.access.assertAccess(user, String(subject.groupId), Role.DeputyHead);
     return this.svc.listApplications(subjectId);
   }
 

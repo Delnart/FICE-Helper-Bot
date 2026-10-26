@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { appConfig } from './config/app.config';
 import { validateEnv } from './config/env.validation';
+import { GroupAccessModule } from './common/access/group-access';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -55,6 +56,7 @@ import { ManualStudentsModule } from './modules/manual-students/manual-students.
     }),
     ScheduleModule.forRoot(),
 
+    GroupAccessModule,
     AuthModule,
     UsersModule,
     GroupsModule,

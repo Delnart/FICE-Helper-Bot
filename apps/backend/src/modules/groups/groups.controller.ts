@@ -5,6 +5,7 @@ import { CurrentUser, ActiveGroupId } from '../../common/decorators/current-user
 import { RequestUser } from '../../common/types/request-user';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@fice/shared';
+import { GroupAccessService } from '../../common/access/group-access';
 
 class AssignDeputyDto {
   @IsString() targetUserId!: string;
@@ -22,7 +23,10 @@ class UpdateCampusBindingDto {
 
 @Controller('groups')
 export class GroupsController {
-  constructor(private readonly groups: GroupsService) {}
+  constructor(
+    private readonly groups: GroupsService,
+    private readonly access: GroupAccessService,
+  ) {}
 
   @Get('mine')
   async mine(@CurrentUser() user: RequestUser) {
@@ -65,7 +69,8 @@ export class GroupsController {
   }
 
   @Get(':id')
-  async one(@Param('id') id: string) {
+  async one(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    await this.access.assertAccess(user, id);
     return this.groups.findById(id);
   }
 
@@ -93,7 +98,13 @@ export class GroupsController {
 
   @Roles(Role.DeputyHead)
   @Patch(':id/settings')
-  async updateSettings(@Param('id') id: string, @Body() dto: UpdateReminderDto) {
+  async updateSettings(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateReminderDto,
+  ) {
+    // @Roles only checks the header group; the service doesn't check :id at all.
+    await this.access.assertAccess(user, id, Role.DeputyHead);
     return this.groups.updateReminderSettings(id, dto);
   }
 }

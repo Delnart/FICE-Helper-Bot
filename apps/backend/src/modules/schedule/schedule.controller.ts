@@ -11,10 +11,14 @@ import {
 import { ScheduleService } from './schedule.service';
 import { ActiveGroupId, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
+import { GroupAccessService } from '../../common/access/group-access';
 
 @Controller('schedule')
 export class ScheduleController {
-  constructor(private readonly schedule: ScheduleService) {}
+  constructor(
+    private readonly schedule: ScheduleService,
+    private readonly access: GroupAccessService,
+  ) {}
 
   @Get('my')
   my(
@@ -80,13 +84,12 @@ export class ScheduleController {
   }
 
   @Post('sync')
-  sync(
+  async sync(
     @CurrentUser() user: RequestUser,
     @Body('groupId') groupId: string,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    const target = groupId ?? activeGroupId;
-    if (!target) throw new BadRequestException('No group');
+    const target = await this.access.assertAccess(user, groupId ?? activeGroupId);
     return this.schedule.syncFromCampus(user, target).then((count) => ({ count }));
   }
 
@@ -109,11 +112,11 @@ export class ScheduleController {
 
   @Post('electives/:lessonId/join')
   join(@CurrentUser() user: RequestUser, @Param('lessonId') lessonId: string) {
-    return this.schedule.chooseElective(user.userId, lessonId, true).then(() => ({ ok: true }));
+    return this.schedule.chooseElective(user, lessonId, true).then(() => ({ ok: true }));
   }
 
   @Post('electives/:lessonId/leave')
   leave(@CurrentUser() user: RequestUser, @Param('lessonId') lessonId: string) {
-    return this.schedule.chooseElective(user.userId, lessonId, false).then(() => ({ ok: true }));
+    return this.schedule.chooseElective(user, lessonId, false).then(() => ({ ok: true }));
   }
 }

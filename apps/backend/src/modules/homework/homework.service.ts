@@ -7,9 +7,16 @@ import { HomeworkCompletion, HomeworkCompletionDocument } from './homework-compl
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { CreateHomeworkDto, UpdateHomeworkDto } from './dto/homework.dto';
 import { RequestUser } from '../../common/types/request-user';
+import { GroupAccessService } from '../../common/access/group-access';
+
+/** Fields the list endpoints read — fetched lean with this projection. */
+const LIST_FIELDS = { title: 1, deadline: 1, subjectId: 1, points: 1, teamSize: 1 } as const;
+type HomeworkListRow = Pick<Homework, 'title' | 'deadline' | 'subjectId' | 'points' | 'teamSize'> & {
+  _id: Types.ObjectId;
+};
 
 export interface HomeworkWithDone {
-  homework: HomeworkDocument;
+  homework: HomeworkListRow;
   done: boolean;
   doneAt?: Date;
 }
@@ -20,6 +27,7 @@ export class HomeworkService {
     @InjectModel(Homework.name) private readonly homework: Model<HomeworkDocument>,
     @InjectModel(HomeworkCompletion.name) private readonly completions: Model<HomeworkCompletionDocument>,
     @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
+    private readonly access: GroupAccessService,
   ) {}
 
   async create(user: RequestUser, dto: CreateHomeworkDto): Promise<HomeworkDocument> {
@@ -64,32 +72,40 @@ export class HomeworkService {
     await this.completions.deleteMany({ homeworkId: hw._id });
   }
 
-  async listBySubject(subjectId: string, userId: string): Promise<Array<Record<string, unknown>>> {
+  async listBySubject(user: RequestUser, subjectId: string): Promise<Array<Record<string, unknown>>> {
     if (!Types.ObjectId.isValid(subjectId)) return [];
+    const subject = await this.subjects.findById(subjectId, { name: 1, groupId: 1 }).lean().exec();
+    if (!subject) return [];
+    await this.access.assertAccess(user, String(subject.groupId));
     const hw = await this.homework
-      .find({ subjectId: new Types.ObjectId(subjectId) })
+      .find({ subjectId: subject._id }, LIST_FIELDS)
       .sort({ deadline: 1, createdAt: -1 })
+      .lean()
       .exec();
-    const subject = await this.subjects.findById(subjectId).lean().exec();
-    const completions = await this.attachCompletions(hw, userId);
+    const completions = await this.attachCompletions(hw, user.userId);
     return completions.map((c) => ({
       _id: String(c.homework._id),
       title: c.homework.title,
       deadline: c.homework.deadline,
       subjectId: String(c.homework.subjectId),
-      subjectName: subject?.name ?? '',
+      subjectName: subject.name ?? '',
       points: c.homework.points,
-      teamSize: c.homework.teamSize,
+      // lean skips schema defaults; old rows without teamSize hydrated as 1.
+      teamSize: c.homework.teamSize ?? 1,
       done: c.done,
     }));
   }
 
   async listForUserMainScreen(groupId: string, userId: string): Promise<Array<Record<string, unknown>>> {
     const hw = await this.homework
-      .find({ groupId: new Types.ObjectId(groupId), teamSize: { $ne: 0 } })
+      .find({ groupId: new Types.ObjectId(groupId), teamSize: { $ne: 0 } }, LIST_FIELDS)
       .sort({ deadline: 1 })
+      .lean()
       .exec();
-    const subjects = await this.subjects.find({ groupId: new Types.ObjectId(groupId) }).lean().exec();
+    const subjects = await this.subjects
+      .find({ groupId: new Types.ObjectId(groupId) }, { name: 1 })
+      .lean()
+      .exec();
     const subjectName = new Map(subjects.map((s) => [String(s._id), s.name]));
     const completions = await this.attachCompletions(hw, userId);
     return completions
@@ -101,17 +117,21 @@ export class HomeworkService {
         subjectId: String(c.homework.subjectId),
         subjectName: subjectName.get(String(c.homework.subjectId)) ?? '',
         points: c.homework.points,
-        teamSize: c.homework.teamSize,
+        teamSize: c.homework.teamSize ?? 1,
         done: c.done,
       }));
   }
 
   async listAllForUser(groupId: string, userId: string): Promise<Array<Record<string, unknown>>> {
     const hw = await this.homework
-      .find({ groupId: new Types.ObjectId(groupId), teamSize: { $ne: 0 } })
+      .find({ groupId: new Types.ObjectId(groupId), teamSize: { $ne: 0 } }, LIST_FIELDS)
       .sort({ deadline: 1 })
+      .lean()
       .exec();
-    const subjects = await this.subjects.find({ groupId: new Types.ObjectId(groupId) }).lean().exec();
+    const subjects = await this.subjects
+      .find({ groupId: new Types.ObjectId(groupId) }, { name: 1 })
+      .lean()
+      .exec();
     const subjectName = new Map(subjects.map((s) => [String(s._id), s.name]));
     const completions = await this.attachCompletions(hw, userId);
     return completions.map((c) => ({
@@ -121,7 +141,7 @@ export class HomeworkService {
       subjectId: String(c.homework.subjectId),
       subjectName: subjectName.get(String(c.homework.subjectId)) ?? '',
       points: c.homework.points,
-      teamSize: c.homework.teamSize,
+      teamSize: c.homework.teamSize ?? 1,
       done: c.done,
     }));
   }
@@ -130,6 +150,7 @@ export class HomeworkService {
     if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Homework not found');
     const hw = await this.homework.findById(id).exec();
     if (!hw) throw new NotFoundException('Homework not found');
+    await this.access.assertAccess(user, String(hw.groupId));
     const subject = await this.subjects.findById(hw.subjectId).lean().exec();
     const completion = await this.completions
       .findOne({ homeworkId: hw._id, userId: new Types.ObjectId(user.userId) })
@@ -163,17 +184,20 @@ export class HomeworkService {
     };
   }
 
-  async markCompletion(userId: string, homeworkId: string, done: boolean): Promise<void> {
+  async markCompletion(user: RequestUser, homeworkId: string, done: boolean): Promise<void> {
     if (!Types.ObjectId.isValid(homeworkId)) throw new NotFoundException('Homework not found');
+    const hw = await this.homework.findById(homeworkId, { groupId: 1 }).lean().exec();
+    if (!hw) throw new NotFoundException('Homework not found');
+    this.assertCanManage(user, String(hw.groupId));
     await this.completions.updateOne(
-      { homeworkId: new Types.ObjectId(homeworkId), userId: new Types.ObjectId(userId) },
+      { homeworkId: hw._id, userId: new Types.ObjectId(user.userId) },
       { $set: { done, doneAt: done ? new Date() : undefined } },
       { upsert: true },
     );
   }
 
   private async attachCompletions(
-    list: HomeworkDocument[],
+    list: HomeworkListRow[],
     userId: string,
   ): Promise<HomeworkWithDone[]> {
     if (list.length === 0) return [];
