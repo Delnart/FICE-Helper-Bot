@@ -3,7 +3,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
-import { google, sheets_v4 } from 'googleapis';
+// Per-API package: the umbrella `googleapis` loads every Google API (~90 MB RSS, ~10 s startup).
+import { auth, sheets, sheets_v4 } from '@googleapis/sheets';
 import { Role } from '@fice/shared';
 import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
@@ -37,6 +38,11 @@ export class SheetsService implements OnModuleInit {
   private cacheTeachers: SheetTeacher[] = [];
   private cacheLoadedAt = 0;
   private readonly cacheTtlMs = 12 * 60 * 60 * 1000; // 12 h
+  private readonly failBackoffMs = 5 * 60 * 1000; // retry a failed fetch after 5 min
+  // True only when the most recent fetch parsed successfully. Sync must never
+  // grant/revoke from stale or empty data left behind by a failed fetch.
+  private lastFetchOk = false;
+  private inflight?: Promise<void>;
 
   constructor(
     private readonly config: ConfigService,
@@ -56,32 +62,19 @@ export class SheetsService implements OnModuleInit {
       this.logger.log('Google Sheets not configured — staff lookups disabled');
       return;
     }
-    const auth = new google.auth.JWT({
+    const jwt = new auth.JWT({
       email,
       key,
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+      // Defaults for every request of this client — also bounds the OAuth token fetch.
+      transporterOptions: { timeout: 15_000 },
     });
-    this.sheets = google.sheets({ version: 'v4', auth });
+    this.sheets = sheets({ version: 'v4', auth: jwt });
     this.sheetId = sheetId;
 
-    try {
-      await this.ensureCache();
-      this.logger.log(
-        `Sheets loaded at startup: ${this.cacheHeads.length} heads, ${this.cacheTeachers.length} teachers`,
-      );
-      const r = await this.syncHeads();
-      if (r.granted + r.revoked > 0) {
-        this.logger.log(
-          `Sheets startup sync: +${r.granted} granted, -${r.revoked} revoked, ${r.skipped} skipped`,
-        );
-      }
-      const t = await this.syncTeachers();
-      if (t.revoked > 0) {
-        this.logger.log(`Sheets startup teacher sync: -${t.revoked} revoked`);
-      }
-    } catch (err) {
-      this.logger.warn(`Sheets startup failed: ${(err as Error).message}`);
-    }
+    // Fire-and-forget: Nest awaits onModuleInit before app.listen, so awaiting
+    // Google here kept the whole API down after every restart.
+    void this.refreshAndSync('startup');
   }
 
   isConfigured(): boolean {
@@ -93,26 +86,31 @@ export class SheetsService implements OnModuleInit {
     await this.ensureCache();
   }
 
-  @Cron('0 0 */12 * * *')
+  // Off the hour: :00 every 12 h collided with the other 12 h jobs, and 12:00 is the lunch-break peak.
+  @Cron('0 40 3,15 * * *')
   async cronRefresh(): Promise<void> {
+    await this.refreshAndSync('cron');
+  }
+
+  private async refreshAndSync(label: 'startup' | 'cron'): Promise<void> {
     if (!this.isConfigured()) return;
     try {
       await this.refresh();
       this.logger.log(
-        `Sheets cron refresh: ${this.cacheHeads.length} heads, ${this.cacheTeachers.length} teachers`,
+        `Sheets ${label} refresh: ${this.cacheHeads.length} heads, ${this.cacheTeachers.length} teachers`,
       );
       const r = await this.syncHeads();
       if (r.granted + r.revoked > 0) {
         this.logger.log(
-          `Sheets cron sync: +${r.granted} granted, -${r.revoked} revoked, ${r.skipped} skipped`,
+          `Sheets ${label} sync: +${r.granted} granted, -${r.revoked} revoked, ${r.skipped} skipped`,
         );
       }
       const t = await this.syncTeachers();
       if (t.revoked > 0) {
-        this.logger.log(`Sheets cron teacher sync: -${t.revoked} revoked`);
+        this.logger.log(`Sheets ${label} teacher sync: -${t.revoked} revoked`);
       }
     } catch (err) {
-      this.logger.warn(`Sheets cron refresh failed: ${(err as Error).message}`);
+      this.logger.warn(`Sheets ${label} refresh failed: ${(err as Error).message}`);
     }
   }
 
@@ -175,6 +173,13 @@ export class SheetsService implements OnModuleInit {
       authorisedByGroup.get(key)!.add(handle);
     }
 
+    // A failed fetch or an emptied/renamed tab must never read as "nobody is a
+    // head any more" — Step 1 would demote every head in the DB.
+    if (!this.lastFetchOk || authorisedByGroup.size === 0) {
+      this.logger.warn('Sheets sync: skipping heads sync — last fetch failed or «Старости» has no rows');
+      return { granted: 0, revoked: 0, skipped: 0 };
+    }
+
     let granted = 0, revoked = 0, skipped = 0;
 
     // ── Step 1: revoke heads no longer listed in Sheets ──────────────────────
@@ -221,22 +226,45 @@ export class SheetsService implements OnModuleInit {
     }
 
     // ── Step 2: grant / confirm heads listed in Sheets ────────────────────────
+    // One query per collection instead of two case-insensitive regex scans per
+    // sheet row. Same regexes as before, so matching is unchanged; loaded after
+    // Step 1 so its revocations are visible.
+    const exact = (s: string) => new RegExp(`^${escapeRegex(s)}$`, 'i');
+    const handles = new Set(sheetHeads.map((h) => normaliseTgHandle(h.telegramUsername)).filter(Boolean));
+    const groupNames = new Set(sheetHeads.map((h) => h.groupName.trim()));
+    const [users, groups] = await Promise.all([
+      this.userModel
+        .find(
+          { username: { $in: [...handles].map(exact) } },
+          { username: 1, memberships: 1, fullName: 1, campusLecturerId: 1 },
+        )
+        .lean()
+        .exec(),
+      this.groupModel
+        .find({ academicName: { $in: [...groupNames].map(exact) } }, { academicName: 1 })
+        .lean()
+        .exec(),
+    ]);
+    // First match wins, as findOne did.
+    const userByHandle = new Map<string, (typeof users)[number]>();
+    for (const u of users) {
+      const k = (u.username ?? '').toLowerCase();
+      if (!userByHandle.has(k)) userByHandle.set(k, u);
+    }
+    const groupByName = new Map<string, (typeof groups)[number]>();
+    for (const g of groups) {
+      const k = g.academicName.toLowerCase();
+      if (!groupByName.has(k)) groupByName.set(k, g);
+    }
+
     for (const h of sheetHeads) {
       const handle = normaliseTgHandle(h.telegramUsername);
       if (!handle) { skipped++; continue; }
 
-      // Find user by username (case-insensitive)
-      const user = await this.userModel
-        .findOne({ username: new RegExp(`^${escapeRegex(handle)}$`, 'i') })
-        .lean()
-        .exec();
+      const user = userByHandle.get(handle);
       if (!user) { skipped++; continue; } // user hasn't opened the bot yet
 
-      // Find group by academicName (case-insensitive)
-      const group = await this.groupModel
-        .findOne({ academicName: new RegExp(`^${escapeRegex(h.groupName.trim())}$`, 'i') })
-        .lean()
-        .exec();
+      const group = groupByName.get(h.groupName.trim().toLowerCase());
       if (!group) { skipped++; continue; } // group not bound yet
 
       // Check current membership
@@ -255,6 +283,7 @@ export class SheetsService implements OnModuleInit {
           this.logger.log(
             `Sheets sync: cleared stale campusLecturerId from head @${user.username}`,
           );
+          user.campusLecturerId = undefined; // preloaded doc: the user may have another sheet row
         }
         const stale = await this.subjectModel
           .updateMany(
@@ -271,23 +300,24 @@ export class SheetsService implements OnModuleInit {
         continue;
       }
 
-      // Upsert membership as group_head
-      await this.userModel.updateOne(
-        { _id: user._id },
-        { $pull: { memberships: { groupId: group._id } } },
+      // Upsert membership as group_head: set the role in place, push only if
+      // absent. The old $pull+$push pair left a window with no membership at
+      // all (and lost it on a crash in between).
+      const groupId = new Types.ObjectId(String(group._id));
+      const inPlace = await this.userModel.updateOne(
+        { _id: user._id, memberships: { $elemMatch: { groupId } } },
+        { $set: { 'memberships.$.role': Role.GroupHead } },
       );
-      await this.userModel.updateOne(
-        { _id: user._id },
-        {
-          $push: {
-            memberships: {
-              groupId: new Types.ObjectId(String(group._id)),
-              role: Role.GroupHead,
-              joinedAt: new Date(),
-            },
-          },
-        },
-      );
+      if (inPlace.matchedCount === 0) {
+        await this.userModel.updateOne(
+          { _id: user._id, 'memberships.groupId': { $ne: groupId } },
+          { $push: { memberships: { groupId, role: Role.GroupHead, joinedAt: new Date() } } },
+        );
+      }
+      // Mirror on the preloaded doc in case this user has another sheet row.
+      if (membership) membership.role = Role.GroupHead;
+      else (user.memberships ??= []).push({ groupId, role: Role.GroupHead, joinedAt: new Date() });
+      user.campusLecturerId = undefined;
 
       // Mutual exclusivity: a head can never simultaneously be a teacher.
       // Strip any leftover teacher data so they get the head UI cleanly.
@@ -353,6 +383,12 @@ export class SheetsService implements OnModuleInit {
       }
     }
 
+    // Same guard as syncHeads: an empty set would strip every teacher.
+    if (!this.lastFetchOk || stillListed.size === 0) {
+      this.logger.warn('Sheets sync: skipping teacher sync — last fetch failed or «Викладачі» has no tags');
+      return { revoked: 0 };
+    }
+
     // Find every user we previously marked as a teacher (campusLecturerId
     // set, or referenced in any subjects.teachers array).
     const formerTeachers = await this.userModel
@@ -364,7 +400,7 @@ export class SheetsService implements OnModuleInit {
             { 'memberships.role': Role.Teacher },
           ],
         },
-        { _id: 1, username: 1, campusLecturerId: 1, memberships: 1 },
+        { _id: 1, username: 1, usernameHistory: 1, campusLecturerId: 1, memberships: 1 },
       )
       .lean()
       .exec();
@@ -404,15 +440,26 @@ export class SheetsService implements OnModuleInit {
     return { revoked };
   }
 
-  private async ensureCache(): Promise<void> {
-    if (!this.isConfigured()) return;
-    if (Date.now() - this.cacheLoadedAt < this.cacheTtlMs && this.cacheHeads.length > 0) return;
+  private ensureCache(): Promise<void> {
+    if (!this.isConfigured() || Date.now() - this.cacheLoadedAt < this.cacheTtlMs) {
+      return Promise.resolve();
+    }
+    // One shared fetch for concurrent callers (bot handler, /users/me, login).
+    this.inflight ??= this.fetchSheets().finally(() => {
+      this.inflight = undefined;
+    });
+    return this.inflight;
+  }
 
+  private async fetchSheets(): Promise<void> {
     try {
-      const resp = await this.sheets!.spreadsheets.values.batchGet({
-        spreadsheetId: this.sheetId!,
-        ranges: ['Старости!A2:C', 'Викладачі!A2:D'],
-      });
+      const resp = await this.sheets!.spreadsheets.values.batchGet(
+        {
+          spreadsheetId: this.sheetId!,
+          ranges: ['Старости!A2:C', 'Викладачі!A2:D'],
+        },
+        { timeout: 15_000 },
+      );
       const valueRanges = resp.data.valueRanges ?? [];
       const headsRows = valueRanges[0]?.values ?? [];
       const teachersRows = valueRanges[1]?.values ?? [];
@@ -436,7 +483,12 @@ export class SheetsService implements OnModuleInit {
         }));
 
       this.cacheLoadedAt = Date.now();
+      this.lastFetchOk = true;
     } catch (err) {
+      this.lastFetchOk = false;
+      // Negative cache: keep the previous data and retry after the backoff
+      // instead of re-hitting Google synchronously on every caller.
+      this.cacheLoadedAt = Date.now() - this.cacheTtlMs + this.failBackoffMs;
       this.logger.error(`Failed to refresh Sheets cache: ${(err as Error).message}`);
     }
   }
