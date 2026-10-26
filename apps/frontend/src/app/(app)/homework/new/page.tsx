@@ -1,14 +1,16 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
 import { ErrorState } from '../../../../components/Empty';
+import { Icon } from '../../../../components/icons';
 import { SubjectTile } from '../../../../components/SubjectIcon';
 import { Section } from '../../../../components/ui/Section';
+import { Sheet } from '../../../../components/ui/Sheet';
 import { haptic } from '../../../../lib/telegram';
 
 interface SubjectRow {
@@ -39,6 +41,7 @@ export default function NewHomeworkPage() {
   const [points, setPoints] = useState<number | ''>('');
   const [teamSize, setTeamSize] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
 
   const subjects = useQuery({
     queryKey: ['subjects'],
@@ -96,7 +99,7 @@ export default function NewHomeworkPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Нове завдання"
-        subtitle={subj ? (subj.shortName ?? subj.name) : undefined}
+        subtitle="Побачить уся група"
       />
 
       {subjects.isError ? (
@@ -112,23 +115,31 @@ export default function NewHomeworkPage() {
           <label className="label" htmlFor="hw-subject">
             Дисципліна
           </label>
-          <div className="flex items-center gap-2.5">
-            {subj ? <SubjectTile name={subj.name} icon={subj.icon} /> : null}
-            <select
-              id="hw-subject"
-              className="input min-w-0 flex-1"
-              value={subjectId}
-              onChange={(e) => setSubjectId(e.target.value)}
-              disabled={subjects.isLoading}
-            >
-              <option value="">— оберіть —</option>
-              {(subjects.data ?? []).map((s) => (
-                <option key={s._id} value={s._id}>
-                  {s.shortName ?? s.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Native <select> renders badly in desktop Telegram — pick from a sheet instead. */}
+          <button
+            id="hw-subject"
+            type="button"
+            className="input flex items-center gap-3 pl-1.5 text-left"
+            onClick={() => setPicking(true)}
+            disabled={subjects.isLoading}
+            aria-haspopup="dialog"
+          >
+            {subj ? (
+              <SubjectTile name={subj.name} icon={subj.icon} size="sm" />
+            ) : (
+              <span className="subj subj-sm bg-surface-2 text-ink-3">
+                <Icon name="book" strokeWidth={1.9} />
+              </span>
+            )}
+            <span className={subj ? 'min-w-0 flex-1 truncate' : 'min-w-0 flex-1 truncate text-ink-3'}>
+              {subj
+                ? subj.shortName || subj.name
+                : subjects.isLoading
+                  ? 'Завантаження…'
+                  : 'Оберіть дисципліну'}
+            </span>
+            <Icon name="chevronDown" size={20} className="text-ink-3" />
+          </button>
         </div>
 
         <div>
@@ -234,6 +245,42 @@ export default function NewHomeworkPage() {
 
       {error ? <div className="card-flat small text-bad">{error}</div> : null}
 
+      <Sheet open={picking} onClose={() => setPicking(false)} title="Дисципліна">
+        {subjects.data?.length ? (
+          <div className="flex flex-col">
+            {subjects.data.map((s, i) => {
+              const on = s._id === subjectId;
+              return (
+                <Fragment key={s._id}>
+                  {i > 0 ? <div className="divider" /> : null}
+                  <button
+                    type="button"
+                    className="row-plain w-full text-left"
+                    aria-pressed={on}
+                    onClick={() => {
+                      haptic('selection');
+                      setSubjectId(s._id);
+                      setPicking(false);
+                    }}
+                  >
+                    <SubjectTile name={s.name} icon={s.icon} size="sm" tone={on ? 'accent' : 'soft'} />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="h3 truncate">{s.shortName || s.name}</span>
+                      {s.shortName && s.shortName !== s.name ? (
+                        <span className="tiny faint truncate">{s.name}</span>
+                      ) : null}
+                    </span>
+                    {on ? <Icon name="check" size={20} className="text-accent-text" /> : null}
+                  </button>
+                </Fragment>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="small muted">У групі ще немає дисциплін.</div>
+        )}
+      </Sheet>
+
       <div className="action-bar">
         <button type="button" className="btn btn-secondary flex-1" onClick={() => router.back()}>
           Скасувати
@@ -244,7 +291,7 @@ export default function NewHomeworkPage() {
           onClick={submit}
           disabled={create.isPending}
         >
-          {create.isPending ? 'Зберігаємо…' : 'Зберегти'}
+          {create.isPending ? 'Зберігаємо…' : 'Додати завдання'}
         </button>
       </div>
     </div>

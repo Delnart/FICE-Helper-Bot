@@ -13,6 +13,7 @@ import { PageHeader } from '../../../../components/PageHeader';
 import { ErrorState, Loading } from '../../../../components/Empty';
 import { Icon } from '../../../../components/icons';
 import { SubjectTile } from '../../../../components/SubjectIcon';
+import { pluralUk } from '../../../../components/subjects/helpers';
 import { Section } from '../../../../components/ui/Section';
 
 interface HwDetail {
@@ -30,6 +31,12 @@ interface HwDetail {
   isTeacher?: boolean;
 }
 
+interface SubjectRow {
+  _id: string;
+  name: string;
+  icon?: string;
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -45,6 +52,11 @@ export default function HomeworkDetailPage() {
   const { data, isError, error, refetch } = useQuery({
     queryKey: ['hw', id],
     queryFn: () => api<HwDetail>(`/homework/${id}`),
+  });
+  // Only for the discipline's custom icon; the tile falls back to the name-based one.
+  const subjects = useQuery({
+    queryKey: ['subjects'],
+    queryFn: () => api<SubjectRow[]>('/subjects'),
   });
 
   const invalidateHwLists = () => {
@@ -99,7 +111,6 @@ export default function HomeworkDetailPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title={data.title}
-        subtitle={data.subjectName}
         action={
           data.canManage ? (
             <Link
@@ -121,10 +132,14 @@ export default function HomeworkDetailPage() {
             ) : null}
             <span className={cn('chip', overdue && 'chip-bad', soon && 'chip-warn')}>
               {due
-                ? `${overdue ? 'прострочено · ' : 'до '}${due.format(due.isSame(dayjs(), 'year') ? 'dd, D MMM, HH:mm' : 'D MMM YYYY, HH:mm')}`
+                ? `${overdue ? 'прострочено · ' : 'до '}${due.format(due.isSame(dayjs(), 'year') ? 'dd, D MMM[.], HH:mm' : 'D MMM[.] YYYY, HH:mm')}`
                 : 'без дедлайну'}
             </span>
-            {data.points ? <span className="chip">{data.points} балів</span> : null}
+            {data.points ? (
+              <span className="chip">
+                {data.points} {pluralUk(data.points, ['бал', 'бали', 'балів'])}
+              </span>
+            ) : null}
             {data.teamSize > 1 ? (
               <span className="chip">
                 <Icon name="users" size={12} strokeWidth={2.2} />
@@ -139,7 +154,11 @@ export default function HomeworkDetailPage() {
         href={`/subjects/${data.subjectId}` as Route}
         className="card-flat flex items-center gap-3 px-3.5 py-3"
       >
-        <SubjectTile name={data.subjectName ?? ''} size="sm" />
+        <SubjectTile
+          name={data.subjectName ?? ''}
+          icon={subjects.data?.find((s) => s._id === data.subjectId)?.icon}
+          size="sm"
+        />
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="tiny faint">Дисципліна</span>
           <span className="h3 truncate">{data.subjectName || 'Без назви'}</span>

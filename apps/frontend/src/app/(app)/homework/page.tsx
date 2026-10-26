@@ -8,10 +8,12 @@ import 'dayjs/locale/uk';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { haptic } from '../../../lib/telegram';
+import { subjectAcronym } from '../../../lib/name';
 import { useIsTeacherOnly } from '../../../hooks/useMe';
 import { PageHeader } from '../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Icon } from '../../../components/icons';
+import { pluralUk } from '../../../components/subjects/helpers';
 
 interface HwRow {
   _id: string;
@@ -22,6 +24,15 @@ interface HwRow {
   done?: boolean;
   points?: number;
   teamSize?: number;
+  // Optional until the list endpoint returns them (mockup 11: card description, "виконано 24 жовт.").
+  description?: string;
+  doneAt?: string;
+}
+
+interface SubjectRow {
+  _id: string;
+  name: string;
+  shortName?: string;
 }
 
 type GroupKey = 'overdue' | 'today' | 'tomorrow' | 'week' | 'later' | 'none';
@@ -45,14 +56,6 @@ function groupOf(deadline: string | undefined, now: Dayjs): GroupKey {
   return 'later';
 }
 
-function pluralUk(n: number, forms: [string, string, string]): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return forms[0];
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
-  return forms[2];
-}
-
 const fmt = (iso: string, pattern: string) => dayjs(iso).locale('uk').format(pattern);
 
 export default function HomeworkListPage() {
@@ -63,6 +66,16 @@ export default function HomeworkListPage() {
     queryKey: ['hw-all'],
     queryFn: () => api<HwRow[]>('/homework'),
   });
+  // Short names ("ОС", "БД") for the subject chips; falls back to an acronym of the full name.
+  const subjects = useQuery({
+    queryKey: ['subjects'],
+    queryFn: () => api<SubjectRow[]>('/subjects'),
+  });
+  const shortOf = (h: HwRow) => {
+    const s = subjects.data?.find((x) => x._id === h.subjectId);
+    // The chip truncates, so a one-word name stays whole (the journal's 52px column cuts it to 3 letters).
+    return s?.shortName || subjectAcronym(h.subjectName || s?.name || '', true);
+  };
 
   const toggle = useMutation({
     mutationFn: ({ id, done }: { id: string; done: boolean }) =>
@@ -86,8 +99,18 @@ export default function HomeworkListPage() {
   const active = rows.filter((h) => !h.done);
   const done = rows
     .filter((h) => h.done)
-    .sort((a, b) => (b.deadline ?? '').localeCompare(a.deadline ?? ''));
+    .sort((a, b) =>
+      (b.doneAt ?? b.deadline ?? '').localeCompare(a.doneAt ?? a.deadline ?? ''),
+    );
   const now = dayjs().locale('uk');
+  // "здано вчасно": share of done tasks with a deadline that were ticked before it.
+  const timed = done.filter((h) => h.deadline && h.doneAt);
+  const onTime =
+    !teacherOnly && timed.length
+      ? Math.round(
+          (timed.filter((h) => !dayjs(h.doneAt).isAfter(h.deadline)).length / timed.length) * 100,
+        )
+      : null;
   const groups = GROUPS.map(([key, title]) => ({
     key,
     title,
@@ -99,7 +122,7 @@ export default function HomeworkListPage() {
     teacherOnly ? null : (
       <button
         type="button"
-        className={cn('flex-shrink-0 p-2.5', className)}
+        className={cn('flex flex-shrink-0 p-2.5', className)}
         aria-label={h.done ? 'Повернути в активні' : 'Позначити виконаним'}
         aria-pressed={!!h.done}
         disabled={toggle.isPending && toggle.variables?.id === h._id}
@@ -121,7 +144,14 @@ export default function HomeworkListPage() {
             <Link href={`/homework/${h._id}`} className="flex min-w-0 flex-1 flex-col text-ink">
               <span className="h3 truncate line-through decoration-ink-3">{h.title}</span>
               <span className="tiny faint truncate">
-                {[h.subjectName, h.deadline ? `дедлайн ${fmt(h.deadline, 'D MMM')}` : null]
+                {[
+                  shortOf(h),
+                  h.doneAt
+                    ? `виконано ${fmt(h.doneAt, 'D MMM[.]')}`
+                    : h.deadline
+                      ? `дедлайн ${fmt(h.deadline, 'D MMM[.]')}`
+                      : null,
+                ]
                   .filter(Boolean)
                   .join(' · ')}
               </span>
@@ -146,20 +176,27 @@ export default function HomeworkListPage() {
         {check(h, '-mx-2.5 -mb-2.5 -mt-2')}
         <Link href={`/homework/${h._id}`} className="flex min-w-0 flex-1 flex-col gap-1.5 text-ink">
           <div className="flex items-start justify-between gap-2">
-            <span className="h3 text-base">{h.title}</span>
+            <span className="h3 min-w-0 break-words text-base">{h.title}</span>
             {h.deadline && (group === 'week' || group === 'later') ? (
               <span className="flex flex-col items-end whitespace-nowrap">
                 <span className="small font-semibold text-ink-2">
-                  {fmt(h.deadline, group === 'week' ? 'dd, D' : 'D MMM')}
+                  {fmt(h.deadline, group === 'week' ? 'dd, D' : 'D MMM[.]')}
                 </span>
-                <span className="tiny faint num">{fmt(h.deadline, 'HH:mm')}</span>
+                {/* 23:59 is the default deadline time — only show a non-default one. */}
+                {fmt(h.deadline, 'HH:mm') !== '23:59' ? (
+                  <span className="tiny faint num">{fmt(h.deadline, 'HH:mm')}</span>
+                ) : null}
               </span>
             ) : null}
           </div>
-          <div className="meta">
-            {h.subjectName ? (
-              <span className={cn('chip max-w-full', tone && 'chip-ink')}>
-                <span className="truncate">{h.subjectName}</span>
+          {/* Mockup 11: only the urgent (highlighted) cards expand with the description. */}
+          {tone && h.description ? (
+            <span className="small muted line-clamp-2 break-words">{h.description}</span>
+          ) : null}
+          <div className={cn('meta', tone && 'mt-0.5')}>
+            {shortOf(h) ? (
+              <span className={cn('chip h-[22px] max-w-full', tone && 'chip-ink')}>
+                <span className="truncate">{shortOf(h)}</span>
               </span>
             ) : null}
             {h.points ? (
@@ -174,9 +211,9 @@ export default function HomeworkListPage() {
               </span>
             ) : null}
             {tone && h.deadline ? (
-              <span className={cn('chip', tone === 'bad' ? 'chip-bad' : 'chip-warn')}>
+              <span className={cn('chip', tone === 'bad' && 'chip-bad')}>
                 {tone === 'bad'
-                  ? `прострочено · ${fmt(h.deadline, 'D MMM, HH:mm')}`
+                  ? `прострочено · ${fmt(h.deadline, 'D MMM[.], HH:mm')}`
                   : `до ${fmt(h.deadline, 'HH:mm')}`}
               </span>
             ) : null}
@@ -202,9 +239,17 @@ export default function HomeworkListPage() {
             : undefined
         }
         action={
-          <Link href="/homework/new" className="icon-btn" aria-label="Додати завдання">
-            <Icon name="plus" />
-          </Link>
+          <>
+            {onTime !== null ? (
+              <div className="mt-1 flex flex-col items-end gap-1">
+                <span className="num text-[22px] leading-none text-accent-text">{onTime}%</span>
+                <span className="tiny faint whitespace-nowrap">здано вчасно</span>
+              </div>
+            ) : null}
+            <Link href="/homework/new" className="icon-btn" aria-label="Додати завдання">
+              <Icon name="plus" />
+            </Link>
+          </>
         }
       />
 
@@ -234,7 +279,7 @@ export default function HomeworkListPage() {
               className={cn(tab === 'active' && 'on')}
               onClick={() => switchTab('active')}
             >
-              Активні · <span className="num">{active.length}</span>
+              Активні · {active.length}
             </button>
             <button
               type="button"
@@ -243,7 +288,7 @@ export default function HomeworkListPage() {
               className={cn(tab === 'done' && 'on')}
               onClick={() => switchTab('done')}
             >
-              Виконані · <span className="num">{done.length}</span>
+              Виконані
             </button>
           </div>
 
@@ -268,7 +313,7 @@ export default function HomeworkListPage() {
                       <h2 className="h2">{g.title}</h2>
                       {g.key === 'today' || g.key === 'tomorrow' ? (
                         <span className="chip chip-warn">
-                          {now.add(g.key === 'tomorrow' ? 1 : 0, 'day').format('dd, D MMM')}
+                          {now.add(g.key === 'tomorrow' ? 1 : 0, 'day').format('dd, D MMM[.]')}
                         </span>
                       ) : null}
                       {g.key === 'overdue' ? (
@@ -281,22 +326,22 @@ export default function HomeworkListPage() {
                   </section>
                 ))
               ) : (
-                <Empty title="Усе виконано" icon="checkSquare" />
+                <Empty title="Усе виконано" icon="checkSquare" hint="Нових завдань поки немає." />
               )}
 
               {done.length ? (
                 <section className="flex flex-col gap-2.5">
                   <div className="flex items-baseline justify-between gap-3">
-                    <h2 className="h2 faint">Виконані</h2>
+                    <h2 className="h2 faint">Нещодавно виконані</h2>
                     <button
                       type="button"
-                      className="small -my-[13px] px-1 py-[13px] font-semibold text-accent-text"
+                      className="small -mr-1 -my-[13px] px-1 py-[13px] font-semibold text-accent-text"
                       onClick={() => switchTab('done')}
                     >
                       Усі {done.length}
                     </button>
                   </div>
-                  {doneList(done.slice(0, 3), 'opacity-75')}
+                  {doneList(done.slice(0, 2), 'opacity-75')}
                 </section>
               ) : null}
             </>

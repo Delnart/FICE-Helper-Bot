@@ -48,6 +48,8 @@ export default function EditHomeworkPage() {
   const [points, setPoints] = useState<number | ''>('');
   const [teamSize, setTeamSize] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
+  // Snapshot of the hydrated form — drives the "не збережено" chip.
+  const [initial, setInitial] = useState('');
 
   // Hydrate the form once per id — a background refetch (e.g. window focus)
   // must not overwrite unsaved edits.
@@ -55,17 +57,22 @@ export default function EditHomeworkPage() {
   useEffect(() => {
     if (!data || hydratedId.current === id) return;
     hydratedId.current = id;
-    setTitle(data.title ?? '');
-    setDescription(data.description ?? '');
-    if (data.deadline) {
-      const d = dayjs(data.deadline);
-      if (d.isValid()) {
-        setDeadlineDate(d.format('YYYY-MM-DD'));
-        setDeadlineTime(d.format('HH:mm'));
-      }
-    }
-    setPoints(data.points ?? '');
-    setTeamSize(typeof data.teamSize === 'number' ? data.teamSize : '');
+    const d = data.deadline ? dayjs(data.deadline) : null;
+    const v = [
+      data.title ?? '',
+      data.description ?? '',
+      d?.isValid() ? d.format('YYYY-MM-DD') : '',
+      d?.isValid() ? d.format('HH:mm') : '23:59',
+      data.points ?? '',
+      typeof data.teamSize === 'number' ? data.teamSize : '',
+    ] as const;
+    setTitle(v[0]);
+    setDescription(v[1]);
+    setDeadlineDate(v[2]);
+    setDeadlineTime(v[3]);
+    setPoints(v[4]);
+    setTeamSize(v[5]);
+    setInitial(JSON.stringify(v));
   }, [data, id]);
 
   const invalidateHwLists = () => {
@@ -105,6 +112,10 @@ export default function EditHomeworkPage() {
     );
   }
 
+  const dirty =
+    !!initial &&
+    JSON.stringify([title, description, deadlineDate, deadlineTime, points, teamSize]) !== initial;
+
   function submit() {
     setError(null);
     if (title.trim().length < 1) {
@@ -127,7 +138,11 @@ export default function EditHomeworkPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Редагування" subtitle={data.subjectName} />
+      <PageHeader
+        title="Редагування"
+        subtitle={data.subjectName}
+        action={dirty ? <span className="chip chip-warn mt-1">не збережено</span> : undefined}
+      />
 
       <section className="card-flat flex flex-col gap-3.5">
         <div>
@@ -137,6 +152,7 @@ export default function EditHomeworkPage() {
           <input
             id="hw-title"
             className="input"
+            placeholder="Наприклад: Лабораторна 3"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -148,6 +164,7 @@ export default function EditHomeworkPage() {
           <textarea
             id="hw-desc"
             className="textarea"
+            placeholder="Що саме треба зробити, де знайти умову, тощо"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -240,7 +257,7 @@ export default function EditHomeworkPage() {
           onClick={submit}
           disabled={update.isPending}
         >
-          {update.isPending ? 'Зберігаємо…' : 'Зберегти'}
+          {update.isPending ? 'Зберігаємо…' : 'Зберегти зміни'}
         </button>
       </div>
     </div>
