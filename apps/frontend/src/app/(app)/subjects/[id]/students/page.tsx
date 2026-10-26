@@ -3,8 +3,8 @@
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../../lib/api';
-import { initials } from '../../../../../lib/name';
 import { PageHeader } from '../../../../../components/PageHeader';
+import { UserAvatar } from '../../../../../components/UserAvatar';
 import { Empty, ErrorState, Loading } from '../../../../../components/Empty';
 import { Icon } from '../../../../../components/icons';
 import { pluralUk } from '../../../../../components/subjects/helpers';
@@ -16,6 +16,7 @@ interface Student {
   fullName?: string;
   username?: string;
   telegramId: number;
+  avatarUrl?: string;
 }
 
 interface SubjectDetail {
@@ -68,7 +69,7 @@ export default function SubjectStudentsPage() {
 
               return (
                 <a key={s._id} href={tgUrl} target="_blank" rel="noreferrer" className="row">
-                  <span className="avatar">{initials(name)}</span>
+                  <UserAvatar name={name} src={s.avatarUrl} />
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span className="h3 truncate">{name}</span>
                     {username ? <span className="tiny faint truncate">@{username}</span> : null}

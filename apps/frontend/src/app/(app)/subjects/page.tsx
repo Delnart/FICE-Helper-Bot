@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import dayjs from 'dayjs';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
-import { useActiveMembership, useCanManage } from '../../../hooks/useMe';
+import { useActiveMembership, useCanManage, useIsTeacherOnly } from '../../../hooks/useMe';
 import { PageHeader } from '../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Icon } from '../../../components/icons';
@@ -58,8 +59,17 @@ interface Chip {
   cls?: string;
 }
 
+/** «черга відкриється ср» — time today, weekday within a week, else the date. */
+function opensLabel(d: Date): string {
+  const days = dayjs(d).startOf('day').diff(dayjs().startOf('day'), 'day');
+  if (days === 0) return `черга з ${dayjs(d).format('HH:mm')}`;
+  if (days < 7) return `черга відкриється ${d.toLocaleDateString('uk-UA', { weekday: 'short' })}`;
+  return `черга з ${d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' })}`;
+}
+
 export default function SubjectsPage() {
   const canManage = useCanManage();
+  const isTeacherOnly = useIsTeacherOnly();
   const groupName = useActiveMembership()?.groupName;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -72,7 +82,15 @@ export default function SubjectsPage() {
   // Card chips: the same endpoints the old home cards / now-card used.
   const now = useQuery({
     queryKey: ['schedule-now'],
-    queryFn: () => api<{ current: NowLesson | null; next: NowLesson | null }>('/schedule/now'),
+    queryFn: () =>
+      api<{ current: NowLesson | null; next: NowLesson | null; weekType?: 1 | 2 }>('/schedule/now'),
+  });
+  // This week's own timetable (same cache as the Розклад tab) — feeds the «онлайн» chip.
+  const week = now.data?.weekType;
+  const lessons = useQuery({
+    queryKey: ['schedule', week, false],
+    queryFn: () => api<NowLesson[]>('/schedule/my', { query: { week } }),
+    enabled: !!week && !isTeacherOnly,
   });
   const pending = useQuery({
     queryKey: ['hw-pending-count'],
@@ -110,10 +128,7 @@ export default function SubjectsPage() {
           queueOpen
             ? { label: `черга ${takenSlots(queue)}/${queue.slotsCount}`, cls: 'chip-ok' }
             : opensAt && opensAt > new Date()
-              ? {
-                  label: `черга з ${opensAt.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' })}`,
-                  cls: 'chip-info',
-                }
+              ? { label: opensLabel(opensAt), cls: 'chip-info' }
               : { label: 'черга закрита' },
         );
       }
@@ -122,33 +137,33 @@ export default function SubjectsPage() {
         if (soon) chips.push({ label: `ДЗ ${soon}`, cls: 'chip-warn' });
         if (!soon || hw.length > 1) chips.push({ label: `${hw.length} ДЗ` });
       }
-      if (links) chips.push({ label: `${links} ${pluralUk(links, ['посилання', 'посилання', 'посилань'])}` });
       if (elective) chips.push({ label: 'вибіркова', cls: 'chip-accent' });
+      // Online = every lesson of it this week has a meeting link and no room.
+      const own = (lessons.data ?? []).filter((l) => isLessonOf(l, s));
+      if (own.length && own.every((l) => !l.room && l.meetingUrl)) {
+        chips.push({ label: 'онлайн', cls: 'chip-info' });
+      }
+      // Lowest priority: cards carry at most 3 chips, as in the mockup.
+      if (links && chips.length < 3) {
+        chips.push({ label: `${links} ${pluralUk(links, ['посилання', 'посилання', 'посилань'])}` });
+      }
 
       const names = [...new Set(s.teachers.map((t) => t.fullName))];
       const teacher = !names.length
         ? 'Викладача не призначено'
-        : shortenName(names[0]) + (names.length > 1 ? ` +${names.length - 1}` : '');
+        : shortenName(names[0]).replace(/\.(?=\S)/g, '. ') + (names.length > 1 ? ` +${names.length - 1}` : '');
 
       return { s, chips, teacher, queueOpen, hasHw: hw.length > 0, elective };
     });
-  }, [subjects.data, now.data, pending.data, queues.data, electives.data]);
-
-  const counts: Record<Filter, number> = {
-    all: cards.length,
-    queue: cards.filter((c) => c.queueOpen).length,
-    hw: cards.filter((c) => c.hasHw).length,
-    elective: cards.filter((c) => c.elective).length,
-  };
-  const activeFilter = counts[filter] ? filter : 'all';
+  }, [subjects.data, now.data, pending.data, queues.data, electives.data, lessons.data]);
 
   const term = search.trim().toLowerCase();
   const visible = cards.filter(
     (c) =>
-      (activeFilter === 'all' ||
-        (activeFilter === 'queue' && c.queueOpen) ||
-        (activeFilter === 'hw' && c.hasHw) ||
-        (activeFilter === 'elective' && c.elective)) &&
+      (filter === 'all' ||
+        (filter === 'queue' && c.queueOpen) ||
+        (filter === 'hw' && c.hasHw) ||
+        (filter === 'elective' && c.elective)) &&
       (!term ||
         [c.s.name, c.s.shortName ?? '', ...c.s.teachers.map((t) => t.fullName)].some((x) =>
           x.toLowerCase().includes(term),
@@ -216,57 +231,53 @@ export default function SubjectsPage() {
             />
           </div>
 
-          {counts.queue || counts.hw || counts.elective ? (
-            <div className="flex flex-wrap gap-1.5">
-              {FILTERS.filter((f) => counts[f.id]).map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  aria-pressed={activeFilter === f.id}
-                  className={cn('chip chip-btn', activeFilter === f.id && 'chip-ink')}
-                  onClick={() => setFilter(f.id)}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
+          <div className="flex flex-wrap gap-1.5">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                aria-pressed={filter === f.id}
+                className={cn('chip chip-btn', filter === f.id && 'chip-ink')}
+                onClick={() => setFilter(f.id)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
 
           {visible.length ? (
             <section aria-label="Список дисциплін" className="grid grid-cols-2 gap-2.5">
-              {visible.map(({ s, chips, teacher }) => {
-                const display = s.shortName ?? s.name;
-                return (
-                  <Link
-                    key={s._id}
-                    href={`/subjects/${s._id}`}
-                    className="card-flat flex min-h-[150px] flex-col gap-3 p-3.5"
-                  >
-                    <SubjectTile name={s.name} icon={s.icon} />
-                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="h3 line-clamp-3 break-words leading-[1.25]">{display}</span>
-                      {s.shortName && s.name !== s.shortName ? (
-                        <span className="tiny muted line-clamp-2">{s.name}</span>
-                      ) : null}
-                      <span className="tiny faint line-clamp-1">{teacher}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {chips.length ? (
-                        chips.map((c) => (
-                          <span key={c.label} className={cn('chip', c.cls)}>
-                            {c.label}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="chip text-ink-3">без активностей</span>
-                      )}
-                    </div>
-                  </Link>
-                );
-              })}
+              {visible.map(({ s, chips, teacher }) => (
+                <Link
+                  key={s._id}
+                  href={`/subjects/${s._id}`}
+                  className="card-flat flex min-h-[150px] flex-col gap-3 p-3.5"
+                >
+                  <SubjectTile name={s.name} icon={s.icon} />
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="h3 line-clamp-3 break-words leading-[1.25]">{s.name}</span>
+                    <span className="tiny faint line-clamp-1">{teacher}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {chips.length ? (
+                      chips.map((c) => (
+                        <span key={c.label} className={cn('chip', c.cls)}>
+                          {c.label}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="chip faint">без активностей</span>
+                    )}
+                  </div>
+                </Link>
+              ))}
             </section>
           ) : (
-            <Empty title="Нічого не знайдено" icon="search" hint="Спробуйте іншу назву або фільтр" />
+            <Empty
+              title="Нічого не знайдено"
+              icon="search"
+              hint={term ? 'Спробуйте іншу назву або фільтр' : 'Під цей фільтр поки нічого не підходить'}
+            />
           )}
         </>
       )}

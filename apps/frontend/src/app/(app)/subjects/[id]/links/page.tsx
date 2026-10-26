@@ -38,7 +38,6 @@ export default function SubjectLinksPage() {
   // Editable working copy — synced from server data once on first load.
   const [draft, setDraft] = useState<SubjectLink[]>([]);
   const [hydrated, setHydrated] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!hydrated && subject.data) {
@@ -54,19 +53,18 @@ export default function SubjectLinksPage() {
       api(`/subjects/${id}/links`, { method: 'PATCH', json: { links } }),
     onSuccess: () => {
       haptic('success');
-      setError(null);
       void qc.invalidateQueries({ queryKey: ['subject', id] });
     },
-    onError: (err: Error) => {
-      setError(err.message);
-      haptic('error');
-    },
+    onError: () => haptic('error'),
   });
 
-  /** Optimistically keeps the draft; the editor closes its sheet once the save resolves. */
-  function commit(next: SubjectLink[]) {
+  /**
+   * The draft changes only once the save succeeds — the editor keeps its sheet
+   * open and shows the error otherwise (so a failed delete doesn't hide the row).
+   */
+  async function commit(next: SubjectLink[]) {
+    await save.mutateAsync(next.map(cleanLink).filter((l) => l.label && l.url));
     setDraft(next);
-    return save.mutateAsync(next.map(cleanLink).filter((l) => l.label && l.url));
   }
 
   const s = subject.data;
@@ -74,7 +72,7 @@ export default function SubjectLinksPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Корисні посилання" subtitle={s ? s.shortName ?? s.name : undefined} />
+      <PageHeader title="Корисні посилання" subtitle={s ? s.shortName || s.name : undefined} />
 
       {subject.isLoading ? (
         <Loading />
@@ -85,18 +83,11 @@ export default function SubjectLinksPage() {
           onRetry={() => subject.refetch()}
         />
       ) : (
-        <>
-          {error ? <div className="card-flat small text-bad">{error}</div> : null}
-          {canEdit || links.length ? (
-            <LinksEditor
-              links={links}
-              onChange={canEdit ? commit : undefined}
-              saving={save.isPending}
-            />
-          ) : (
-            <Empty title="Посилань ще немає" icon="link" />
-          )}
-        </>
+        canEdit || links.length ? (
+          <LinksEditor links={links} onChange={canEdit ? commit : undefined} saving={save.isPending} />
+        ) : (
+          <Empty title="Посилань ще немає" icon="link" />
+        )
       )}
     </div>
   );

@@ -7,13 +7,13 @@ import { Fragment, useMemo, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { cn } from '../../../../lib/cn';
-import { initials } from '../../../../lib/name';
-import { useMe } from '../../../../hooks/useMe';
+import { useActiveMembership, useMe } from '../../../../hooks/useMe';
 import { useTelegramBackButton } from '../../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../../components/Empty';
 import { Icon, type IconName } from '../../../../components/icons';
 import { SubjectTile } from '../../../../components/SubjectIcon';
 import { Section } from '../../../../components/ui/Section';
+import { UserAvatar } from '../../../../components/UserAvatar';
 import {
   LESSON_TYPE_LABEL,
   dueSoon,
@@ -37,8 +37,9 @@ interface SubjectDetail {
     role: string;
     roleInSubject?: string;
     telegramUsername?: string;
+    avatarUrl?: string;
   }>;
-  links: Array<{ label: string; url: string }>;
+  links: Array<{ label: string; url: string; lessonReminderType?: string }>;
   visibility: {
     homeworkVisible: boolean;
     queueVisible: boolean;
@@ -63,6 +64,14 @@ interface HomeworkRow {
   teamSize?: number;
 }
 
+/** GET /attendance/my/stats?subjectId= — the caller's marks in this subject. */
+interface MyAttendance {
+  present: number;
+  absent: number;
+  late: number;
+  excused: number;
+}
+
 /** Queue entry statuses that no longer hold a place in line. */
 const QUEUE_DONE = ['passed', 'missed', 'failed'];
 
@@ -70,6 +79,7 @@ export default function SubjectDetailPage() {
   useTelegramBackButton();
   const { id } = useParams<{ id: string }>();
   const me = useMe();
+  const isMember = !!useActiveMembership();
   const subject = useQuery({
     queryKey: ['subject', id],
     queryFn: () => api<SubjectDetail>(`/subjects/${id}`),
@@ -101,6 +111,12 @@ export default function SubjectDetailPage() {
     queryKey: ['subject-hw', id],
     queryFn: () => api<HomeworkRow[]>('/homework', { query: { subjectId: id } }),
     enabled: !!id && !!v?.homeworkVisible,
+  });
+  // «Моя відвідуваність» — students only (teachers get the journal card instead).
+  const attendance = useQuery({
+    queryKey: ['attendance-my-stats', id],
+    queryFn: () => api<MyAttendance>('/attendance/my/stats', { query: { subjectId: id } }),
+    enabled: !!id && isMember && !!subject.data && !subject.data.isTeacher,
   });
 
   const isCurrent = !!subject.data && isLessonOf(now.data?.current, subject.data);
@@ -149,19 +165,22 @@ export default function SubjectDetailPage() {
         .join(' · ')
     : '';
 
-  const hasCards = !!(v?.queueVisible || v?.homeworkVisible || v?.linksVisible || isTeacher);
+  const att = attendance.data;
+  const attMarked = att ? att.present + att.late + att.absent + att.excused : 0;
+  const attMissed = att ? att.absent + att.excused : 0;
+
+  const hasCards = !!(v?.queueVisible || v?.homeworkVisible || isTeacher || att);
+  // Links are shown once — in the «Корисні посилання» section; editors (same rule as
+  // the links page) still get a way in when the list is empty.
+  const canEditLinks = canManage || isTeacher;
+  const linksHref = `/subjects/${id}/links` as Route;
 
   return (
     <div className="flex flex-col gap-4">
       <header className="flex items-center gap-3.5">
         <SubjectTile name={s.name} icon={s.icon} size="lg" tone="ink" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex flex-col gap-0.5">
-            <h1 className="h1 break-words text-[20px]">{s.shortName ?? s.name}</h1>
-            {s.shortName && s.name !== s.shortName ? (
-              <div className="small muted font-medium">{s.name}</div>
-            ) : null}
-          </div>
+          <h1 className="h1 break-words text-[20px]">{s.name}</h1>
           {liveLesson ? (
             <div className="meta">
               <span className={cn('chip', isCurrent ? 'chip-lime' : 'chip-info')}>
@@ -196,7 +215,7 @@ export default function SubjectDetailPage() {
               accent={queueOpen}
               badge={
                 queue ? (
-                  <span className={cn('chip', queueOpen && 'chip-lime')}>
+                  <span className={cn('chip', queueOpen && 'bg-[rgba(255,255,255,0.22)] text-accent-ink')}>
                     {queueOpen ? 'відкрита' : 'закрита'}
                   </span>
                 ) : null
@@ -214,7 +233,7 @@ export default function SubjectDetailPage() {
           {v?.homeworkVisible ? (
             <QuickCard
               href={`/subjects/${id}/homework` as Route}
-              icon="checkSquare"
+              icon="task"
               badge={hwSoon ? <span className="chip chip-warn">{hwSoon}</span> : null}
               value={hw.data ? String(hwPending.length) : undefined}
               title="Завдання"
@@ -234,16 +253,23 @@ export default function SubjectDetailPage() {
               }
             />
           ) : null}
-          {v?.linksVisible ? (
+          {att ? (
             <QuickCard
-              href={`/subjects/${id}/links` as Route}
-              icon="link"
-              value={String(s.links.length)}
-              title="Посилання"
+              href={canManage ? journalHref : ('/schedule' as Route)}
+              icon="clock"
+              value={attMarked ? `${Math.round(((att.present + att.late) / attMarked) * 100)}%` : '—'}
+              title="Моя відвідуваність"
               sub={
-                s.links.length
-                  ? s.links.map((l) => l.label).slice(0, 3).join(', ')
-                  : 'Поки немає'
+                attMarked
+                  ? [
+                      attMissed
+                        ? `${attMissed} ${pluralUk(attMissed, ['пропуск', 'пропуски', 'пропусків'])}`
+                        : 'без пропусків',
+                      att.late ? `${att.late} ${pluralUk(att.late, ['запізнення', 'запізнення', 'запізнень'])}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : 'Ще немає відміток'
               }
             />
           ) : null}
@@ -274,49 +300,65 @@ export default function SubjectDetailPage() {
       {v?.teachersVisible ? (
         <Section title="Викладачі">
           {s.teachers.length > 0 ? (
-            <div>
-              {mergeTeachers(s.teachers).map((t) => (
-                <TeacherRow key={t.dedupeKey} t={t} />
-              ))}
-            </div>
+            mergeTeachers(s.teachers).map((t) => <TeacherRow key={t.dedupeKey} t={t} />)
           ) : (
             <Empty title="Викладачів ще не призначено" icon="users" />
           )}
         </Section>
       ) : null}
 
-      {v?.linksVisible && s.links.length ? (
+      {v?.linksVisible && (s.links.length || canEditLinks) ? (
         <Section
           title="Корисні посилання"
           aside={
-            <Link
-              href={`/subjects/${id}/links` as Route}
-              className="-my-[13px] inline-block py-[13px] font-semibold text-accent-text"
-            >
-              Усі {s.links.length}
-            </Link>
+            s.links.length > 3 || (canEditLinks && s.links.length) ? (
+              <Link
+                href={linksHref}
+                className="-my-[13px] inline-block py-[13px] font-semibold text-accent-text"
+              >
+                {s.links.length > 3 ? `Усі ${s.links.length}` : 'Змінити'}
+              </Link>
+            ) : null
           }
         >
-          <div className="card-flat flex flex-col px-3.5 py-1">
-            {s.links.slice(0, 3).map((l, i) => {
-              const meta = linkMeta(l.url);
-              return (
-                <Fragment key={`${i}-${l.url}`}>
-                  {i ? <div className="divider" /> : null}
-                  <a href={meta.href} target="_blank" rel="noopener noreferrer" className="row-plain">
-                    <span className="subj subj-sm">
-                      <Icon name="link" strokeWidth={1.9} />
-                    </span>
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <span className="h3 truncate">{l.label}</span>
-                      {meta.host ? <span className="tiny faint truncate">{meta.host}</span> : null}
-                    </div>
-                    <Icon name="arrowUpRight" size={18} className="chev" />
-                  </a>
-                </Fragment>
-              );
-            })}
-          </div>
+          {s.links.length ? (
+            <div className="card-flat flex flex-col px-3.5 py-1">
+              {s.links.slice(0, 3).map((l, i) => {
+                const meta = linkMeta(l.url);
+                const type = l.lessonReminderType && LINK_TYPE_LABEL[l.lessonReminderType];
+                // Skip the type when the label already says it («Практика» · практика).
+                const sub = [meta.host, type && !l.label.toLowerCase().includes(type.slice(0, 5)) && type]
+                  .filter(Boolean)
+                  .join(' · ');
+                return (
+                  <Fragment key={`${i}-${l.url}`}>
+                    {i ? <div className="divider" /> : null}
+                    <a href={meta.href} target="_blank" rel="noopener noreferrer" className="row-plain">
+                      <span className="subj subj-sm">
+                        <Icon name={linkIcon(meta.host, l.lessonReminderType)} strokeWidth={1.9} />
+                      </span>
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span className="h3 truncate">{l.label}</span>
+                        {sub ? <span className="tiny faint truncate">{sub}</span> : null}
+                      </div>
+                      <Icon name="arrowUpRight" size={18} className="chev" />
+                    </a>
+                  </Fragment>
+                );
+              })}
+            </div>
+          ) : (
+            <Link href={linksHref} className="row">
+              <span className="subj subj-sm">
+                <Icon name="plus" strokeWidth={1.9} />
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="h3">Додати посилання</span>
+                <span className="tiny faint">Moodle, Drive, методички, Zoom</span>
+              </div>
+              <Icon name="chevronRight" size={18} className="chev" />
+            </Link>
+          )}
         </Section>
       ) : null}
     </div>
@@ -344,7 +386,7 @@ function QuickCard({
     <Link
       href={href}
       className={cn(
-        'card-flat flex min-h-[128px] flex-col justify-between gap-3.5 p-3.5',
+        'card-flat flex min-h-[128px] flex-col gap-3.5 p-3.5',
         accent && 'border-accent bg-accent text-accent-ink',
       )}
     >
@@ -355,7 +397,7 @@ function QuickCard({
       <div className="flex min-w-0 flex-col gap-0.5">
         {value ? <span className="num text-[22px] leading-none">{value}</span> : null}
         <span className="h3">{title}</span>
-        {sub ? <span className={cn('tiny line-clamp-2', !accent && 'faint')}>{sub}</span> : null}
+        {sub ? <span className={cn('tiny line-clamp-2', accent ? 'opacity-[0.85]' : 'faint')}>{sub}</span> : null}
       </div>
     </Link>
   );
@@ -365,6 +407,7 @@ interface MergedTeacher {
   dedupeKey: string;
   fullName: string;
   telegramUsername?: string;
+  avatarUrl?: string;
   roles: string[]; // ordered: lecturer, practice, lab
 }
 
@@ -381,11 +424,13 @@ function mergeTeachers(teachers: SubjectDetail['teachers']): MergedTeacher[] {
     const cur = map.get(key);
     if (cur) {
       if (!cur.roles.includes(role)) cur.roles.push(role);
+      cur.avatarUrl ??= t.avatarUrl;
     } else {
       map.set(key, {
         dedupeKey: key,
         fullName: t.fullName,
         telegramUsername: t.telegramUsername,
+        avatarUrl: t.avatarUrl,
         roles: [role],
       });
     }
@@ -403,7 +448,7 @@ function TeacherRow({ t }: { t: MergedTeacher }) {
 
   const body = (
     <>
-      <span className="avatar">{initials(t.fullName)}</span>
+      <UserAvatar name={t.fullName} src={t.avatarUrl} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="h3 break-words">{t.fullName}</span>
         <div className="flex flex-wrap gap-1">
@@ -413,7 +458,6 @@ function TeacherRow({ t }: { t: MergedTeacher }) {
             </span>
           ))}
         </div>
-        {username ? <span className="tiny faint truncate">@{username}</span> : null}
       </div>
     </>
   );
@@ -422,7 +466,7 @@ function TeacherRow({ t }: { t: MergedTeacher }) {
     return (
       <div className="row">
         {body}
-        <span className="tiny faint max-w-[110px] flex-shrink-0 text-right">контакти не вказані</span>
+        <span className="tiny faint max-w-[110px] flex-shrink-0">контакти не вказані</span>
       </div>
     );
   }
@@ -444,12 +488,27 @@ function teacherRoleLabel(r: string): string {
   const m: Record<string, string> = {
     lecturer: 'Лектор',
     practice: 'Практика',
-    lab: 'Лаборант',
-    Lecturer: 'Лектор',
-    Practice: 'Практика',
-    Lab: 'Лаборант',
+    lab: 'Лабораторні',
   };
-  return m[r] ?? r;
+  return m[r.toLowerCase()] ?? r;
+}
+
+/** Lesson type a link is tagged with (reminder setting), shown after the host. */
+const LINK_TYPE_LABEL: Record<string, string> = {
+  lecture: 'лекції',
+  practice: 'практика',
+  lab: 'лабораторні',
+};
+
+/** Row icon for a link: by well-known host, else by its lesson type. */
+function linkIcon(host: string, type?: string): IconName {
+  if (/moodle|do\.ipo|campus/i.test(host)) return 'bookOpen';
+  if (/docs\.google/i.test(host)) return 'file';
+  if (/zoom|meet\.google|teams|youtu/i.test(host)) return 'video';
+  if (/github|gitlab/i.test(host)) return 'code';
+  if (/^t\.me$|telegram/i.test(host)) return 'send';
+  if (type === 'lab') return 'flask';
+  return 'link';
 }
 
 /** Normalised href + bare host for a stored link (mirrors the links screen). */
