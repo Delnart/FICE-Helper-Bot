@@ -1,6 +1,13 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Error as MongooseError, Model, Types } from 'mongoose';
 import { QueueStatus, Role, ROLE_LEVEL } from '@fice/shared';
 import { Queue, QueueDocument } from './queue.schema';
 import { QueueSwapRequest, QueueSwapRequestDocument } from './swap-request.schema';
@@ -26,6 +33,9 @@ type QueueRulesInput = {
   autoCloseAt?: string | Date;
 };
 
+/** Plain (`.lean()`) or hydrated queue — read-only serializers accept either. */
+type LeanQueue = Queue & { _id: Types.ObjectId };
+
 @Injectable()
 export class QueuesService {
   private readonly logger = new Logger(QueuesService.name);
@@ -48,11 +58,12 @@ export class QueuesService {
     return this.queues.find(filter).sort({ createdAt: -1 }).exec();
   }
 
-  async listOpen(groupId: string): Promise<QueueDocument[]> {
+  async listOpen(groupId: string): Promise<LeanQueue[]> {
     const now = new Date();
     const all = await this.queues
       .find({ groupId: new Types.ObjectId(groupId) })
       .sort({ createdAt: -1 })
+      .lean()
       .exec();
     return all.filter((q) => {
       let open = q.rules.isOpen;
@@ -89,7 +100,10 @@ export class QueuesService {
 
   async findOrCreateForSubject(user: RequestUser, subjectId: string): Promise<unknown> {
     if (!Types.ObjectId.isValid(subjectId)) throw new NotFoundException('Subject not found');
-    const subject = await this.subjects.findById(subjectId).exec();
+    const subject = await this.subjects
+      .findById(subjectId, { groupId: 1, name: 1, shortName: 1, 'teachers.teacherUserId': 1 })
+      .lean()
+      .exec();
     if (!subject) throw new NotFoundException('Subject not found');
 
     // Group members get full access; teachers listed on this specific subject
@@ -104,10 +118,13 @@ export class QueuesService {
       throw new ForbiddenException('You are not a member of this group');
     }
 
-    let queue = await this.queues
-      .findOne({ subjectId: subject._id, groupId: subject.groupId })
-      .sort({ createdAt: 1 })
-      .exec();
+    const findQueue = () =>
+      this.queues
+        .findOne({ subjectId: subject._id, groupId: subject.groupId })
+        .sort({ createdAt: 1 })
+        .lean()
+        .exec();
+    let queue: LeanQueue | null = await findQueue();
 
     if (!queue) {
       // Don't auto-create on a teacher's first view — they shouldn't be the
@@ -115,21 +132,31 @@ export class QueuesService {
       if (!isMember) {
         return this.serializeEmptyForTeacher(subject);
       }
-      queue = await this.queues.create({
-        subjectId: subject._id,
-        groupId: subject.groupId,
-        title: subject.shortName ?? subject.name,
-        slotsCount: 25,
-        rules: this.normaliseRules(undefined),
-        createdBy: new Types.ObjectId(user.userId),
-      });
-      this.logger.log(`Auto-created queue for subject ${subjectId} by user ${user.userId}`);
+      try {
+        queue = await this.queues.create({
+          subjectId: subject._id,
+          groupId: subject.groupId,
+          title: subject.shortName ?? subject.name,
+          slotsCount: 25,
+          rules: this.normaliseRules(undefined),
+          createdBy: new Types.ObjectId(user.userId),
+        });
+        this.logger.log(`Auto-created queue for subject ${subjectId} by user ${user.userId}`);
+      } catch (err) {
+        // A parallel first view won the insert (unique {subjectId, groupId}):
+        // serve its queue so both callers see the same one.
+        if (!isDuplicateKey(err)) throw err;
+        queue = await findQueue();
+        if (!queue) throw err;
+      }
     }
     return this.serializeForUser(queue, user, isSubjectTeacher);
   }
 
   /** Empty placeholder for subject-teachers when the head hasn't opened the queue yet. */
-  private serializeEmptyForTeacher(subject: SubjectDocument): unknown {
+  private serializeEmptyForTeacher(
+    subject: Pick<Subject, 'name' | 'shortName'> & { _id: Types.ObjectId },
+  ): unknown {
     return {
       _id: '',
       title: subject.shortName ?? subject.name,
@@ -167,7 +194,10 @@ export class QueuesService {
       .exec();
     if (swaps.length === 0) return [];
     const toIds = swaps.map((s) => s.toUserId);
-    const toUsers = await this.users.find({ _id: { $in: toIds } }).lean().exec();
+    const toUsers = await this.users
+      .find({ _id: { $in: toIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1 })
+      .lean()
+      .exec();
     const nameById = new Map(
       toUsers.map((u) => [
         String(u._id),
@@ -200,7 +230,10 @@ export class QueuesService {
       .exec();
     if (swaps.length === 0) return [];
     const fromIds = swaps.map((s) => s.fromUserId);
-    const fromUsers = await this.users.find({ _id: { $in: fromIds } }).lean().exec();
+    const fromUsers = await this.users
+      .find({ _id: { $in: fromIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1 })
+      .lean()
+      .exec();
     const nameById = new Map(
       fromUsers.map((u) => [
         String(u._id),
@@ -217,7 +250,7 @@ export class QueuesService {
   }
 
   private async serializeForUser(
-    q: QueueDocument,
+    q: LeanQueue,
     user: RequestUser,
     isSubjectTeacher = false,
   ): Promise<unknown> {
@@ -226,7 +259,13 @@ export class QueuesService {
     // surface them as `teacher` so the UI renders read-only.
     const myRole = membership?.role ?? (isSubjectTeacher ? Role.Teacher : Role.Student);
     const userIds = q.entries.map((e) => e.userId).filter(Boolean);
-    const users = await this.users.find({ _id: { $in: userIds } }).lean().exec();
+    const users = await this.users
+      .find(
+        { _id: { $in: userIds } },
+        { fullName: 1, firstName: 1, lastName: 1, username: 1, avatarUrl: 1 },
+      )
+      .lean()
+      .exec();
     const userMap = new Map(
       users.map((u) => [
         String(u._id),
@@ -271,7 +310,7 @@ export class QueuesService {
     };
   }
 
-  private liveStatus(q: QueueDocument): 'draft' | 'open' | 'closed' {
+  private liveStatus(q: Pick<Queue, 'rules'>): 'draft' | 'open' | 'closed' {
     const now = new Date();
     let open = q.rules.isOpen;
     if (q.rules.autoOpenAt && q.rules.autoOpenAt <= now) open = true;
@@ -296,20 +335,21 @@ export class QueuesService {
   }
 
   async update(user: RequestUser, id: string, dto: UpdateQueueDto): Promise<QueueDocument> {
-    const q = await this.findById(id);
-    this.assertCanManage(user, String(q.groupId));
+    let wasOpen = false;
+    const q = await this.mutateQueue(id, (q) => {
+      this.assertCanManage(user, String(q.groupId));
 
-    const wasOpen = this.liveStatus(q) === 'open';
+      wasOpen = this.liveStatus(q) === 'open';
 
-    if (dto.title !== undefined) q.title = dto.title;
-    if (dto.slotsCount !== undefined) {
-      if (q.entries.some((e) => e.slotIndex > dto.slotsCount!)) {
-        throw new BadRequestException('Cannot shrink below occupied slots');
+      if (dto.title !== undefined) q.title = dto.title;
+      if (dto.slotsCount !== undefined) {
+        if (q.entries.some((e) => e.slotIndex > dto.slotsCount!)) {
+          throw new BadRequestException('Cannot shrink below occupied slots');
+        }
+        q.slotsCount = dto.slotsCount;
       }
-      q.slotsCount = dto.slotsCount;
-    }
-    if (dto.rules) q.rules = { ...q.rules, ...this.normaliseRules(dto.rules) };
-    await q.save();
+      if (dto.rules) q.rules = { ...q.rules, ...this.normaliseRules(dto.rules) };
+    });
 
     const isOpenNow = this.liveStatus(q) === 'open';
     // Transition closed → open → fire DM + group chat notification.
@@ -391,60 +431,131 @@ export class QueuesService {
     await this.queues.deleteOne({ _id: q._id });
   }
 
-  async enroll(user: RequestUser, queueId: string, dto: EnrollDto): Promise<QueueDocument> {
-    const q = await this.findById(queueId);
-    this.assertMember(user, String(q.groupId));
-    this.ensureOpen(q);
-
-    this.assertSlotAvailable(q, dto.slotIndex);
-    if (!q.rules.allowMultipleEntriesPerUser) {
-      if (q.entries.some((e) => String(e.userId) === user.userId)) {
-        throw new BadRequestException('You are already enrolled');
+  /**
+   * Load → check + mutate → save, where save() is a compare-and-swap on __v
+   * (schema has optimisticConcurrency). If someone else wrote in between we
+   * retry from a fresh load, so `fn` must run ALL its checks against the doc
+   * it's given and must not have side effects (it may run more than once).
+   */
+  // ponytail: retry-on-conflict, a burst of N simultaneous writers on one queue
+  // can still 409 the tail; enrolls (the real burst) go through pushEntry instead.
+  private async mutateQueue(
+    queueId: string,
+    fn: (q: QueueDocument) => void,
+    attempts = 5,
+  ): Promise<QueueDocument> {
+    for (let i = 1; ; i++) {
+      const q = await this.findById(queueId);
+      fn(q);
+      try {
+        await q.save();
+        return q;
+      } catch (err) {
+        if (!(err instanceof MongooseError.VersionError)) throw err;
+        if (i >= attempts) {
+          throw new ConflictException('Черга щойно змінилась — спробуйте ще раз');
+        }
       }
     }
+  }
 
+  async enroll(user: RequestUser, queueId: string, dto: EnrollDto): Promise<QueueDocument> {
+    // Thrown after the queue checks so error precedence is unchanged.
     const profileComplete = await this.assertProfileComplete(user.userId);
-    if (!profileComplete) {
-      throw new BadRequestException('Fill full name in profile before enrolling');
-    }
 
-    q.entries.push({
-      slotIndex: dto.slotIndex,
-      userId: new Types.ObjectId(user.userId),
-      labNumber: dto.labNumber,
-      status: QueueStatus.Default,
-      enrolledAt: new Date(),
+    return this.pushEntry(queueId, user.userId, dto, true, (q) => {
+      this.assertMember(user, String(q.groupId));
+      this.ensureOpen(q);
+
+      this.assertSlotAvailable(q, dto.slotIndex);
+      if (!q.rules.allowMultipleEntriesPerUser) {
+        if (q.entries.some((e) => String(e.userId) === user.userId)) {
+          throw new BadRequestException('You are already enrolled');
+        }
+      }
+
+      if (!profileComplete) {
+        throw new BadRequestException('Fill full name in profile before enrolling');
+      }
     });
-    await q.save();
-    return q;
   }
 
   async adminEnroll(user: RequestUser, queueId: string, dto: AdminEnrollDto): Promise<QueueDocument> {
-    const q = await this.findById(queueId);
-    this.assertCanManage(user, String(q.groupId));
-    this.assertSlotAvailable(q, dto.slotIndex);
-    q.entries.push({
-      slotIndex: dto.slotIndex,
-      userId: new Types.ObjectId(dto.userId),
-      labNumber: dto.labNumber,
-      status: QueueStatus.Default,
-      enrolledAt: new Date(),
+    // Managers may still place one person twice (never enforced here before).
+    return this.pushEntry(queueId, dto.userId, dto, false, async (q) => {
+      this.assertCanManage(user, String(q.groupId));
+      this.assertSlotAvailable(q, dto.slotIndex);
+      const member = await this.users
+        .exists({
+          _id: new Types.ObjectId(dto.userId),
+          'memberships.groupId': new Types.ObjectId(String(q.groupId)),
+        })
+        .exec();
+      if (!member) throw new BadRequestException('User is not a member of this group');
     });
-    await q.save();
-    return q;
+  }
+
+  /**
+   * Enroll as ONE conditional $push: the slot / one-entry rules are re-checked
+   * by Mongo on the stored doc, so a burst of students taking different slots
+   * all land (the CAS loop 409'd most of them). $inc __v keeps mutateQueue's
+   * CAS saves from overwriting the push. `check` runs on a fresh read first
+   * for the precise error; rules are read there, so a rules edit racing this
+   * call evaluates this one request with the old rules.
+   */
+  private async pushEntry(
+    queueId: string,
+    userId: string,
+    dto: EnrollDto,
+    oneEntryPerUser: boolean,
+    check: (q: QueueDocument) => void | Promise<void>,
+  ): Promise<QueueDocument> {
+    const uid = new Types.ObjectId(userId);
+    // Normally 1 round. A null update means someone raced us: the next read's
+    // check throws the real reason; if it passes (that entry left / rules
+    // changed) the push is simply retried.
+    for (let i = 1; ; i++) {
+      const q = await this.findById(queueId);
+      await check(q);
+      if (i > 2) throw new ConflictException('Черга щойно змінилась — спробуйте ще раз');
+      const filter: Record<string, unknown> = { _id: q._id, slotsCount: { $gte: dto.slotIndex } };
+      if (!q.rules.allowGroupSubmission) filter['entries.slotIndex'] = { $ne: dto.slotIndex };
+      if (oneEntryPerUser && !q.rules.allowMultipleEntriesPerUser) {
+        filter['entries.userId'] = { $ne: uid };
+      }
+      const updated = await this.queues
+        .findOneAndUpdate(
+          filter,
+          {
+            $push: {
+              entries: {
+                slotIndex: dto.slotIndex,
+                userId: uid,
+                labNumber: dto.labNumber,
+                status: QueueStatus.Default,
+                enrolledAt: new Date(),
+              },
+            },
+            $inc: { __v: 1 },
+          },
+          { new: true },
+        )
+        .exec();
+      if (updated) return updated;
+    }
   }
 
   async leave(user: RequestUser, queueId: string, slotIndex: number): Promise<QueueDocument> {
-    const q = await this.findById(queueId);
-    const entry = q.entries.find((e) => e.slotIndex === slotIndex);
-    if (!entry) throw new NotFoundException('Entry not found');
-    const isOwner = String(entry.userId) === user.userId;
-    const canManage = this.hasManage(user, String(q.groupId));
-    if (!isOwner && !canManage) throw new ForbiddenException();
+    return this.mutateQueue(queueId, (q) => {
+      // Shared slot (allowGroupSubmission): take the caller's own entry, not
+      // whoever is first; a manager not in the slot still removes the first.
+      const inSlot = q.entries.filter((e) => e.slotIndex === slotIndex);
+      const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
+      if (!entry) throw new NotFoundException('Entry not found');
+      this.assertOwnerOrManager(user, String(q.groupId), String(entry.userId));
 
-    q.entries = q.entries.filter((e) => !(e.slotIndex === slotIndex && String(e.userId) === String(entry.userId)));
-    await q.save();
-    return q;
+      q.entries = q.entries.filter((e) => !(e.slotIndex === slotIndex && String(e.userId) === String(entry.userId)));
+    });
   }
 
   async updateEntry(
@@ -453,33 +564,35 @@ export class QueuesService {
     slotIndex: number,
     dto: UpdateEntryDto,
   ): Promise<QueueDocument> {
-    const q = await this.findById(queueId);
-    const entry = q.entries.find((e) => e.slotIndex === slotIndex);
-    if (!entry) throw new NotFoundException('Entry not found');
+    let promoted: ReturnType<QueuesService['advanceQueueChain']> = [];
+    const q = await this.mutateQueue(queueId, (q) => {
+      // Shared slot: edit the caller's own entry, as leave() does.
+      const inSlot = q.entries.filter((e) => e.slotIndex === slotIndex);
+      const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
+      if (!entry) throw new NotFoundException('Entry not found');
 
-    const isOwner = String(entry.userId) === user.userId;
-    const canManage = this.hasManage(user, String(q.groupId));
+      const canManage = this.hasManage(user, String(q.groupId));
 
-    if (dto.status !== undefined && !canManage) {
-      throw new ForbiddenException('Only head/deputy/teacher can change status');
-    }
-    if (!isOwner && !canManage) throw new ForbiddenException();
+      if (dto.status !== undefined && !canManage) {
+        throw new ForbiddenException('Only head/deputy/teacher can change status');
+      }
+      this.assertOwnerOrManager(user, String(q.groupId), String(entry.userId));
 
-    if (dto.labNumber !== undefined) entry.labNumber = dto.labNumber;
+      if (dto.labNumber !== undefined) entry.labNumber = dto.labNumber;
 
-    const oldStatus = entry.status;
-    if (dto.status !== undefined) entry.status = dto.status;
+      const oldStatus = entry.status;
+      if (dto.status !== undefined) entry.status = dto.status;
 
-    // Auto-cascade status changes through the queue: when status TRANSITIONS
-    // to a "moving" state, promote the next eligible slot. Only fires on
-    // genuine transitions (oldStatus !== newStatus) — re-saving the same
-    // status doesn't re-fire DMs.
-    const promoted = (dto.status !== undefined && dto.status !== oldStatus)
-      ? this.advanceQueueChain(q, slotIndex, dto.status, oldStatus)
-      : [];
+      // Auto-cascade status changes through the queue: when status TRANSITIONS
+      // to a "moving" state, promote the next eligible slot. Only fires on
+      // genuine transitions (oldStatus !== newStatus) — re-saving the same
+      // status doesn't re-fire DMs.
+      promoted = (dto.status !== undefined && dto.status !== oldStatus)
+        ? this.advanceQueueChain(q, slotIndex, dto.status, oldStatus)
+        : [];
+    });
 
-    await q.save();
-
+    // Only after the winning save, so a retry never double-DMs.
     // DM promoted users — fire-and-forget so the request stays fast.
     for (const p of promoted) {
       void this.notifyChainPromotion(p, q).catch((err) =>
@@ -569,6 +682,8 @@ export class QueuesService {
     const q = await this.findById(queueId);
     const own = q.entries.find((e) => e.slotIndex === slotIndex && String(e.userId) === user.userId);
     if (!own) throw new ForbiddenException('You are not at this slot');
+    // A stale entry of someone who left the group can't start swaps.
+    this.assertMember(user, String(q.groupId));
     const target = q.entries.find((e) => e.slotIndex === dto.targetSlotIndex);
     if (!target) throw new NotFoundException('Target slot is empty');
     if (String(target.userId) === user.userId) throw new BadRequestException('Cannot swap with yourself');
@@ -584,11 +699,7 @@ export class QueuesService {
       })
       .lean()
       .exec();
-    if (existing) {
-      throw new BadRequestException(
-        'У вас вже є активний запит на обмін у цій черзі. Скасуйте його, щоб надіслати новий.',
-      );
-    }
+    if (existing) throw new BadRequestException(ONE_PENDING_SWAP);
 
     // Same fromUser → same toUser within an hour: silently dedupe so a user
     // can't bypass the limit by cancelling and re-requesting in a tight loop.
@@ -607,14 +718,20 @@ export class QueuesService {
       );
     }
 
-    const swap = await this.swaps.create({
-      queueId: q._id,
-      fromUserId: new Types.ObjectId(user.userId),
-      toUserId: target.userId,
-      fromSlotIndex: own.slotIndex,
-      toSlotIndex: target.slotIndex,
-      status: 'pending',
-    });
+    const swap = await this.swaps
+      .create({
+        queueId: q._id,
+        fromUserId: new Types.ObjectId(user.userId),
+        toUserId: target.userId,
+        fromSlotIndex: own.slotIndex,
+        toSlotIndex: target.slotIndex,
+        status: 'pending',
+      })
+      .catch((err: unknown) => {
+        // A parallel request passed the check above too; the partial unique
+        // index {queueId, fromUserId | pending} let only one of them in.
+        throw isDuplicateKey(err) ? new BadRequestException(ONE_PENDING_SWAP) : err;
+      });
 
     // Telegram DM to the target user
     const [me, them] = await Promise.all([
@@ -641,29 +758,66 @@ export class QueuesService {
   }
 
   async respondSwap(user: RequestUser, swapId: string, accept: boolean): Promise<void> {
-    const swap = await this.swaps.findById(swapId).exec();
-    if (!swap) throw new NotFoundException('Swap not found');
-    if (String(swap.toUserId) !== user.userId) throw new ForbiddenException();
-    if (swap.status !== 'pending') throw new BadRequestException('Already decided');
-
-    const q = await this.queues.findById(swap.queueId).exec();
-    if (!q) throw new NotFoundException('Queue gone');
+    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Swap not found');
+    // Claim the decision atomically so an accept can't race a cancel/decline.
+    const swap = await this.swaps
+      .findOneAndUpdate(
+        { _id: swapId, toUserId: new Types.ObjectId(user.userId), status: 'pending' },
+        { $set: { status: accept ? 'accepted' : 'declined' } },
+        { new: true },
+      )
+      .exec();
+    if (!swap) {
+      const s = await this.swaps.findById(swapId, { toUserId: 1 }).lean().exec();
+      if (!s) throw new NotFoundException('Swap not found');
+      if (String(s.toUserId) !== user.userId) throw new ForbiddenException();
+      throw new BadRequestException('Already decided');
+    }
 
     if (!accept) {
-      swap.status = 'declined';
-      await swap.save();
+      const q = await this.queues.findById(swap.queueId, { title: 1 }).lean().exec();
+      if (!q) throw new NotFoundException('Queue gone');
       void this.notifySwapResolved(swap, q, false).catch((err) =>
         this.logger.warn(`swap decline DM failed: ${(err as Error).message}`),
       );
       return;
     }
-    const a = q.entries.find((e) => e.slotIndex === swap.fromSlotIndex);
-    const b = q.entries.find((e) => e.slotIndex === swap.toSlotIndex);
-    if (!a || !b) throw new BadRequestException('Swap no longer valid');
-    [a.slotIndex, b.slotIndex] = [b.slotIndex, a.slotIndex];
-    await q.save();
-    swap.status = 'accepted';
-    await swap.save();
+
+    let q: QueueDocument;
+    try {
+      q = await this.mutateQueue(String(swap.queueId), (q) => {
+        // Like requestSwap: a stale entry of someone who left the group can't move.
+        this.assertMember(user, String(q.groupId));
+        // Both people must still sit where the request recorded them.
+        const a = q.entries.find(
+          (e) => e.slotIndex === swap.fromSlotIndex && String(e.userId) === String(swap.fromUserId),
+        );
+        const b = q.entries.find(
+          (e) => e.slotIndex === swap.toSlotIndex && String(e.userId) === String(swap.toUserId),
+        );
+        if (!a || !b) throw new BadRequestException('Swap no longer valid');
+        [a.slotIndex, b.slotIndex] = [b.slotIndex, a.slotIndex];
+      });
+    } catch (err) {
+      // The claim already says 'accepted' but no slots moved. Only a swap that
+      // can never apply (people moved / queue deleted / accepter left) dies; a
+      // 409 or DB error reopens it as before — expiring it would also trip
+      // requestSwap's 1-hour same-person dedupe. A re-accept after a save that
+      // did land fails the position check above, so reopening is safe.
+      const dead =
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException ||
+        err instanceof ForbiddenException;
+      const settle = (status: 'expired' | 'pending') =>
+        this.swaps.updateOne({ _id: swap._id, status: 'accepted' }, { $set: { status } });
+      // Reopening collides with the one-pending index if the sender sent a new
+      // request meanwhile — then this one just expires.
+      await settle(dead ? 'expired' : 'pending').catch((e: unknown) => {
+        if (!isDuplicateKey(e)) throw e;
+        return settle('expired');
+      });
+      throw err instanceof NotFoundException ? new NotFoundException('Queue gone') : err;
+    }
     void this.notifySwapResolved(swap, q, true).catch((err) =>
       this.logger.warn(`swap accept DM failed: ${(err as Error).message}`),
     );
@@ -690,22 +844,26 @@ export class QueuesService {
       .exec();
     if (pending.length === 0) return { declined: 0 };
 
-    await this.swaps.updateMany(
-      {
-        queueId: new Types.ObjectId(queueId),
-        toUserId: new Types.ObjectId(user.userId),
-        status: 'pending',
-      },
-      { $set: { status: 'declined' } },
+    // Claim each one on status:'pending' so a swap concurrently accepted /
+    // cancelled is neither overwritten nor DM'd about.
+    const declined: QueueSwapRequestDocument[] = [];
+    await Promise.all(
+      pending.map(async (swap) => {
+        const res = await this.swaps.updateOne(
+          { _id: swap._id, status: 'pending' },
+          { $set: { status: 'declined' } },
+        );
+        if (res.modifiedCount > 0) declined.push(swap);
+      }),
     );
 
     // Fire-and-forget DMs to each sender so they know not to wait.
-    for (const swap of pending) {
-      void this.notifySwapResolved(swap, q as QueueDocument, false).catch((err) =>
+    for (const swap of declined) {
+      void this.notifySwapResolved(swap, q, false).catch((err) =>
         this.logger.warn(`bulk-decline DM failed: ${(err as Error).message}`),
       );
     }
-    return { declined: pending.length };
+    return { declined: declined.length };
   }
 
   /**
@@ -714,12 +872,17 @@ export class QueuesService {
    */
   async cancelMySwap(user: RequestUser, swapId: string): Promise<void> {
     if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Swap not found');
-    const swap = await this.swaps.findById(swapId).exec();
+    // Atomic so a cancel can't clobber a concurrent accept/decline.
+    const res = await this.swaps.updateOne(
+      { _id: swapId, fromUserId: new Types.ObjectId(user.userId), status: 'pending' },
+      { $set: { status: 'cancelled' } },
+    );
+    if (res.matchedCount > 0) return;
+    // Nothing matched — work out which error the caller gets.
+    const swap = await this.swaps.findById(swapId, { fromUserId: 1, status: 1 }).lean().exec();
     if (!swap) throw new NotFoundException('Swap not found');
     if (String(swap.fromUserId) !== user.userId) throw new ForbiddenException();
-    if (swap.status !== 'pending') throw new BadRequestException('Already decided');
-    swap.status = 'cancelled' as 'declined'; // schema only knows declined; reuse
-    await swap.save();
+    throw new BadRequestException('Already decided');
   }
 
   /**
@@ -728,7 +891,7 @@ export class QueuesService {
    */
   private async notifySwapResolved(
     swap: QueueSwapRequestDocument,
-    q: QueueDocument,
+    q: Pick<Queue, 'title'>,
     accepted: boolean,
   ): Promise<void> {
     const fromUser = await this.users.findById(swap.fromUserId).lean().exec();
@@ -806,6 +969,13 @@ export class QueuesService {
     return !!m && (ROLE_LEVEL[m.role] ?? 0) >= ROLE_LEVEL[Role.DeputyHead];
   }
 
+  /** Managers act on any entry; anyone else only on their own, and only while still a member. */
+  private assertOwnerOrManager(user: RequestUser, groupId: string, entryUserId: string): void {
+    if (this.hasManage(user, groupId)) return;
+    this.assertMember(user, groupId);
+    if (entryUserId !== user.userId) throw new ForbiddenException();
+  }
+
   private assertMember(user: RequestUser, groupId: string): void {
     if (!user.memberships.some((m) => m.groupId === groupId)) {
       throw new ForbiddenException('You are not a member of this group');
@@ -820,4 +990,12 @@ export class QueuesService {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+const ONE_PENDING_SWAP =
+  'У вас вже є активний запит на обмін у цій черзі. Скасуйте його, щоб надіслати новий.';
+
+/** E11000: a unique index rejected the write (a concurrent request got there first). */
+function isDuplicateKey(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 11000;
 }
