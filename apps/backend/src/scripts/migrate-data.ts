@@ -2,7 +2,8 @@
  * One-off data migration for the release that switched every id path from
  * Mixed to a real ObjectId schema type and added two unique indexes.
  * Data written while the paths were Mixed can hold string ids and duplicates
- * that typed queries / the new indexes choke on.
+ * that typed queries / the new indexes choke on. Also moves attendance records
+ * the old mark page filed one day early (step 6).
  *
  *   node dist/scripts/migrate-data.js           dry run: read-only report
  *   node dist/scripts/migrate-data.js --apply   write the fixes, build the indexes
@@ -326,8 +327,81 @@ async function dupTeachers() {
   row('5 duplicate subject teachers', ids.length, done, ids.length - done);
 }
 
+const DAY_MS = 86400000;
+
+async function shiftedAttendance() {
+  console.log('\n[6] attendance_records: filed one day before the lesson');
+  // The old mark page sent Kyiv midnight as ISO (21:00/22:00Z of the previous day) and the
+  // backend truncated it to UTC midnight. A lesson's dayOfWeek never changes (re-sync matches
+  // on it), so "stored weekday + 1 = lesson weekday" singles out exactly those records.
+  // attendance_sessions (no client sends them, date stored untruncated), lesson_reminder_marks
+  // (server-local dedupe key) and homework.deadline (full instant) don't have this bug.
+  const lessonDay = new Map<string, number>();
+  for await (const l of coll('schedule_lessons').find({}, { projection: { dayOfWeek: 1 } })) {
+    lessonDay.set(String(l._id), l.dayOfWeek);
+  }
+  const shifted: unknown[] = [], merged: unknown[] = [], orphans: unknown[] = [], odd: unknown[] = [];
+  let ok = 0, done = 0;
+  const records = coll('attendance_records');
+  for await (const r of records.find({}, { batchSize: 100 })) {
+    const day = lessonDay.get(String(r.scheduleLessonId));
+    if (day === undefined) {
+      orphans.push(r._id);
+      continue;
+    }
+    const w = r.date instanceof Date ? ((r.date.getUTCDay() + 6) % 7) + 1 : NaN; // 1=Mon … 7=Sun
+    if (day === w) {
+      ok++;
+      continue;
+    }
+    if (day !== (w % 7) + 1) {
+      odd.push(r._id);
+      continue;
+    }
+    shifted.push(r._id);
+    const next = new Date(r.date.getTime() + DAY_MS);
+    // The unique {groupId, scheduleLessonId, date} key: the journal grid may already have the right day.
+    const twin = await records.findOne({ groupId: r.groupId, scheduleLessonId: r.scheduleLessonId, date: next });
+    if (twin) merged.push(r._id);
+    if (!APPLY) {
+      done++;
+      continue;
+    }
+    if (!twin) {
+      try {
+        if ((await records.updateOne({ _id: r._id, date: r.date }, { $set: { date: next } })).matchedCount) done++;
+        else fail(`attendance_records ${r._id} changed during migration — rerun`);
+      } catch (e: any) {
+        if (e?.code !== 11000) throw e;
+        fail(`attendance_records ${r._id}: the correct day was marked meanwhile — rerun to merge`);
+      }
+      continue;
+    }
+    // Twin wins on the same student (newer, correctly dated); only students it lacks are added.
+    // Merge first, delete second: an interrupted run leaves a duplicate, never a lost mark.
+    const kept: Doc[] = twin.entries ?? [];
+    const have = new Set(kept.map((e) => String(e.userId)));
+    const add = (r.entries ?? []).filter((e: Doc) => !have.has(String(e.userId)));
+    if (add.length) {
+      const m = await records.updateOne({ _id: twin._id, entries: twin.entries }, { $set: { entries: [...kept, ...add] } });
+      if (!m.matchedCount) {
+        fail(`attendance_records ${twin._id} changed during migration — rerun`);
+        continue;
+      }
+    }
+    if ((await records.deleteOne({ _id: r._id, date: r.date, entries: r.entries })).deletedCount) done++;
+    else fail(`attendance_records ${r._id} changed during migration — rerun`);
+  }
+  show('records one day early -> moved to the lesson day', shifted);
+  show('  of them merged into the correctly dated twin', merged);
+  console.log(`  already on the lesson weekday: ${ok}`);
+  show('lesson no longer exists, left as is', orphans);
+  show('other weekday mismatch, left as is', odd);
+  row('6 attendance one day early', shifted.length, done, shifted.length - done);
+}
+
 async function buildIndexes() {
-  console.log('\n[6] unique indexes');
+  console.log('\n[7] unique indexes');
   let done = 0;
   for (const [name, schema] of [
     [Queue.name, QueueSchema],
@@ -342,7 +416,7 @@ async function buildIndexes() {
       fail(`${name} indexes: ${e.message}`);
     }
   }
-  row('6 build indexes', 2, done, 2 - done);
+  row('7 build indexes', 2, done, 2 - done);
 }
 
 async function main() {
@@ -361,6 +435,7 @@ async function main() {
     await dupSwaps(sets);
     await dupQueues(sets);
     await dupTeachers();
+    await shiftedAttendance(); // after step 1: the twin lookup matches ObjectId ids
     if (APPLY) await buildIndexes();
   } finally {
     await mongoose.disconnect();

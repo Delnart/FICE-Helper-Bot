@@ -227,8 +227,7 @@ export class AttendanceService {
       groupId,
       opts?.allowSubjectTeacherAccess ?? false,
     );
-    const day = new Date(params.date);
-    day.setUTCHours(0, 0, 0, 0);
+    const day = utcDay(params.date);
     await this.assertTargets(user, groupId, params.scheduleLessonId, day, [params.userId], subjectTeacherOnly);
 
     const filter = {
@@ -292,8 +291,7 @@ export class AttendanceService {
 
   async upsert(user: RequestUser, groupId: string, dto: UpsertAttendanceDto): Promise<AttendanceRecordDocument> {
     this.assertCanManage(user, groupId);
-    const date = new Date(dto.date);
-    date.setUTCHours(0, 0, 0, 0);
+    const date = utcDay(new Date(dto.date));
     await this.assertTargets(
       user,
       groupId,
@@ -331,8 +329,7 @@ export class AttendanceService {
     date: Date,
   ): Promise<{ entries: Array<{ userId: string; status: string; note?: string }> }> {
     if (!Types.ObjectId.isValid(lessonId)) return { entries: [] };
-    const day = new Date(date);
-    day.setUTCHours(0, 0, 0, 0);
+    const day = utcDay(date);
     const record = await this.records
       .findOne({
         groupId: new Types.ObjectId(groupId),
@@ -494,6 +491,15 @@ async function retryOnDuplicate<T>(fn: () => Promise<T>): Promise<T> {
     if ((err as { code?: number }).code !== 11000) throw err;
     return fn();
   }
+}
+
+/**
+ * The lesson day as UTC midnight (how records are keyed). Rounds to the nearest midnight
+ * instead of truncating: older clients sent local midnight (Kyiv → 21:00/22:00Z of the
+ * previous day), which truncation filed one day early. Plain "YYYY-MM-DD" is already exact.
+ */
+export function utcDay(d: Date): Date {
+  return new Date(Math.round(new Date(d).getTime() / 86400000) * 86400000);
 }
 
 function mondayOf(d: Date): Date {
