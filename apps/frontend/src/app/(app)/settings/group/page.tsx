@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { PageHeader } from '../../../../components/PageHeader';
@@ -9,8 +10,9 @@ import { Icon } from '../../../../components/icons';
 import { Section } from '../../../../components/ui/Section';
 import { Sheet } from '../../../../components/ui/Sheet';
 import { Toggle } from '../../../../components/ui/Toggle';
+import { UserAvatar } from '../../../../components/UserAvatar';
 import { haptic } from '../../../../lib/telegram';
-import { initials } from '../../../../lib/name';
+import { timeAgo } from '../../../../lib/time';
 import { cn } from '../../../../lib/cn';
 
 interface GroupSettings {
@@ -20,6 +22,7 @@ interface GroupSettings {
   birthdayAnnouncementsEnabled: boolean;
   lessonReminderMinutes: number;
   campusGroupId?: string;
+  scheduleSyncedAt?: string;
   canEdit: boolean;
   iAmHead: boolean;
   headUserId: string;
@@ -35,6 +38,7 @@ interface GroupMember {
   _id: string;
   fullName: string;
   username?: string;
+  avatarUrl?: string;
   role: string;
 }
 
@@ -98,6 +102,10 @@ export default function GroupSettingsPage() {
   }
   if (!data) return <Loading />;
   const disabled = !data.canEdit;
+  // A value set outside the presets (old ±5 stepper, bot) stays visible as its own chip.
+  const reminderOptions = REMINDER_PRESETS.includes(data.lessonReminderMinutes)
+    ? REMINDER_PRESETS
+    : [...REMINDER_PRESETS, data.lessonReminderMinutes].sort((a, b) => a - b);
 
   return (
     <div className="flex flex-col gap-4">
@@ -105,11 +113,16 @@ export default function GroupSettingsPage() {
 
       {disabled ? (
         <div className="card-soft small muted">
-          Лише староста або адміністратор можуть змінювати ці налаштування.
+          Лише староста, заступники або адміністратор можуть змінювати ці налаштування.
         </div>
       ) : null}
 
-      <CampusBindingCard currentId={data.campusGroupId} groupName={data.name} canEdit={data.canEdit} />
+      <CampusBindingCard
+        currentId={data.campusGroupId}
+        syncedAt={data.scheduleSyncedAt}
+        groupName={data.name}
+        canEdit={data.canEdit}
+      />
 
       {data.canEdit ? <TeacherJoinRequests groupId={data._id} /> : null}
 
@@ -120,21 +133,22 @@ export default function GroupSettingsPage() {
       <Section title="Сповіщення в чаті групи">
         <div className="card-flat flex flex-col px-3.5 py-1">
           <SwitchRow
-            title="Нагадування в чат"
-            hint="Пари та відкриття черг, повідомлення в групі"
+            title="Нагадування про пари"
+            hint="Перед початком пари та про відкриття черг"
             checked={data.notificationsEnabled}
             disabled={disabled}
             onChange={(v) => save.mutate({ notificationsEnabled: v })}
           />
-          <div className="pb-1">
+          {/* Lead time only matters while reminders are on. */}
+          <div className={cn('pb-3', !data.notificationsEnabled && 'hidden')}>
             <div className="seg" role="radiogroup" aria-label="За скільки хвилин до пари сповіщати">
-              {REMINDER_PRESETS.map((m) => (
+              {reminderOptions.map((m) => (
                 <button
                   key={m}
                   type="button"
                   role="radio"
                   aria-checked={minutesValue === m}
-                  className={minutesValue === m ? 'on' : undefined}
+                  className={cn('whitespace-nowrap', minutesValue === m && 'on')}
                   disabled={disabled}
                   onClick={() => setLocalMinutes(m)}
                 >
@@ -142,47 +156,30 @@ export default function GroupSettingsPage() {
                 </button>
               ))}
             </div>
-            {/* ±5 keeps every 0–60 step the old slider allowed; presets above are quick picks. */}
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <span className="tiny faint">
-                {minutesValue === 0 ? (
-                  'Нагадування на початку пари'
-                ) : (
-                  <>
-                    За <span className="num">{minutesValue}</span> хв до пари
-                  </>
-                )}
-              </span>
-              <div className="-mr-2.5 flex">
-                <button
-                  type="button"
-                  className="icon-btn-plain"
-                  aria-label="Менше на 5 хв"
-                  disabled={disabled || minutesValue <= 0}
-                  onClick={() => setLocalMinutes(Math.max(0, minutesValue - 5))}
-                >
-                  <Icon name="minus" />
-                </button>
-                <button
-                  type="button"
-                  className="icon-btn-plain"
-                  aria-label="Більше на 5 хв"
-                  disabled={disabled || minutesValue >= 60}
-                  onClick={() => setLocalMinutes(Math.min(60, minutesValue + 5))}
-                >
-                  <Icon name="plus" />
-                </button>
-              </div>
-            </div>
           </div>
+          <div className="divider" />
+          <Link href="/settings/notifications" className="row-plain justify-between">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="h3">Дедлайни завдань</span>
+              <span className="tiny faint">За 24 години до дедлайну · кожному в особисті</span>
+            </div>
+            <Icon name="chevronRight" size={20} className="chev" />
+          </Link>
           <div className="divider" />
           <SwitchRow
             title="Привітання з днем народження"
-            hint="Автоматичні привітання в групі"
+            hint="Автоматично о 9:00"
             checked={data.birthdayAnnouncementsEnabled}
             disabled={disabled}
             onChange={(v) => save.mutate({ birthdayAnnouncementsEnabled: v })}
           />
+          <div className="divider" />
+          <div className="row-plain">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="h3">Куди надсилати</span>
+              <span className="tiny faint">Чат групи чи топік · змінити командою /migrate</span>
+            </div>
+          </div>
         </div>
         {save.isError ? (
           <div className="small text-bad" role="alert">
@@ -196,10 +193,12 @@ export default function GroupSettingsPage() {
 
 function CampusBindingCard({
   currentId,
+  syncedAt,
   groupName,
   canEdit,
 }: {
   currentId?: string;
+  syncedAt?: string;
   groupName: string;
   canEdit: boolean;
 }) {
@@ -259,7 +258,7 @@ function CampusBindingCard({
           </span>
           <span className="tiny faint">
             {currentId
-              ? <>Campus ID <span className="num">{currentId}</span> · розклад оновлюється авто кожні 12 год</>
+              ? `Розклад оновлюється авто кожні 12 год${syncedAt ? ` · синхр. ${timeAgo(syncedAt)}` : ''}`
               : 'Знайдіть свою академічну групу — після збереження розклад тягтиметься автоматично.'}
           </span>
         </div>
@@ -305,6 +304,11 @@ function CampusBindingCard({
       ) : null}
 
       <Sheet open={open} onClose={() => setOpen(false)} title="Група в Кампусі">
+        {currentId ? (
+          <div className="small muted">
+            Зараз привʼязано: Campus ID <span className="num break-all">{currentId}</span>
+          </div>
+        ) : null}
         <div>
           <label className="label" htmlFor="campus-search">
             Пошук за назвою
@@ -457,9 +461,6 @@ function DeputiesSection({
 
   return (
     <Section title="Заступники старости">
-      <div className="small muted -mt-1">
-        Заступники мають ті ж права, що й староста: редагувати розклад, налаштування, журнал, черги.
-      </div>
       {members.isError && !members.data ? (
         <ErrorState title="Не вдалося завантажити учасників" error={members.error} onRetry={() => members.refetch()} />
       ) : null}
@@ -473,10 +474,12 @@ function DeputiesSection({
           <div key={m._id}>
             <div className="row-plain justify-between">
               <div className="flex min-w-0 items-center gap-3">
-                <span className="avatar">{initials(m.fullName)}</span>
+                <UserAvatar name={m.fullName} src={m.avatarUrl} />
                 <div className="flex min-w-0 flex-col">
                   <span className="h3 truncate">{m.fullName}</span>
-                  {m.username ? <span className="tiny faint truncate">@{m.username}</span> : null}
+                  <span className="tiny faint truncate">
+                    {m.username ? `@${m.username} · ` : ''}відмічає, керує чергами
+                  </span>
                 </div>
               </div>
               <button
@@ -509,6 +512,9 @@ function DeputiesSection({
       </div>
 
       <Sheet open={open} onClose={() => setOpen(false)} title="Призначити заступника">
+        <div className="small muted">
+          Заступники мають ті ж права, що й староста: редагувати розклад, налаштування, журнал, черги.
+        </div>
         <input
           className="input"
           placeholder="Пошук за ПІБ або @username"
@@ -534,7 +540,7 @@ function DeputiesSection({
                 {i > 0 ? <div className="divider" /> : null}
                 <div className="row-plain justify-between">
                   <div className="flex min-w-0 items-center gap-3">
-                    <span className="avatar">{initials(m.fullName)}</span>
+                    <UserAvatar name={m.fullName} src={m.avatarUrl} />
                     <div className="flex min-w-0 flex-col">
                       <span className="h3 truncate">{m.fullName}</span>
                       {m.username ? <span className="tiny faint truncate">@{m.username}</span> : null}
@@ -569,8 +575,11 @@ interface JoinRequest {
   teacherUserId: string;
   fullName: string;
   username?: string;
+  avatarUrl?: string;
   note?: string;
 }
+
+const ASK = 'доступ до черг і журналу вашої групи';
 
 function TeacherJoinRequests({ groupId }: { groupId: string }) {
   const qc = useQueryClient();
@@ -607,11 +616,12 @@ function TeacherJoinRequests({ groupId }: { groupId: string }) {
       {list.map((r) => (
         <div key={r._id} className="card-flat flex flex-col gap-3 border-accent">
           <div className="flex items-start gap-3">
-            <span className="avatar bg-accent-soft text-accent-text">{initials(r.fullName)}</span>
+            <UserAvatar name={r.fullName} src={r.avatarUrl} className="bg-accent-soft text-accent-text" />
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <span className="h3">{r.fullName}</span>
-              {r.username ? <span className="tiny faint">@{r.username}</span> : null}
-              <span className="small muted">Просить доступ до черги та журналу вашої групи</span>
+              <span className="small muted">
+                {r.username ? `@${r.username} · просить ${ASK}` : `Просить ${ASK}`}
+              </span>
               {r.note ? (
                 <span className="small rounded-[10px] bg-surface-2 px-2.5 py-2 text-ink-2">«{r.note}»</span>
               ) : null}
