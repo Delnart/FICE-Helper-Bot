@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsISO8601,
   IsMongoId,
@@ -22,6 +24,7 @@ export class QueueRulesDto {
   @IsOptional() @IsBoolean() isOpen?: boolean;
   @IsOptional() @IsISO8601() autoOpenAt?: string;
   @IsOptional() @IsISO8601() autoCloseAt?: string;
+  @IsOptional() @IsBoolean() autoCompact?: boolean;
 }
 
 export class CreateQueueDto {
@@ -59,8 +62,18 @@ export class UpdateEntryDto {
   @Max(MAX_LAB_NUMBER)
   labNumber?: number;
   @IsOptional() @IsEnum(QueueStatus) status?: QueueStatus;
+  /** The person in the slot this edit is for (shared slots; guards against a moved queue). */
+  @IsOptional() @IsMongoId() userId?: string;
 }
 
 export class RequestSwapDto {
   @IsInt() @Min(1) targetSlotIndex!: number;
+}
+
+/** Only finished entries can be compacted away; waiting ones are removed one by one. */
+export class CompactQueueDto {
+  @IsOptional()
+  @IsArray()
+  @IsIn([QueueStatus.Passed, QueueStatus.Missed, QueueStatus.Failed], { each: true })
+  statuses?: QueueStatus[];
 }

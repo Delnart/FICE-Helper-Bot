@@ -6,6 +6,8 @@ export interface QueueEntry {
   labNumber: number;
   status: QueueStatus;
   enrolledAt: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface QueueRules {
@@ -14,6 +16,7 @@ export interface QueueRules {
   isOpen: boolean;
   autoOpenAt?: string;
   autoCloseAt?: string;
+  autoCompact?: boolean;
 }
 
 export interface QueueDto {

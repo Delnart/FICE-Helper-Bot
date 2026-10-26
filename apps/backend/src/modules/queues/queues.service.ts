@@ -9,7 +9,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Error as MongooseError, Model, Types } from 'mongoose';
 import { QueueStatus, Role, ROLE_LEVEL } from '@fice/shared';
-import { Queue, QueueDocument } from './queue.schema';
+import { Queue, QueueDocument, QueueEntrySub } from './queue.schema';
 import { QueueSwapRequest, QueueSwapRequestDocument } from './swap-request.schema';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
@@ -31,10 +31,16 @@ type QueueRulesInput = {
   isOpen?: boolean;
   autoOpenAt?: string | Date;
   autoCloseAt?: string | Date;
+  autoCompact?: boolean;
 };
 
 /** Plain (`.lean()`) or hydrated queue — read-only serializers accept either. */
 type LeanQueue = Queue & { _id: Types.ObjectId };
+
+type Promotion = { slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus };
+
+const WAITING: QueueStatus[] = [QueueStatus.Default, QueueStatus.Preparing];
+const FINISHED: QueueStatus[] = [QueueStatus.Passed, QueueStatus.Missed, QueueStatus.Failed];
 
 @Injectable()
 export class QueuesService {
@@ -179,6 +185,7 @@ export class QueuesService {
       _id: string;
       toUserId: string;
       toFullName: string;
+      toAvatarUrl?: string;
       fromSlotIndex: number;
       toSlotIndex: number;
     }>
@@ -195,7 +202,7 @@ export class QueuesService {
     if (swaps.length === 0) return [];
     const toIds = swaps.map((s) => s.toUserId);
     const toUsers = await this.users
-      .find({ _id: { $in: toIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1 })
+      .find({ _id: { $in: toIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1, avatarUrl: 1 })
       .lean()
       .exec();
     const nameById = new Map(
@@ -207,17 +214,26 @@ export class QueuesService {
           'Користувач',
       ]),
     );
+    const avatarById = new Map(toUsers.map((u) => [String(u._id), u.avatarUrl]));
     return swaps.map((s) => ({
       _id: String(s._id),
       toUserId: String(s.toUserId),
       toFullName: nameById.get(String(s.toUserId)) ?? 'Користувач',
+      toAvatarUrl: avatarById.get(String(s.toUserId)),
       fromSlotIndex: s.fromSlotIndex,
       toSlotIndex: s.toSlotIndex,
     }));
   }
 
   async listIncomingSwaps(user: RequestUser, queueId: string): Promise<
-    Array<{ _id: string; fromUserId: string; fromFullName: string; fromSlotIndex: number; toSlotIndex: number }>
+    Array<{
+      _id: string;
+      fromUserId: string;
+      fromFullName: string;
+      fromAvatarUrl?: string;
+      fromSlotIndex: number;
+      toSlotIndex: number;
+    }>
   > {
     if (!Types.ObjectId.isValid(queueId)) return [];
     const swaps = await this.swaps
@@ -231,7 +247,7 @@ export class QueuesService {
     if (swaps.length === 0) return [];
     const fromIds = swaps.map((s) => s.fromUserId);
     const fromUsers = await this.users
-      .find({ _id: { $in: fromIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1 })
+      .find({ _id: { $in: fromIds } }, { fullName: 1, firstName: 1, lastName: 1, username: 1, avatarUrl: 1 })
       .lean()
       .exec();
     const nameById = new Map(
@@ -240,10 +256,12 @@ export class QueuesService {
         u.fullName?.trim() || [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.username || 'Користувач',
       ]),
     );
+    const avatarById = new Map(fromUsers.map((u) => [String(u._id), u.avatarUrl]));
     return swaps.map((s) => ({
       _id: String(s._id),
       fromUserId: String(s.fromUserId),
       fromFullName: nameById.get(String(s.fromUserId)) ?? 'Користувач',
+      fromAvatarUrl: avatarById.get(String(s.fromUserId)),
       fromSlotIndex: s.fromSlotIndex,
       toSlotIndex: s.toSlotIndex,
     }));
@@ -293,10 +311,19 @@ export class QueuesService {
           labNumber: entry.labNumber,
           status: entry.status ?? QueueStatus.Default,
           enrolledAt: entry.enrolledAt,
+          startedAt: entry.startedAt,
+          finishedAt: entry.finishedAt,
         };
       });
       return { slotIndex: idx, occupants };
     });
+    // Teachers see several groups' queues, so their header names the group.
+    const group =
+      myRole === Role.Teacher
+        ? await this.swaps.db
+            .collection('academic_groups')
+            .findOne({ _id: q.groupId }, { projection: { academicName: 1 } })
+        : null;
     return {
       _id: String(q._id),
       title: q.title,
@@ -307,6 +334,8 @@ export class QueuesService {
       slots,
       myRole,
       myUserId: user.userId,
+      groupName: (group?.academicName as string | undefined) ?? undefined,
+      avgPassMs: q.passedCount ? Math.round(q.passedMsTotal / q.passedCount) : null,
     };
   }
 
@@ -545,13 +574,14 @@ export class QueuesService {
     }
   }
 
-  async leave(user: RequestUser, queueId: string, slotIndex: number): Promise<QueueDocument> {
+  async leave(
+    user: RequestUser,
+    queueId: string,
+    slotIndex: number,
+    userId?: string,
+  ): Promise<QueueDocument> {
     return this.mutateQueue(queueId, (q) => {
-      // Shared slot (allowGroupSubmission): take the caller's own entry, not
-      // whoever is first; a manager not in the slot still removes the first.
-      const inSlot = q.entries.filter((e) => e.slotIndex === slotIndex);
-      const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
-      if (!entry) throw new NotFoundException('Entry not found');
+      const entry = this.pickEntry(q, slotIndex, user, userId);
       this.assertOwnerOrManager(user, String(q.groupId), String(entry.userId));
 
       q.entries = q.entries.filter((e) => !(e.slotIndex === slotIndex && String(e.userId) === String(entry.userId)));
@@ -564,12 +594,10 @@ export class QueuesService {
     slotIndex: number,
     dto: UpdateEntryDto,
   ): Promise<QueueDocument> {
-    let promoted: ReturnType<QueuesService['advanceQueueChain']> = [];
+    let promoted: Promotion[] = [];
+    let slotMap = null as Map<number, number> | null;
     const q = await this.mutateQueue(queueId, (q) => {
-      // Shared slot: edit the caller's own entry, as leave() does.
-      const inSlot = q.entries.filter((e) => e.slotIndex === slotIndex);
-      const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
-      if (!entry) throw new NotFoundException('Entry not found');
+      const entry = this.pickEntry(q, slotIndex, user, dto.userId);
 
       const canManage = this.hasManage(user, String(q.groupId));
 
@@ -581,25 +609,186 @@ export class QueuesService {
       if (dto.labNumber !== undefined) entry.labNumber = dto.labNumber;
 
       const oldStatus = entry.status;
-      if (dto.status !== undefined) entry.status = dto.status;
+      if (dto.status !== undefined) this.setEntryStatus(q, entry, dto.status);
 
       // Auto-cascade status changes through the queue: when status TRANSITIONS
       // to a "moving" state, promote the next eligible slot. Only fires on
       // genuine transitions (oldStatus !== newStatus) — re-saving the same
       // status doesn't re-fire DMs.
-      promoted = (dto.status !== undefined && dto.status !== oldStatus)
-        ? this.advanceQueueChain(q, slotIndex, dto.status, oldStatus)
-        : [];
+      const changed = dto.status !== undefined && dto.status !== oldStatus;
+      promoted = changed ? this.advanceQueueChain(q, slotIndex, dto.status!, oldStatus) : [];
+      slotMap =
+        changed && dto.status === QueueStatus.Passed && q.rules.autoCompact
+          ? this.compactEntries(q, [QueueStatus.Passed])
+          : null;
     });
 
-    // Only after the winning save, so a retry never double-DMs.
+    await this.afterStatusWrite(q, promoted, slotMap);
+    return q;
+  }
+
+  /**
+   * The entry at `slotIndex` a write acts on. `userId` (sent by the client for the
+   * person it shows) pins it: in a shared slot it picks the right teammate, and
+   * after a compaction moved people it refuses instead of hitting whoever moved in.
+   * Without it: the caller's own entry, else the first one.
+   */
+  private pickEntry(
+    q: QueueDocument,
+    slotIndex: number,
+    user: RequestUser,
+    userId?: string,
+  ): QueueEntrySub {
+    const inSlot = q.entries.filter((e) => e.slotIndex === slotIndex);
+    if (userId) {
+      const entry = inSlot.find((e) => String(e.userId) === userId);
+      if (!entry) throw new ConflictException('Черга щойно змінилась — спробуйте ще раз');
+      return entry;
+    }
+    const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
+    if (!entry) throw new NotFoundException('Entry not found');
+    return entry;
+  }
+
+  /**
+   * "Наступний →": the lowest `passing` slot becomes `passed`, the first waiting
+   * slot after it becomes `passing`, and advanceQueueChain marks the one after
+   * that `preparing` (+ the usual DM). A shared slot moves as one.
+   */
+  async advance(user: RequestUser, queueId: string): Promise<QueueDocument> {
+    let promoted: Promotion[] = [];
+    let slotMap = null as Map<number, number> | null;
+    const q = await this.mutateQueue(queueId, (q) => {
+      this.assertCanManage(user, String(q.groupId));
+      const sorted = [...q.entries].sort((a, b) => a.slotIndex - b.slotIndex);
+      const current = sorted.find((e) => e.status === QueueStatus.Passing)?.slotIndex;
+      const next = sorted.find(
+        (e) => e.slotIndex > (current ?? 0) && WAITING.includes(e.status),
+      )?.slotIndex;
+      if (current === undefined && next === undefined) {
+        throw new BadRequestException('У черзі більше немає кого викликати');
+      }
+      for (const e of sorted) {
+        if (e.slotIndex === current && e.status === QueueStatus.Passing) {
+          this.setEntryStatus(q, e, QueueStatus.Passed);
+        } else if (e.slotIndex === next && WAITING.includes(e.status)) {
+          this.setEntryStatus(q, e, QueueStatus.Passing);
+        }
+      }
+      promoted =
+        next !== undefined
+          ? this.advanceQueueChain(q, next, QueueStatus.Passing, QueueStatus.Default)
+          : [];
+      slotMap =
+        current !== undefined && q.rules.autoCompact
+          ? this.compactEntries(q, [QueueStatus.Passed])
+          : null;
+    });
+    await this.afterStatusWrite(q, promoted, slotMap);
+    return q;
+  }
+
+  /** "Підтягнути чергу": drop finished entries, everyone below moves up (like deleting sheet rows). */
+  async compact(user: RequestUser, queueId: string, statuses: QueueStatus[]): Promise<QueueDocument> {
+    let slotMap = null as Map<number, number> | null;
+    const q = await this.mutateQueue(queueId, (q) => {
+      this.assertCanManage(user, String(q.groupId));
+      slotMap = this.compactEntries(q, statuses);
+    });
+    await this.afterStatusWrite(q, [], slotMap);
+    return q;
+  }
+
+  /**
+   * Every status write goes through here: stamps when someone started/finished
+   * passing and feeds the queue's average pass time (the ETA on the client).
+   */
+  private setEntryStatus(q: QueueDocument, e: QueueEntrySub, status: QueueStatus): void {
+    if (e.status === status) return;
+    const now = new Date();
+    if (status === QueueStatus.Passing) {
+      e.startedAt = now;
+      e.finishedAt = undefined;
+    } else if (FINISHED.includes(status)) {
+      if (e.status === QueueStatus.Passing && e.startedAt && status !== QueueStatus.Missed) {
+        const ms = now.getTime() - new Date(e.startedAt).getTime();
+        // ponytail: drops runs <30 s (double tap) and >1 h (forgotten tap); a median if this skews.
+        if (ms >= 30_000 && ms <= 3_600_000) {
+          q.passedCount = (q.passedCount ?? 0) + 1;
+          q.passedMsTotal = (q.passedMsTotal ?? 0) + ms;
+        }
+      }
+      if (!e.finishedAt) e.finishedAt = now;
+    } else {
+      e.startedAt = undefined;
+      e.finishedAt = undefined;
+    }
+    e.status = status;
+  }
+
+  /**
+   * Spreadsheet-style "delete rows": drops entries with `statuses` and renumbers
+   * the rest 1..n in order (a shared slot stays shared). Returns old → new slot
+   * of the survivors, or null when nothing changed.
+   */
+  private compactEntries(q: QueueDocument, statuses: QueueStatus[]): Map<number, number> | null {
+    const keep = q.entries.filter((e) => !statuses.includes(e.status));
+    const slotMap = new Map<number, number>();
+    for (const s of [...new Set(keep.map((e) => e.slotIndex))].sort((a, b) => a - b)) {
+      slotMap.set(s, slotMap.size + 1);
+    }
+    const moved = [...slotMap].some(([from, to]) => from !== to);
+    if (keep.length === q.entries.length && !moved) return null;
+    for (const e of keep) e.slotIndex = slotMap.get(e.slotIndex)!;
+    q.entries = keep;
+    return slotMap;
+  }
+
+  /** After the winning save only, so a CAS retry never double-DMs or double-remaps. */
+  private async afterStatusWrite(
+    q: QueueDocument,
+    promoted: Promotion[],
+    slotMap: Map<number, number> | null,
+  ): Promise<void> {
+    if (slotMap) {
+      for (const p of promoted) p.slotIndex = slotMap.get(p.slotIndex) ?? p.slotIndex;
+      // The queue is already saved; a failed remap only leaves swaps that
+      // respondSwap's position check rejects (and expires) later.
+      await this.remapSwaps(q, slotMap).catch((err) =>
+        this.logger.warn(`swap remap failed: ${(err as Error).message}`),
+      );
+    }
     // DM promoted users — fire-and-forget so the request stays fast.
     for (const p of promoted) {
       void this.notifyChainPromotion(p, q).catch((err) =>
         this.logger.warn(`queue chain DM failed: ${(err as Error).message}`),
       );
     }
-    return q;
+  }
+
+  /** Pending swaps follow their people to the compacted slots; ones whose person left expire. */
+  private async remapSwaps(q: QueueDocument, slotMap: Map<number, number>): Promise<void> {
+    const at = (userId: Types.ObjectId, slot?: number) =>
+      slot !== undefined &&
+      q.entries.some((e) => e.slotIndex === slot && String(e.userId) === String(userId));
+    const pending = await this.swaps.find({ queueId: q._id, status: 'pending' }).lean().exec();
+    await Promise.all(
+      pending.map((s) => {
+        // Sent after the compaction (already new numbers) → nothing to do.
+        if (at(s.fromUserId, s.fromSlotIndex) && at(s.toUserId, s.toSlotIndex)) return;
+        const from = slotMap.get(s.fromSlotIndex);
+        const to = slotMap.get(s.toSlotIndex);
+        const update =
+          at(s.fromUserId, from) && at(s.toUserId, to)
+            ? { fromSlotIndex: from, toSlotIndex: to }
+            : { status: 'expired' as const };
+        // Matched on the old numbers so a concurrent accept/cancel wins.
+        return this.swaps.updateOne(
+          { _id: s._id, status: 'pending', fromSlotIndex: s.fromSlotIndex, toSlotIndex: s.toSlotIndex },
+          { $set: update },
+        );
+      }),
+    );
   }
 
   /**
@@ -620,7 +809,7 @@ export class QueuesService {
     fromSlotIndex: number,
     newStatus: QueueStatus,
     oldStatus: QueueStatus,
-  ): Array<{ slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus }> {
+  ): Promotion[] {
     const passing: QueueStatus = QueueStatus.Passing;
     const preparing: QueueStatus = QueueStatus.Preparing;
 
@@ -644,7 +833,7 @@ export class QueuesService {
       .sort((a, b) => a.slotIndex - b.slotIndex)[0];
 
     if (!next || next.status === preparing) return [];
-    next.status = preparing;
+    this.setEntryStatus(q, next, preparing);
     return next.userId
       ? [{ slotIndex: next.slotIndex, userId: next.userId, toStatus: preparing }]
       : [];
@@ -652,7 +841,7 @@ export class QueuesService {
 
   /** DM a user that the queue advanced and they're now `preparing`. */
   private async notifyChainPromotion(
-    p: { slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus },
+    p: Promotion,
     q: QueueDocument,
   ): Promise<void> {
     const u = await this.users.findById(p.userId).lean().exec();
@@ -937,6 +1126,7 @@ export class QueuesService {
       isOpen: dto?.isOpen ?? true,
       autoOpenAt,
       autoCloseAt,
+      autoCompact: dto?.autoCompact ?? false,
     };
   }
 

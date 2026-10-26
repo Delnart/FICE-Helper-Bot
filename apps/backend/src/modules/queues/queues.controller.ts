@@ -11,8 +11,10 @@ import {
   Query,
 } from '@nestjs/common';
 import { QueuesService } from './queues.service';
+import { QueueStatus } from '@fice/shared';
 import {
   AdminEnrollDto,
+  CompactQueueDto,
   CreateQueueDto,
   EnrollDto,
   RequestSwapDto,
@@ -105,6 +107,22 @@ export class QueuesController {
     return { ok: true };
   }
 
+  /** "Наступний →": the current passer is done, the next waiting slot is called. */
+  @Post(':id/advance')
+  advance(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.queues.advance(user, id);
+  }
+
+  /** "Підтягнути чергу": drop finished entries (default: passed), the rest move up. */
+  @Post(':id/compact')
+  compact(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: CompactQueueDto,
+  ) {
+    return this.queues.compact(user, id, dto.statuses ?? [QueueStatus.Passed]);
+  }
+
   @Post(':id/enroll')
   enroll(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: EnrollDto) {
     return this.queues.enroll(user, id, dto);
@@ -124,8 +142,9 @@ export class QueuesController {
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
     @Param('slot', ParseIntPipe) slot: number,
+    @Query('userId') userId?: string,
   ) {
-    return this.queues.leave(user, id, slot);
+    return this.queues.leave(user, id, slot, userId);
   }
 
   @Patch(':id/entries/:slot')

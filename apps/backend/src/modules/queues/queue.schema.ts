@@ -10,6 +10,9 @@ export class QueueEntrySub {
   @Prop({ type: String, enum: Object.values(QueueStatus), default: QueueStatus.Default })
   status!: QueueStatus;
   @Prop({ type: Date, default: () => new Date() }) enrolledAt!: Date;
+  /** When this entry last became `passing` / reached passed·missed·failed (QueuesService.setEntryStatus). */
+  @Prop() startedAt?: Date;
+  @Prop() finishedAt?: Date;
 }
 const QueueEntrySubSchema = SchemaFactory.createForClass(QueueEntrySub);
 
@@ -20,6 +23,8 @@ export class QueueRulesSub {
   @Prop({ default: true }) isOpen!: boolean;
   @Prop() autoOpenAt?: Date;
   @Prop() autoCloseAt?: Date;
+  /** Spreadsheet mode: an entry marked `passed` is removed and everyone below moves up. */
+  @Prop({ default: false }) autoCompact!: boolean;
 }
 const QueueRulesSubSchema = SchemaFactory.createForClass(QueueRulesSub);
 
@@ -45,6 +50,10 @@ export class Queue {
   entries!: QueueEntrySub[];
 
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true }) createdBy!: Types.ObjectId;
+
+  /** Running total of timed passes (passing → passed/failed) — feeds the "орієнтовно через N хв" ETA. */
+  @Prop({ default: 0 }) passedCount!: number;
+  @Prop({ default: 0 }) passedMsTotal!: number;
 }
 
 export type QueueDocument = HydratedDocument<Queue>;
