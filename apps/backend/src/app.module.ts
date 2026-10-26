@@ -2,8 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { appConfig } from './config/app.config';
 import { validateEnv } from './config/env.validation';
 
@@ -34,8 +33,17 @@ import { ManualStudentsModule } from './modules/manual-students/manual-students.
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
         uri: cfg.getOrThrow<string>('MONGO_URI'),
+        // Driver defaults (pool 100, idle sockets kept forever, 30 s server
+        // selection) let bursts pin extra mongod connections (~1 MB each) for
+        // good on the 1 GB VPS and made requests hang instead of failing fast.
+        maxPoolSize: 10,
+        maxIdleTimeMS: 60_000,
+        serverSelectionTimeoutMS: 5_000,
       }),
     }),
+    // Applied only to the public login route (see AuthController): every other
+    // route needs a signed JWT, and a global guard keyed by IP put all users
+    // behind the reverse proxy into one bucket (random 429s → "nothing loads").
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => [
@@ -62,6 +70,5 @@ import { ManualStudentsModule } from './modules/manual-students/manual-students.
     BotModule,
     ManualStudentsModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

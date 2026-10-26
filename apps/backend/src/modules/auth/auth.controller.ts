@@ -1,4 +1,5 @@
-import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService, AuthResult } from './auth.service';
 import { LoginWithTelegramDto } from './dto/login.dto';
 import { Public } from '../../common/decorators/public.decorator';
@@ -8,6 +9,7 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
+  @UseGuards(ThrottlerGuard)
   @Post('telegram')
   @HttpCode(HttpStatus.OK)
   async loginWithTelegram(@Body() dto: LoginWithTelegramDto): Promise<AuthResult> {

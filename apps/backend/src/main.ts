@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -7,10 +8,16 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['error', 'warn', 'log'],
     bodyParser: true,
   });
+  // TLS terminates at a reverse proxy in front of :3000; trust private-network
+  // hops so req.ip is the client (used by the login rate limit), not the proxy.
+  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+  // Run onModuleDestroy (bot.stop, Mongo close) on SIGTERM so `docker stop`
+  // and deploys don't wait 10 s for SIGKILL.
+  app.enableShutdownHooks();
 
   const logger = new Logger('Bootstrap');
   const corsOrigin = process.env.CORS_ORIGIN?.split(',').map((s) => s.trim()) ?? ['*'];
