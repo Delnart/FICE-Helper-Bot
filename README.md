@@ -131,6 +131,7 @@ ficeHelperBot/
 ├── docs/                 # Документація, гайди та діаграми
 │   ├── USER_GUIDE.md     # Повний гайд користувача
 │   ├── LOCAL_SETUP.md    # Посібник з локального запуску
+│   ├── DEPLOY.md         # CI/CD, секрети, памʼять і відкат
 │   ├── guide.docx        # Згенерований Word-документ гайду
 │   └── class_diagram.puml# PlantUML діаграма класів
 ├── scripts/              # Допоміжні скрипти автоматизації
@@ -183,12 +184,15 @@ npm run dev
 npm run docker:up
 ```
 
-### Продакшн деплой через пребілд-образи (GHCR)
-```bash
-# Локальна збірка і пуш у GitHub Container Registry:
-./scripts/build-and-push.ps1
+### Продакшн деплой (CI/CD)
+Кожен push у `main` проходить перевірки, збирає образи в GitHub Actions, пушить їх у GHCR
+(`latest` і `sha-<commit>`) і по SSH оновлює сервер. Одноразове налаштування секретів, swap і відкат —
+у [docs/DEPLOY.md](docs/DEPLOY.md).
 
-# На сервері:
+Ручний варіант без Actions:
+```bash
+./scripts/build-and-push.ps1   # локальна збірка і пуш у GHCR
+docker compose -f docker/docker-compose.prod.yml --env-file .env pull   # на сервері
 docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 ```
 
@@ -206,6 +210,7 @@ docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 
 - 📖 [Повний гайд користувача (User Guide)](docs/USER_GUIDE.md)
 - 🛠️ [Посібник з локального налаштування з тунелем](docs/LOCAL_SETUP.md)
+- 🚢 [Деплой і CI/CD](docs/DEPLOY.md)
 - 📐 [PlantUML діаграма класів проєкту](docs/class_diagram.puml)
 - 🛡️ [Політика безпеки та вразливостей](SECURITY.md)
 

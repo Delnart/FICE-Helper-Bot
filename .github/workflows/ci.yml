@@ -1,13 +1,24 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel a run on main midway through a deploy; PR runs can be superseded.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/delnart/fice
 
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,8 +27,110 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund --legacy-peer-deps
       - run: npm run build --workspace @fice/shared
-      - run: npx --workspace @fice/backend tsc --noEmit
-      - run: npx --workspace @fice/frontend tsc --noEmit
-      - run: npm --workspace @fice/frontend run build
+      - name: Typecheck backend
+        run: npx --workspace @fice/backend tsc --noEmit
+      - name: Typecheck frontend
+        run: npx --workspace @fice/frontend tsc --noEmit
+      - name: Build frontend
+        run: npm --workspace @fice/frontend run build
         env:
           NEXT_PUBLIC_API_BASE: http://localhost:3000/api
+
+  images:
+    needs: checks
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        app: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.app }}.Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}:sha-${{ steps.sha.outputs.short }}
+          build-args: |
+            NEXT_PUBLIC_API_BASE=${{ vars.NEXT_PUBLIC_API_BASE || 'https://api.ficebot.dev' }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  deploy:
+    needs: images
+    # Opt-in: runs only once the DEPLOY_HOST variable is configured (docs/DEPLOY.md).
+    if: vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      SSH_HOST: ${{ vars.DEPLOY_HOST }}
+      SSH_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      SSH_USER: ${{ vars.DEPLOY_USER || 'root' }}
+      APP_DIR: ${{ vars.DEPLOY_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" > ~/.ssh/known_hosts
+          fi
+          printf 'Host prod\n  HostName %s\n  Port %s\n  User %s\n  IdentityFile ~/.ssh/id_deploy\n  ServerAliveInterval 30\n' \
+            "$SSH_HOST" "$SSH_PORT" "$SSH_USER" > ~/.ssh/config
+      - name: Upload compose file
+        run: scp docker/docker-compose.prod.yml "prod:$APP_DIR/docker/docker-compose.prod.yml"
+      - name: Log in to GHCR on the server
+        # Token goes over stdin, never into the remote command line.
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | ssh prod "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+      - name: Pull and restart
+        run: |
+          ssh prod bash -s -- "$APP_DIR" "sha-${GITHUB_SHA::7}" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          export IMAGE_TAG="$2"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          dc() { docker compose -f docker/docker-compose.prod.yml --env-file .env "$@"; }
+          dc pull backend frontend
+          dc up -d --remove-orphans
+          docker image prune -f
+          sleep 15
+          dc ps
+          for s in backend frontend; do
+            if [ -z "$(dc ps -q --status running "$s")" ]; then
+              echo "::error::$s is not running after deploy"
+              dc logs --tail 80 "$s"
+              exit 1
+            fi
+          done
+          REMOTE
