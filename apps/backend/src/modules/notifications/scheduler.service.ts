@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { NotificationsService } from './notifications.service';
+import { LessonReminder, NotificationsService } from './notifications.service';
 import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
 import { Queue, QueueDocument } from '../queues/queue.schema';
 import { Homework, HomeworkDocument } from '../homework/homework.schema';
@@ -16,7 +16,9 @@ import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminde
 @Injectable()
 export class SchedulerService {
   private readonly logger = new Logger(SchedulerService.name);
-  private readonly sentMarks = new Set<string>();
+  /** Queue-open broadcast key -> when it was sent (pruned every tick). */
+  private readonly sentMarks = new Map<string, number>();
+  private lessonTickRunning = false;
 
   constructor(
     private readonly notifications: NotificationsService,
@@ -34,51 +36,83 @@ export class SchedulerService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async tickLessonReminders(): Promise<void> {
+    // A slow tick (many groups × Telegram sends) must not stack up with the next one.
+    if (this.lessonTickRunning) return;
+    this.lessonTickRunning = true;
     try {
       const now = new Date();
       const day = ((now.getDay() + 6) % 7) + 1;
       const week = await this.campus.refreshWeekParity();
-      const groups = await this.groups.find({ notificationsEnabled: true }).exec();
-      for (const group of groups) {
-        const lessonTargetTime = new Date(now.getTime() + group.lessonReminderMinutes * 60_000);
-        const targetMinutes = lessonTargetTime.getHours() * 60 + lessonTargetTime.getMinutes();
+      const groups = await this.groups
+        // Inactive = bot was removed from the chat; sends there only fail.
+        .find({ notificationsEnabled: true, status: { $ne: 'inactive' } }, { lessonReminderMinutes: 1 })
+        .lean()
+        .exec();
+      if (groups.length === 0) return;
+      const minutesByGroup = new Map(groups.map((g) => [String(g._id), g.lessonReminderMinutes]));
 
-        const [lessons, subjects] = await Promise.all([
-          this.lessons
-            .find({ groupId: group._id, dayOfWeek: day, $or: [{ weekType: 0 }, { weekType: week }] })
-            .exec(),
-          this.subjects.find({ groupId: group._id }).exec(),
-        ]);
-        if (lessons.length === 0) continue;
-        const subjectLookup = this.buildSubjectLookup(subjects);
-        for (const l of lessons) {
-          const [h, m] = l.startTime.split(':').map(Number);
-          const startMin = h * 60 + m;
-          if (startMin !== targetMinutes) continue;
+      // One lean query for every group's lessons today, instead of two full
+      // queries (lessons + subjects) per group every minute.
+      const lessons = await this.lessons
+        .find({ groupId: { $in: groups.map((g) => g._id) }, dayOfWeek: day, weekType: { $in: [0, week] } })
+        .lean()
+        .exec();
+      const due = lessons.filter((l) => {
+        const lead = minutesByGroup.get(String(l.groupId)) ?? 0;
+        const target = new Date(now.getTime() + lead * 60_000);
+        const [h, m] = l.startTime.split(':').map(Number);
+        return h * 60 + m === target.getHours() * 60 + target.getMinutes();
+      });
+      if (due.length === 0) return;
 
-          const reminderDate = formatLocalDateKey(now);
-          const claimed = await this.claimLessonReminder(String(group._id), String(l._id), reminderDate);
-          if (!claimed) continue;
+      // Dedupe as strings (ObjectIds compare by reference), query as ObjectIds.
+      const dueGroupIds = [...new Set(due.map((l) => String(l.groupId)))].map((id) => new Types.ObjectId(id));
+      const subjects = await this.subjects
+        .find(
+          { groupId: { $in: dueGroupIds } },
+          { groupId: 1, name: 1, shortName: 1, links: 1 },
+        )
+        .lean()
+        .exec();
+      const reminderDate = formatLocalDateKey(now);
+      // One chat message per group, however many lessons (subgroups,
+      // electives) start at that minute. Claims stay per lesson, so a lesson
+      // is never announced twice even if two ticks overlap.
+      const byGroup = new Map<string, LessonReminder[]>();
+      const lookups = new Map<string, ReturnType<SchedulerService['buildSubjectLookup']>>();
+      for (const l of due) {
+        const groupId = String(l.groupId);
+        const claimed = await this.claimLessonReminder(groupId, String(l._id), reminderDate);
+        if (!claimed) continue;
 
-          const subject = l.subjectId
-            ? subjectLookup.byId.get(String(l.subjectId))
-            : subjectLookup.byName.get(normalizeName(l.subjectName));
-          const link = this.pickReminderLink(subject, l);
-          await this.notifications.broadcastLessonReminder({
-            groupId: String(group._id),
+        let lookup = lookups.get(groupId);
+        if (!lookup) {
+          lookup = this.buildSubjectLookup(subjects.filter((s) => String(s.groupId) === groupId));
+          lookups.set(groupId, lookup);
+        }
+        const subject = l.subjectId
+          ? lookup.byId.get(String(l.subjectId))
+          : lookup.byName.get(normalizeName(l.subjectName));
+        byGroup.set(groupId, [
+          ...(byGroup.get(groupId) ?? []),
+          {
             subjectName: l.subjectName,
             lessonType: l.type,
             teacherNames: l.teacherNames,
             startTime: l.startTime,
             endTime: l.endTime,
             room: l.room,
-            link,
-            minutesLeft: group.lessonReminderMinutes,
-          });
-        }
+            link: this.pickReminderLink(subject, l),
+          },
+        ]);
+      }
+      for (const [groupId, list] of byGroup) {
+        await this.notifications.broadcastLessonReminders(groupId, minutesByGroup.get(groupId) ?? 0, list);
       }
     } catch (err) {
       this.logger.error(`tickLessonReminders: ${(err as Error).message}`);
+    } finally {
+      this.lessonTickRunning = false;
     }
   }
 
@@ -86,13 +120,17 @@ export class SchedulerService {
   async tickQueueOpens(): Promise<void> {
     const now = new Date();
     const inFive = new Date(now.getTime() + 5 * 60_000);
+    // Marks only matter inside the 5-minute look-ahead window; drop old ones
+    // so the map doesn't grow for the lifetime of the process.
+    for (const [key, at] of this.sentMarks) if (now.getTime() - at > 15 * 60_000) this.sentMarks.delete(key);
     const queues = await this.queues
-      .find({ 'rules.autoOpenAt': { $gte: now, $lte: inFive } })
+      .find({ 'rules.autoOpenAt': { $gte: now, $lte: inFive } }, { groupId: 1, title: 1 })
+      .lean()
       .exec();
     for (const q of queues) {
       const key = `q-open:${q._id}`;
       if (this.sentMarks.has(key)) continue;
-      this.sentMarks.add(key);
+      this.sentMarks.set(key, now.getTime());
       await this.notifications.broadcastQueueOpen({
         groupId: String(q.groupId),
         subjectName: q.title,
@@ -150,12 +188,12 @@ export class SchedulerService {
     }
   }
 
-  private buildSubjectLookup(subjects: SubjectDocument[]): {
-    byId: Map<string, SubjectDocument>;
-    byName: Map<string, SubjectDocument>;
+  private buildSubjectLookup(subjects: ReminderSubject[]): {
+    byId: Map<string, ReminderSubject>;
+    byName: Map<string, ReminderSubject>;
   } {
-    const byId = new Map<string, SubjectDocument>();
-    const byName = new Map<string, SubjectDocument>();
+    const byId = new Map<string, ReminderSubject>();
+    const byName = new Map<string, ReminderSubject>();
     for (const subject of subjects) {
       byId.set(String(subject._id), subject);
       byName.set(normalizeName(subject.name), subject);
@@ -192,8 +230,8 @@ export class SchedulerService {
   }
 
   private pickReminderLink(
-    subject: SubjectDocument | undefined,
-    lesson: ScheduleLessonDocument,
+    subject: ReminderSubject | undefined,
+    lesson: Pick<ScheduleLesson, 'type' | 'meetingUrl'>,
   ): { label: string; url: string } | undefined {
     const reminderLink = subject?.links.find(
       (link) => link.showInLessonReminder && link.lessonReminderType === lesson.type,
@@ -211,6 +249,8 @@ export class SchedulerService {
     return { label: 'Зустріч', url: fallbackUrl };
   }
 }
+
+type ReminderSubject = Pick<Subject, 'name' | 'shortName' | 'links'> & { _id: unknown };
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

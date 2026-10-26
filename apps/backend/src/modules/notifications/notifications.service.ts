@@ -17,6 +17,19 @@ interface ReminderLink {
   url: string;
 }
 
+export interface LessonReminder {
+  subjectName: string;
+  lessonType: LessonType;
+  teacherNames: string[];
+  startTime: string;
+  endTime: string;
+  room?: string;
+  link?: ReminderLink;
+}
+
+/** Telegram rejects messages over 4096 chars; leave room for the "…і ще N" tail. */
+const MAX_REMINDER_CHARS = 3900;
+
 const PREF_KEY: Record<DmKind, keyof NotificationPrefs> = {
   queueOpen: 'dmQueueOpen',
   nextInQueue: 'dmNextInQueue',
@@ -108,52 +121,30 @@ export class NotificationsService {
   }
 
   async sendDm(userId: string, kind: DmKind, text: string): Promise<void> {
-    const prefs = await this.getOrCreatePrefs(userId);
-    if (!prefs[PREF_KEY[kind]]) return;
-    const user = await this.users.findById(userId).lean().exec();
+    // Read-only lookup: a missing row / field means the schema default (true),
+    // so there's no need to create a prefs document per recipient here.
+    const key = PREF_KEY[kind];
+    const prefs = await this.prefs
+      .findOne({ userId: new Types.ObjectId(userId) }, { [key]: 1 })
+      .lean()
+      .exec();
+    if (prefs?.[key] === false) return;
+    const user = await this.users.findById(userId, { telegramId: 1 }).lean().exec();
     if (!user) return;
     await this.bot.sendMessage(user.telegramId, text);
   }
 
-  async broadcastLessonReminder(params: {
-    groupId: string;
-    subjectName: string;
-    lessonType: LessonType;
-    teacherNames: string[];
-    startTime: string;
-    endTime: string;
-    room?: string;
-    link?: ReminderLink;
-    minutesLeft: number;
-  }): Promise<void> {
-    const group = await this.groups.findById(params.groupId).exec();
+  /**
+   * One chat message for every lesson of the group that starts at the same
+   * minute — subgroups and electives used to produce one message each.
+   */
+  async broadcastLessonReminders(groupId: string, minutesLeft: number, lessons: LessonReminder[]): Promise<void> {
+    if (lessons.length === 0) return;
+    const group = await this.groups.findById(groupId).exec();
     if (!group || !group.notificationsEnabled || !group.telegramChatId) return;
 
     const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-    await this.bot.sendMessage(group.telegramChatId, this.buildLessonReminderText(params), opts);
-  }
-
-  private buildLessonReminderText(params: {
-    subjectName: string;
-    lessonType: LessonType;
-    teacherNames: string[];
-    startTime: string;
-    endTime: string;
-    room?: string;
-    link?: ReminderLink;
-    minutesLeft: number;
-  }): string {
-    const lines = [
-      `🔔 Нагадування про пару через ${params.minutesLeft} хвилин!`,
-      '',
-      `📚 Дисципліна: <b>${escapeHtml(params.subjectName)}</b>`,
-      `📝 Тип: <b>${escapeHtml(LESSON_TYPE_LABEL[params.lessonType])}</b>`,
-      `👨‍🏫 Викладач: ${params.teacherNames.length ? escapeHtml(params.teacherNames.join(', ')) : '—'}`,
-      `⏰ Час: <b>${escapeHtml(params.startTime)}</b> — <b>${escapeHtml(params.endTime)}</b>`,
-      `📍 Місце: <b>${escapeHtml((params.room ?? '').trim() || '—')}</b>`,
-    ];
-    if (params.link) lines.push(`🔗 Приєднатися до зустрічі: ${formatReminderLink(params.link)}`);
-    return lines.join('\n');
+    await this.bot.sendMessage(group.telegramChatId, buildLessonRemindersText(minutesLeft, lessons), opts);
   }
 
   async broadcastQueueOpen(params: { groupId: string; subjectName: string; queueTitle: string }): Promise<void> {
@@ -190,6 +181,50 @@ function escapeHtmlAttr(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/\"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/** Reminder text for one or several lessons starting at the same minute. */
+export function buildLessonRemindersText(minutesLeft: number, lessons: LessonReminder[]): string {
+  const teachers = (l: LessonReminder) => (l.teacherNames.length ? escapeHtml(l.teacherNames.join(', ')) : '—');
+  const room = (l: LessonReminder) => escapeHtml((l.room ?? '').trim() || '—');
+  const time = (l: LessonReminder) => `<b>${escapeHtml(l.startTime)}</b> — <b>${escapeHtml(l.endTime)}</b>`;
+
+  if (lessons.length === 1) {
+    const [l] = lessons;
+    const lines = [
+      `🔔 Нагадування про пару через ${minutesLeft} хвилин!`,
+      '',
+      `📚 Дисципліна: <b>${escapeHtml(l.subjectName)}</b>`,
+      `📝 Тип: <b>${escapeHtml(LESSON_TYPE_LABEL[l.lessonType])}</b>`,
+      `👨‍🏫 Викладач: ${teachers(l)}`,
+      `⏰ Час: ${time(l)}`,
+      `📍 Місце: <b>${room(l)}</b>`,
+    ];
+    if (l.link) lines.push(`🔗 Приєднатися до зустрічі: ${formatReminderLink(l.link)}`);
+    return lines.join('\n');
+  }
+
+  const sorted = [...lessons].sort((a, b) => a.subjectName.localeCompare(b.subjectName, 'uk'));
+  const sameTime = sorted.every((l) => l.startTime === sorted[0].startTime && l.endTime === sorted[0].endTime);
+  const header = [`🔔 Через ${minutesLeft} хвилин пари (${sorted.length}):`];
+  if (sameTime) header.push(`⏰ ${time(sorted[0])}`);
+
+  const blocks = sorted.map((l, i) => {
+    const lines = [
+      `<b>${i + 1}. ${escapeHtml(l.subjectName)}</b> · ${escapeHtml(LESSON_TYPE_LABEL[l.lessonType])}`,
+      `👨‍🏫 ${teachers(l)} · 📍 ${room(l)}`,
+    ];
+    if (!sameTime) lines.push(`⏰ ${time(l)}`);
+    if (l.link) lines.push(`🔗 ${formatReminderLink(l.link)}`);
+    return lines.join('\n');
+  });
+
+  let text = header.join('\n');
+  for (let i = 0; i < blocks.length; i++) {
+    if (text.length + blocks[i].length + 2 > MAX_REMINDER_CHARS) return `${text}\n\n…і ще ${blocks.length - i}`;
+    text += `\n\n${blocks[i]}`;
+  }
+  return text;
 }
 
 function formatReminderLink(link: ReminderLink): string {
