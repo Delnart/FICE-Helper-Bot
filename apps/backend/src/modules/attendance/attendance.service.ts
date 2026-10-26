@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AttendanceStatus, Role, ROLE_LEVEL } from '@fice/shared';
@@ -6,6 +6,8 @@ import { AttendanceRecord, AttendanceRecordDocument } from './attendance.schema'
 import { UpsertAttendanceDto } from './dto/attendance.dto';
 import { RequestUser } from '../../common/types/request-user';
 import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
+import { Subject, SubjectDocument } from '../subjects/subject.schema';
+import { User, UserDocument } from '../users/user.schema';
 import { UsersService } from '../users/users.service';
 import { CampusService } from '../campus/campus.service';
 import { ManualStudentsService } from '../manual-students/manual-students.service';
@@ -63,6 +65,8 @@ export class AttendanceService {
   constructor(
     @InjectModel(AttendanceRecord.name) private readonly records: Model<AttendanceRecordDocument>,
     @InjectModel(ScheduleLesson.name) private readonly lessons: Model<ScheduleLessonDocument>,
+    @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly users: UsersService,
     private readonly campus: CampusService,
     private readonly manualStudents: ManualStudentsService,
@@ -80,6 +84,7 @@ export class AttendanceService {
     const lessonsRaw = await this.lessons
       .find({ groupId: new Types.ObjectId(groupId) })
       .sort({ dayOfWeek: 1, startTime: 1 })
+      .lean()
       .exec();
     const weekLessons = lessonsRaw.filter(
       (l) => l.weekType === 0 || l.weekType === weekType,
@@ -132,6 +137,7 @@ export class AttendanceService {
         groupId: new Types.ObjectId(groupId),
         date: { $gte: start, $lt: end },
       })
+      .lean()
       .exec();
 
     const marks: WeekGridMark[] = [];
@@ -216,37 +222,43 @@ export class AttendanceService {
     },
     opts?: { allowSubjectTeacherAccess?: boolean },
   ): Promise<void> {
-    this.assertCanManage(user, groupId, opts?.allowSubjectTeacherAccess ?? false);
+    const subjectTeacherOnly = this.assertCanManage(
+      user,
+      groupId,
+      opts?.allowSubjectTeacherAccess ?? false,
+    );
     const day = new Date(params.date);
     day.setUTCHours(0, 0, 0, 0);
+    await this.assertTargets(user, groupId, params.scheduleLessonId, day, [params.userId], subjectTeacherOnly);
 
     const filter = {
       groupId: new Types.ObjectId(groupId),
       scheduleLessonId: new Types.ObjectId(params.scheduleLessonId),
       date: day,
     };
-    const existing = await this.records.findOne(filter);
     const userObjectId = new Types.ObjectId(params.userId);
-    if (!existing) {
-      await this.records.create({
-        ...filter,
-        entries: [{ userId: userObjectId, status: params.status, note: params.note }],
-        createdBy: new Types.ObjectId(user.userId),
-      });
-      return;
-    }
-    const idx = existing.entries.findIndex((e) => String(e.userId) === params.userId);
-    if (idx >= 0) {
-      existing.entries[idx].status = params.status;
-      existing.entries[idx].note = params.note;
-    } else {
-      existing.entries.push({
-        userId: userObjectId,
-        status: params.status,
-        note: params.note,
-      });
-    }
-    await existing.save();
+    // Atomic updates instead of findOne → create/save: concurrent marks on the
+    // same lesson-day used to hit E11000 (double create) or VersionError.
+    await retryOnDuplicate(async () => {
+      const res = await this.records.updateOne(
+        { ...filter, 'entries.userId': userObjectId },
+        // Missing note clears the old one, as the previous save() did.
+        params.note !== undefined
+          ? { $set: { 'entries.$.status': params.status, 'entries.$.note': params.note } }
+          : { $set: { 'entries.$.status': params.status }, $unset: { 'entries.$.note': 1 } },
+      );
+      if (res.matchedCount > 0) return;
+      // No entry for this user yet (or no record at all) → push, creating the
+      // record if needed. A concurrent insert surfaces as E11000 → retried once.
+      await this.records.updateOne(
+        { ...filter, 'entries.userId': { $ne: userObjectId } },
+        {
+          $push: { entries: { userId: userObjectId, status: params.status, note: params.note } },
+          $setOnInsert: { createdBy: new Types.ObjectId(user.userId) },
+        },
+        { upsert: true },
+      );
+    });
   }
 
   async getUserWeek(
@@ -282,34 +294,35 @@ export class AttendanceService {
     this.assertCanManage(user, groupId);
     const date = new Date(dto.date);
     date.setUTCHours(0, 0, 0, 0);
-
-    const existing = await this.records.findOne({
-      groupId: new Types.ObjectId(groupId),
-      scheduleLessonId: new Types.ObjectId(dto.scheduleLessonId),
+    await this.assertTargets(
+      user,
+      groupId,
+      dto.scheduleLessonId,
       date,
-    });
+      dto.entries.map((e) => e.userId),
+      false,
+    );
 
-    if (existing) {
-      existing.entries = dto.entries.map((e) => ({
-        userId: new Types.ObjectId(e.userId),
-        status: e.status,
-        note: e.note,
-      }));
-      await existing.save();
-      return existing;
-    }
-
-    return this.records.create({
-      groupId: new Types.ObjectId(groupId),
-      scheduleLessonId: new Types.ObjectId(dto.scheduleLessonId),
-      date,
-      entries: dto.entries.map((e) => ({
-        userId: new Types.ObjectId(e.userId),
-        status: e.status,
-        note: e.note,
-      })),
-      createdBy: new Types.ObjectId(user.userId),
-    });
+    const entries = dto.entries.map((e) => ({
+      userId: new Types.ObjectId(e.userId),
+      status: e.status,
+      note: e.note,
+    }));
+    // Single atomic upsert (was findOne → save/create, which raced into E11000).
+    const record = await retryOnDuplicate(() =>
+      this.records
+        .findOneAndUpdate(
+          {
+            groupId: new Types.ObjectId(groupId),
+            scheduleLessonId: new Types.ObjectId(dto.scheduleLessonId),
+            date,
+          },
+          { $set: { entries }, $setOnInsert: { createdBy: new Types.ObjectId(user.userId) } },
+          { upsert: true, new: true, runValidators: true },
+        )
+        .exec(),
+    );
+    return record!;
   }
 
   async getLessonRecord(
@@ -326,6 +339,7 @@ export class AttendanceService {
         scheduleLessonId: new Types.ObjectId(lessonId),
         date: day,
       })
+      .lean()
       .exec();
     if (!record) return { entries: [] };
     return {
@@ -348,6 +362,8 @@ export class AttendanceService {
   }
 
   async statsForUser(groupId: string, userId: string): Promise<UserAttendanceStats> {
+    // :userId comes from the URL; a malformed one made new ObjectId() throw a 500.
+    if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid userId');
     const pipeline = [
       { $match: { groupId: new Types.ObjectId(groupId) } },
       { $unwind: '$entries' },
@@ -387,7 +403,11 @@ export class AttendanceService {
     return stats;
   }
 
-  private assertCanManage(user: RequestUser, groupId: string, allowSubjectTeacherAccess = false): void {
+  /**
+   * 403 unless the user has a journal role in the group. Returns true when
+   * they pass only as a subject teacher (controller-verified ?subjectIds).
+   */
+  private assertCanManage(user: RequestUser, groupId: string, allowSubjectTeacherAccess = false): boolean {
     const m = user.memberships.find((x) => x.groupId === groupId);
     const level = m ? ROLE_LEVEL[m.role] : 0;
     // Teachers (level 2) can mark attendance for their lessons;
@@ -395,6 +415,84 @@ export class AttendanceService {
     if (level < ROLE_LEVEL[Role.Teacher] && !allowSubjectTeacherAccess) {
       throw new ForbiddenException('Only teacher/head/deputy can mark attendance');
     }
+    return level < ROLE_LEVEL[Role.Teacher];
+  }
+
+  /**
+   * 400 unless the lesson is this group's and every target is a member, a
+   * manual student of the group, or already on this record (the mark page
+   * re-sends saved entries). A subject teacher may only mark lessons of a
+   * subject they teach here, matched like the journal grid: subjectId or name.
+   */
+  private async assertTargets(
+    user: RequestUser,
+    groupId: string,
+    lessonId: string,
+    day: Date,
+    userIds: string[],
+    subjectTeacherOnly: boolean,
+  ): Promise<void> {
+    if (!Types.ObjectId.isValid(lessonId) || !userIds.every((id) => Types.ObjectId.isValid(id))) {
+      throw new BadRequestException('Invalid id');
+    }
+    const gid = new Types.ObjectId(groupId);
+    const lesson = await this.lessons
+      .findOne({ _id: new Types.ObjectId(lessonId), groupId: gid }, { subjectId: 1, subjectName: 1 })
+      .lean()
+      .exec();
+    if (!lesson) throw new BadRequestException('Lesson is not in this group');
+
+    if (subjectTeacherOnly) {
+      // Load the group's subjects and match teachers in JS: String() also
+      // matches a teacherUserId stored as a string, like the controller does.
+      const subjects = await this.subjects
+        .find({ groupId: gid }, { name: 1, shortName: 1, 'teachers.teacherUserId': 1 })
+        .lean()
+        .exec();
+      const lessonName = normaliseName(lesson.subjectName ?? '');
+      const ok = subjects.some(
+        (s) =>
+          s.teachers.some((t) => t.teacherUserId && String(t.teacherUserId) === user.userId) &&
+          ((!!lesson.subjectId && String(lesson.subjectId) === String(s._id)) ||
+            [s.name, s.shortName].some((n) => !!n && normaliseName(n) === lessonName)),
+      );
+      if (!ok) throw new ForbiddenException('Можна відмічати лише заняття свого предмета');
+    }
+
+    const ids = [...new Set(userIds)];
+    const [members, manual] = await Promise.all([
+      this.userModel
+        .find(
+          { _id: { $in: ids.map((id) => new Types.ObjectId(id)) }, 'memberships.groupId': gid },
+          { _id: 1 },
+        )
+        .lean()
+        .exec(),
+      this.manualStudents.listForGroup(groupId),
+    ]);
+    const known = new Set([...members, ...manual].map((d) => String(d._id)));
+    let missing = ids.filter((id) => !known.has(id));
+    if (missing.length === 0) return;
+    const record = await this.records
+      .findOne(
+        { groupId: gid, scheduleLessonId: lesson._id, date: day },
+        { 'entries.userId': 1 },
+      )
+      .lean()
+      .exec();
+    const onRecord = new Set((record?.entries ?? []).map((e) => String(e.userId)));
+    missing = missing.filter((id) => !onRecord.has(id));
+    if (missing.length > 0) throw new BadRequestException('Student is not in this group');
+  }
+}
+
+/** Runs `fn`, retrying once on E11000 — a concurrent upsert won the insert of the same record. */
+async function retryOnDuplicate<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if ((err as { code?: number }).code !== 11000) throw err;
+    return fn();
   }
 }
 
