@@ -45,16 +45,6 @@ export class AttendanceController {
     return this.attendance.getUserWeek(activeGroupId, user.userId, weekStart ? new Date(weekStart) : undefined);
   }
 
-  @Get('my/stats')
-  myStats(
-    @CurrentUser() user: RequestUser,
-    @ActiveGroupId() activeGroupId: string | undefined,
-    @Query('subjectId') subjectId?: string,
-  ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
-    return this.attendance.statsForUser(activeGroupId, user.userId, subjectId);
-  }
-
   @Get('week')
   async week(
     @CurrentUser() user: RequestUser,
