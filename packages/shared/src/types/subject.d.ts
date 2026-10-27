@@ -27,6 +27,7 @@ export interface SubjectDto {
     name: string;
     shortName?: string;
     icon?: string;
+    isOnline?: boolean;
     campusSubjectId?: string;
     teachers: SubjectTeacherRef[];
     links: SubjectLink[];

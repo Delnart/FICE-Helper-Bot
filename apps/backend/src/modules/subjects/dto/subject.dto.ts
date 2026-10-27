@@ -41,6 +41,7 @@ export class CreateSubjectDto {
   @IsString() @MinLength(2) @MaxLength(200) name!: string;
   @IsOptional() @IsString() @MaxLength(50) shortName?: string;
   @IsOptional() @IsString() @MaxLength(32) icon?: string;
+  @IsOptional() @IsBoolean() isOnline?: boolean;
   @IsOptional() @IsString() campusSubjectId?: string;
 
   @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SubjectTeacherDto)
@@ -54,6 +55,7 @@ export class UpdateSubjectDto {
   @IsOptional() @IsString() @MaxLength(200) name?: string;
   @IsOptional() @IsString() @MaxLength(50) shortName?: string;
   @IsOptional() @IsString() @MaxLength(32) icon?: string;
+  @IsOptional() @IsBoolean() isOnline?: boolean;
 
   @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SubjectTeacherDto)
   teachers?: SubjectTeacherDto[];

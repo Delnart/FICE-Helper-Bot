@@ -32,6 +32,8 @@ export interface SubjectDto {
   name: string;
   shortName?: string;
   icon?: string;
+  /** Absent on subjects saved before the flag existed — treat as false. */
+  isOnline?: boolean;
   campusSubjectId?: string;
   teachers: SubjectTeacherRef[];
   links: SubjectLink[];

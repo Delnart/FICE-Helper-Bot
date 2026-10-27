@@ -74,6 +74,7 @@ interface ElectiveSummary {
 /** GET /subjects — only the fields the lesson cards need. */
 interface SubjectInfo {
   _id: string;
+  isOnline?: boolean;
   links?: Array<{ url: string; showInLessonReminder?: boolean; lessonReminderType?: string }>;
   settings?: { hideQueue?: boolean; hideHomework?: boolean };
 }
@@ -423,6 +424,7 @@ export default function SchedulePage() {
                         past={isPast}
                         mark={week === currentWeek ? markOf(l._id) : undefined}
                         joinUrl={joinUrlOf(l)}
+                        online={!!subjectOf(l.subjectId)?.isOnline}
                         live={
                           isNow
                             ? {
@@ -491,6 +493,7 @@ function LessonRow({
   past,
   mark,
   joinUrl,
+  online,
   live,
 }: {
   l: Lesson;
@@ -501,6 +504,8 @@ function LessonRow({
   /** The user's own attendance mark for this lesson (this week). */
   mark?: { label: string; title: string; cls: string };
   joinUrl?: string;
+  /** The head marked the subject online (not inferred from the link). */
+  online?: boolean;
   /** Set while the lesson is in progress. */
   live?: LiveInfo;
 }) {
@@ -586,7 +591,7 @@ function LessonRow({
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="small now-muted min-w-0" title={l.teacherNames.join(', ')}>
-              {[typeLabel, l.isElective ? 'вибіркова' : '', meta].filter(Boolean).join(' · ')}
+              {[typeLabel, l.isElective ? 'вибіркова' : '', online ? 'онлайн' : '', meta].filter(Boolean).join(' · ')}
             </span>
             {electiveBtn}
           </div>
@@ -644,7 +649,7 @@ function LessonRow({
                 </span>
               ) : null}
               {l.isElective ? <span className="chip chip-accent">вибіркова</span> : null}
-              {joinUrl ? <span className="chip chip-info">онлайн</span> : null}
+              {online ? <span className="chip chip-info">онлайн</span> : null}
             </div>
             {electiveBtn}
           </div>

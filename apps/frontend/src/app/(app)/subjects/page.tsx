@@ -7,7 +7,7 @@ import dayjs from 'dayjs';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
-import { useActiveMembership, useCanManage, useIsTeacherOnly } from '../../../hooks/useMe';
+import { useActiveMembership, useCanManage } from '../../../hooks/useMe';
 import { PageHeader } from '../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Icon } from '../../../components/icons';
@@ -29,6 +29,7 @@ interface SubjectDto {
   name: string;
   shortName?: string;
   icon?: string;
+  isOnline?: boolean;
   teachers: Array<{ fullName: string }>;
   links?: Array<{ label: string; url: string }>;
   settings?: {
@@ -69,7 +70,6 @@ function opensLabel(d: Date): string {
 
 export default function SubjectsPage() {
   const canManage = useCanManage();
-  const isTeacherOnly = useIsTeacherOnly();
   const groupName = useActiveMembership()?.groupName;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -84,14 +84,7 @@ export default function SubjectsPage() {
   const now = useQuery({
     queryKey: ['schedule-now'],
     queryFn: () =>
-      api<{ current: NowLesson | null; next: NowLesson | null; weekType?: 1 | 2 }>('/schedule/now'),
-  });
-  // This week's own timetable (same cache as the Розклад tab) — feeds the «онлайн» chip.
-  const week = now.data?.weekType;
-  const lessons = useQuery({
-    queryKey: ['schedule', week, false],
-    queryFn: () => api<NowLesson[]>('/schedule/my', { query: { week } }),
-    enabled: !!week && !isTeacherOnly,
+      api<{ current: NowLesson | null; next: NowLesson | null }>('/schedule/now'),
   });
   const pending = useQuery({
     queryKey: ['hw-pending-count'],
@@ -139,11 +132,7 @@ export default function SubjectsPage() {
         if (!soon || hw.length > 1) chips.push({ label: `${hw.length} ДЗ` });
       }
       if (elective) chips.push({ label: 'вибіркова', cls: 'chip-accent' });
-      // Online = every lesson of it this week has a meeting link and no room.
-      const own = (lessons.data ?? []).filter((l) => isLessonOf(l, s));
-      if (own.length && own.every((l) => !l.room && l.meetingUrl)) {
-        chips.push({ label: 'онлайн', cls: 'chip-info' });
-      }
+      if (s.isOnline) chips.push({ label: 'онлайн', cls: 'chip-info' });
       // Lowest priority: cards carry at most 3 chips, as in the mockup.
       if (links && chips.length < 3) {
         chips.push({ label: `${links} ${pluralUk(links, ['посилання', 'посилання', 'посилань'])}` });
@@ -156,7 +145,7 @@ export default function SubjectsPage() {
 
       return { s, chips, teacher, queueOpen, hasHw: hw.length > 0, elective };
     });
-  }, [subjects.data, now.data, pending.data, queues.data, electives.data, lessons.data]);
+  }, [subjects.data, now.data, pending.data, queues.data, electives.data]);
 
   const term = search.trim().toLowerCase();
   const visible = cards.filter(

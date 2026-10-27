@@ -48,6 +48,8 @@ export class Subject {
   @Prop() shortName?: string;
   /** Tile icon override (frontend SUBJECT_ICONS name); unset = picked from the name. */
   @Prop() icon?: string;
+  /** Set by the head/deputy: lessons get the «онлайн» chip. Independent of meeting links. */
+  @Prop({ default: false }) isOnline!: boolean;
   @Prop({ index: true }) campusSubjectId?: string;
 
   @Prop({ type: [SubjectTeacherSubSchema], default: [] })

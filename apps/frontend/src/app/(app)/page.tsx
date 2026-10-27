@@ -15,6 +15,7 @@ import { Icon, Logo, type IconName } from '../../components/icons';
 import { SubjectTile } from '../../components/SubjectIcon';
 import { UserAvatar, myAvatarUrl } from '../../components/UserAvatar';
 import {
+  isLessonOf,
   isQueueOpen,
   queueBySubject,
   takenSlots,
@@ -63,6 +64,7 @@ interface SubjectSummary {
   name: string;
   shortName?: string;
   icon?: string;
+  isOnline?: boolean;
   teachers: Array<{ fullName: string }>;
   links?: Array<{ url: string; showInLessonReminder?: boolean; lessonReminderType?: string }>;
   settings?: { hideQueue?: boolean };
@@ -818,6 +820,8 @@ function StudentHomePage() {
 
   const current = now.data?.current ?? null;
   const next = now.data?.next ?? null;
+  // The head's flag on the subject, not a guess from links.
+  const isOnlineLesson = (l: Lesson | null) => !!subjects.data?.some((s) => s.isOnline && isLessonOf(l, s));
   const currentSubject = current?.subjectId
     ? subjects.data?.find((s) => s._id === current.subjectId)
     : undefined;
@@ -893,6 +897,7 @@ function StudentHomePage() {
             current.lessonNumber ? `${current.lessonNumber} пара` : null,
             current.type ? TYPE_LABEL[current.type] : null,
             current.room ? `ауд. ${current.room}` : null,
+            isOnlineLesson(current) ? 'онлайн' : null,
             canManage
               ? grid.data && !lessonStats(current._id)
                 ? 'присутність ще не відмічена'
@@ -944,6 +949,7 @@ function StudentHomePage() {
           parts={[
             next.type ? TYPE_LABEL[next.type] : null,
             next.room && !canManage ? `ауд. ${next.room}` : next.room,
+            isOnlineLesson(next) ? 'онлайн' : null,
           ]}
         />
       ) : null}
@@ -1112,7 +1118,8 @@ function StudentHomePage() {
                       <span className="tiny faint truncate">
                         {joinParts([
                           l.type ? TYPE_LABEL[l.type] : null,
-                          l.room || (l.meetingUrl ? 'онлайн' : null),
+                          l.room,
+                          isOnlineLesson(l) ? 'онлайн' : null,
                         ])}
                       </span>
                     </div>

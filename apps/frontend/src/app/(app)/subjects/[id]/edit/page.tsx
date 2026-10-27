@@ -25,6 +25,7 @@ interface SubjectDetail {
   name: string;
   shortName?: string;
   icon?: string;
+  isOnline?: boolean;
   teachers: Array<TeacherRow & { roleInSubject?: string }>;
   links: SubjectLink[];
   visibility: {
@@ -40,6 +41,7 @@ interface UpdateBody {
   name?: string;
   shortName?: string;
   icon?: string;
+  isOnline?: boolean;
   teachers?: TeacherRow[];
   links?: SubjectLink[];
   settings?: {
@@ -55,6 +57,7 @@ interface Form {
   shortName: string;
   /** '' = picked automatically from the name. */
   icon: string;
+  isOnline: boolean;
   teachers: TeacherRow[];
   links: SubjectLink[];
   hideHomework: boolean;
@@ -76,6 +79,7 @@ function toForm(s: SubjectDetail): Form {
     name: s.name,
     shortName: s.shortName ?? '',
     icon: s.icon ?? '',
+    isOnline: !!s.isOnline,
     teachers: (s.teachers ?? []).map((t) => ({
       teacherUserId: t.teacherUserId,
       fullName: t.fullName,
@@ -178,6 +182,7 @@ export default function EditSubjectPage() {
       shortName: form.shortName.trim(),
       // '' clears a manual pick on the backend → back to the automatic icon.
       icon: form.icon,
+      isOnline: form.isOnline,
       teachers: cleanTeachers,
       links: cleanLinks,
       settings: {
@@ -221,6 +226,17 @@ export default function EditSubjectPage() {
           onShortName={(v) => set('shortName', v)}
           onIcon={(v) => set('icon', v)}
         />
+
+        {/* Only this flag puts «онлайн» on the lessons; meeting links stay separate. */}
+        <div className="card-flat px-3.5 py-1">
+          <div className="row-plain justify-between">
+            <div className="flex min-w-0 flex-col">
+              <span className="h3">Онлайн</span>
+              <span className="tiny faint">Пари дисципліни позначаються «онлайн» у розкладі</span>
+            </div>
+            <Toggle label="Онлайн" checked={form.isOnline} onChange={(v) => set('isOnline', v)} />
+          </div>
+        </div>
 
         <TeachersEditor
           groupId={s.groupId ?? activeGroup}

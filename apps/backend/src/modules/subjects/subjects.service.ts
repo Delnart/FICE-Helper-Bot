@@ -35,6 +35,7 @@ export class SubjectsService {
       name: dto.name,
       shortName: dto.shortName,
       icon: dto.icon?.trim() || undefined,
+      isOnline: dto.isOnline,
       campusSubjectId: dto.campusSubjectId,
       teachers,
       links: this.normalizeLinks(dto.links),
@@ -87,6 +88,7 @@ export class SubjectsService {
       name: subject.name,
       shortName: subject.shortName,
       icon: subject.icon,
+      isOnline: subject.isOnline,
       campusSubjectId: subject.campusSubjectId,
       teachers: subject.teachers.map((t) => ({
         teacherUserId: t.teacherUserId ? String(t.teacherUserId) : undefined,
@@ -126,6 +128,7 @@ export class SubjectsService {
       subject.shortName = trimmed ? trimmed : undefined;
     }
     if (dto.icon !== undefined) subject.icon = dto.icon.trim() || undefined;
+    if (dto.isOnline !== undefined) subject.isOnline = dto.isOnline;
     if (dto.teachers) {
       subject.teachers = await this.enrichTeachers(dto.teachers);
       subject.markModified('teachers');

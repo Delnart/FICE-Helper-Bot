@@ -32,6 +32,7 @@ interface SubjectDetail {
   name: string;
   shortName?: string;
   icon?: string;
+  isOnline?: boolean;
   teachers: Array<{
     fullName: string;
     role: string;
@@ -162,14 +163,19 @@ export default function SubjectDetailPage() {
         <SubjectTile name={s.name} icon={s.icon} size="lg" tone="ink" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <h1 className="h1 break-words text-[20px]">{s.name}</h1>
-          {liveLesson ? (
+          {liveLesson || s.isOnline ? (
             <div className="meta">
-              <span className={cn('chip', isCurrent ? 'chip-lime' : 'chip-info')}>
-                {isCurrent ? 'зараз триває' : 'наступна пара'}
-              </span>
-              <span className="chip max-w-full">
-                <span className="truncate">{liveInfo}</span>
-              </span>
+              {liveLesson ? (
+                <>
+                  <span className={cn('chip', isCurrent ? 'chip-lime' : 'chip-info')}>
+                    {isCurrent ? 'зараз триває' : 'наступна пара'}
+                  </span>
+                  <span className="chip max-w-full">
+                    <span className="truncate">{liveInfo}</span>
+                  </span>
+                </>
+              ) : null}
+              {s.isOnline ? <span className="chip chip-info">онлайн</span> : null}
             </div>
           ) : null}
         </div>
