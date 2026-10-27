@@ -342,8 +342,15 @@ body {
   .action-bar { position: sticky; bottom: 0; z-index: 30; margin: 8px -16px -24px; padding: 12px 16px max(24px, calc(var(--safe-bottom) + 8px)); background: var(--bg); border-top: 1px solid var(--line); display: flex; gap: 8px; }
 
   /* ── Bottom sheet ─────────────────────────────────────────────────── */
-  .sheet-scrim { position: fixed; inset: 0; z-index: 50; background: rgba(8, 10, 20, 0.55); animation: fade-in var(--dur) var(--ease-out) backwards; }
-  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; margin: 0 auto; max-width: 36rem; max-height: 88dvh; overflow-y: auto; background: var(--surface); border-radius: 28px 28px 0 0; padding: 12px 16px calc(var(--safe-bottom) + 28px); box-shadow: var(--shadow-bar); color: var(--ink); animation: sheet-up 280ms var(--ease-out) backwards; }
+  .sheet-scrim { position: fixed; inset: 0; z-index: 50; background: rgba(8, 10, 20, 0.55); animation: fade-in var(--dur) var(--ease-out) backwards; transition: opacity var(--dur) var(--ease-out); }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; margin: 0 auto; max-width: 36rem; max-height: 88dvh; overflow-y: auto; background: var(--surface); border-radius: 28px 28px 0 0; padding: 12px 16px calc(var(--safe-bottom) + 28px); box-shadow: var(--shadow-bar); color: var(--ink); animation: sheet-up 280ms var(--ease-out) backwards; transition: transform var(--dur) var(--ease-out); }
+  /* Exit: slide down + fade out, ease-in; Sheet.tsx unmounts after the same 200ms. Transitions (not
+     keyframes) so they reverse smoothly if it reopens; a close mid-entrance is frozen in place by
+     Sheet.tsx first. The fading scrim still swallows taps: one landing on the page would be undone
+     by the late onClose. */
+  .sheet-scrim.closing, .sheet.closing { transition-duration: 200ms; transition-timing-function: cubic-bezier(0.4, 0, 1, 1); }
+  .sheet-scrim.closing { opacity: 0; }
+  .sheet.closing { transform: translateY(100%); pointer-events: none; }
   .sheet-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--line-2); margin: 0 auto 14px; }
   /* Round close button next to the sheet title (44px hit area via ::before). */
   .sheet-close { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 999px; border: 0; padding: 0; background: var(--surface-2); color: var(--ink-2); flex-shrink: 0; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
@@ -363,14 +370,17 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+/* fade-in / sheet-up: explicit ends, so a running entrance ignores the `.closing` values (Sheet.tsx). */
 @keyframes fade-in {
   from { opacity: 0; }
+  to { opacity: 1; }
 }
 @keyframes rise-in {
   from { opacity: 0; transform: translateY(8px); }
 }
 @keyframes sheet-up {
   from { transform: translateY(100%); }
+  to { transform: none; }
 }
 
 /* Reduced motion: transitions and entrances finish instantly, loops run once (the pulse dot stays
