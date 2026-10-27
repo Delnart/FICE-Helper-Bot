@@ -41,11 +41,6 @@ export class SubjectsController {
     return this.subjects.list(groupId);
   }
 
-  @Get('teachers/suggest')
-  async suggest(@Query('q') q: string) {
-    return this.subjects.suggestTeachers(q ?? '');
-  }
-
   /**
    * Pre-filled teacher list for a (group, subjectName) pair pulled from the
    * Campus group-schedule. Each suggestion comes with the role(s) (lecturer,

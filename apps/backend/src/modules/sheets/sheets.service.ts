@@ -18,7 +18,6 @@ export interface SheetGroupHead {
 
 export interface SheetTeacher {
   fullName: string;
-  phone?: string;
   telegramUsername?: string;
 }
 
@@ -473,12 +472,11 @@ export class SheetsService implements OnModuleInit {
           telegramUsername: String(r[2]),
         }));
 
-      // Sheet "Викладачі": A = ПІБ, B = Телефон (opt), C = Тег (opt)
+      // Sheet "Викладачі": A = ПІБ, B = Телефон (opt, never read), C = Тег (opt)
       this.cacheTeachers = teachersRows
         .filter((r) => r[0])
         .map((r) => ({
           fullName: String(r[0]),
-          phone: r[1] ? String(r[1]) : undefined,
           telegramUsername: r[2] ? String(r[2]) : undefined,
         }));
 

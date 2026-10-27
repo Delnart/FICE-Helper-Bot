@@ -171,13 +171,6 @@ export class SubjectsService {
     return subject;
   }
 
-  async suggestTeachers(query: string) {
-    if (!query || query.length < 2) return [];
-    const teachers = await this.sheets.getTeachers();
-    const q = query.toLowerCase();
-    return teachers.filter((t) => t.fullName.toLowerCase().includes(q)).slice(0, 10);
-  }
-
   /**
    * Suggest teachers from the Campus group schedule for a specific (group,
    * subjectName) pair. Returns one entry per teacher with all roles they
