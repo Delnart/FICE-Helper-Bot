@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, Logger } from '@nestjs/common';
@@ -6,6 +8,15 @@ import helmet from 'helmet';
 import compression from 'compression';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+
+// dist/main.js -> apps/backend/package.json, both locally and in the image.
+function appVersion(): string {
+  try {
+    return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -53,7 +64,7 @@ async function bootstrap() {
 
   const port = parseInt(process.env.BACKEND_PORT ?? '3001', 10);
   await app.listen(port, '0.0.0.0');
-  logger.log(`Backend listening on :${port}`);
+  logger.log(`FICE Helper backend v${appVersion()} listening on :${port}`);
 }
 
 bootstrap().catch((err) => {

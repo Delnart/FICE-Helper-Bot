@@ -296,6 +296,11 @@ export default function ProfilePage() {
         Вийти з застосунку
       </button>
 
+      {/* Inlined from apps/frontend/package.json at build time (next.config.js). */}
+      {process.env.NEXT_PUBLIC_APP_VERSION ? (
+        <p className="tiny faint -mt-2 text-center">FICE Helper · v{process.env.NEXT_PUBLIC_APP_VERSION}</p>
+      ) : null}
+
       <Sheet open={themeOpen} onClose={() => setThemeOpen(false)} title="Вигляд">
         <div className="card-flat flex flex-col px-3.5 py-1" role="radiogroup" aria-label="Тема застосунку">
           {THEMES.map(([t, label, hint], i) => (

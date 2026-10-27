@@ -1,6 +1,6 @@
 {
   "name": "@fice/backend",
-  "version": "0.1.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Nest.js backend for FICE Helper Bot",
   "scripts": {
@@ -13,7 +13,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
-    "@fice/shared": "0.1.0",
+    "@fice/shared": "*",
     "@googleapis/sheets": "^9.8.0",
     "@nestjs/common": "^10.3.9",
     "@nestjs/config": "^3.2.2",

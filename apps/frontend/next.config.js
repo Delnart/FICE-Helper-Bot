@@ -8,6 +8,8 @@ const nextConfig = {
   // Self-contained server (`node server.js`) with only the traced deps — see docker/frontend.Dockerfile.
   output: 'standalone',
   transpilePackages: ['@fice/shared'],
+  // Shown on the profile page; bump with `npm version` (see docs/DEPLOY.md).
+  env: { NEXT_PUBLIC_APP_VERSION: require('./package.json').version },
   experimental: {
     typedRoutes: true,
     // Monorepo: trace from the repo root so hoisted node_modules are included.
