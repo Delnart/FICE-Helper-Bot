@@ -120,6 +120,13 @@ const PATHS = {
       <path d="M10 20a2 2 0 0 0 4 0" />
     </>
   ),
+  // Half-filled circle: light / dark appearance.
+  theme: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" />
+    </>
+  ),
   info: (
     <>
       <circle cx="12" cy="12" r="9" />

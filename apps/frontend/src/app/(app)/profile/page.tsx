@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { api, setActiveGroup } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
 import { Section } from '../../../components/ui/Section';
@@ -29,10 +29,10 @@ type Prefs = Record<(typeof PREF_KEYS)[number], boolean>;
 // Stored theme override (THEME_KEY); absent = follow Telegram. syncTheme() (and
 // the boot script in app/layout.tsx) read the same key.
 type ThemePref = 'auto' | 'light' | 'dark';
-const THEMES: Array<[ThemePref, string]> = [
-  ['auto', 'Як у Telegram'],
-  ['light', 'Світла'],
-  ['dark', 'Темна'],
+const THEMES: Array<[ThemePref, string, string]> = [
+  ['auto', 'Як у Telegram', 'Світла чи темна разом із Telegram'],
+  ['light', 'Світла', 'Завжди світла'],
+  ['dark', 'Темна', 'Завжди темна'],
 ];
 
 // Mirror of the backend regex (UpdateProfileDto). Latin + Cyrillic letters,
@@ -64,18 +64,18 @@ export default function ProfilePage() {
   const [fullName, setFullName] = useState('');
   const [birthday, setBirthday] = useState('');
   const [editing, setEditing] = useState(false);
+  const [themeOpen, setThemeOpen] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
-  const [theme, setTheme] = useState<ThemePref>('auto');
-
-  // localStorage only exists in the browser — read it after mount.
-  useEffect(() => {
+  // Read up front, so the theme thumb starts on the saved option instead of sliding there.
+  // Safe without an effect: Shell never server-renders pages (Loading until auth is ready).
+  const [theme, setTheme] = useState<ThemePref>(() => {
     try {
       const t = localStorage.getItem(THEME_KEY);
-      if (t === 'light' || t === 'dark') setTheme(t);
+      return t === 'light' || t === 'dark' ? t : 'auto';
     } catch {
-      /* storage blocked */
+      return 'auto'; // storage blocked
     }
-  }, []);
+  });
 
   function pickTheme(t: ThemePref) {
     setTheme(t);
@@ -235,23 +235,6 @@ export default function ProfilePage() {
         </Section>
       ) : null}
 
-      <Section title="Вигляд">
-        <div className="seg" role="radiogroup" aria-label="Тема застосунку">
-          {THEMES.map(([t, label]) => (
-            <button
-              key={t}
-              type="button"
-              role="radio"
-              aria-checked={theme === t}
-              className={cn(theme === t && 'on')}
-              onClick={() => pickTheme(t)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </Section>
-
       <Section title="Налаштування">
         <div className="card-flat flex flex-col px-3.5 py-1">
           {/* Teachers don't get notification toggles — they don't subscribe to
@@ -276,6 +259,13 @@ export default function ProfilePage() {
             </>
           ) : null}
           {!isTeacherOnly ? <div className="divider" /> : null}
+          <SettingsRow
+            icon="theme"
+            title="Вигляд"
+            hint={THEMES.find(([t]) => t === theme)?.[1]}
+            onClick={() => setThemeOpen(true)}
+          />
+          <div className="divider" />
           <SettingsRow
             icon="help"
             title="Підтримка"
@@ -305,6 +295,32 @@ export default function ProfilePage() {
         <Icon name="enter" size={18} />
         Вийти з застосунку
       </button>
+
+      <Sheet open={themeOpen} onClose={() => setThemeOpen(false)} title="Вигляд">
+        <div className="card-flat flex flex-col px-3.5 py-1" role="radiogroup" aria-label="Тема застосунку">
+          {THEMES.map(([t, label, hint], i) => (
+            <div key={t}>
+              {i > 0 ? <div className="divider" /> : null}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={theme === t}
+                className="row-plain w-full gap-3 text-left"
+                onClick={() => {
+                  pickTheme(t);
+                  setThemeOpen(false);
+                }}
+              >
+                <span className={cn('radio', theme === t && 'on')} aria-hidden="true" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="h3">{label}</span>
+                  <span className="tiny faint">{hint}</span>
+                </span>
+              </button>
+            </div>
+          ))}
+        </div>
+      </Sheet>
 
       <Sheet open={editing} onClose={cancelEdit} title="Особисті дані">
         <div>
