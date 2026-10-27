@@ -20,6 +20,9 @@ export function useAuth(): AuthStatus {
     const wa = getWebApp();
     wa?.ready();
     wa?.expand();
+    // Bot API 7.7+: vertical swipes scroll the app instead of dragging Telegram's sheet down
+    // (diagonal day swipes moved the whole panel). Collapse / close stay in the header.
+    if (wa?.isVersionAtLeast?.('7.7')) wa.disableVerticalSwipes?.();
   }, []);
 
   useEffect(() => {

@@ -46,6 +46,9 @@ export interface TelegramWebApp {
   offEvent?(event: 'themeChanged' | 'activated' | 'deactivated', cb: () => void): void;
   ready(): void;
   expand(): void;
+  isVersionAtLeast?(version: string): boolean;
+  /** Bot API 7.7+. */
+  disableVerticalSwipes?(): void;
   close(): void;
   openTelegramLink(url: string): void;
   showAlert(msg: string, cb?: () => void): void;

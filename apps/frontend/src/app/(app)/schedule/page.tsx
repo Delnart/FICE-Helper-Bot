@@ -246,7 +246,7 @@ export default function SchedulePage() {
   // Swipe between days across the two visible weeks: 0–6 this one, 7–13 the next.
   const pos = (week === currentWeek ? 0 : 7) + day - 1;
   const daysRef = useRef<HTMLDivElement>(null);
-  const swipeRef = useSwipe((dir) => {
+  const { ref: swipeRef, slide } = useSwipe((dir) => {
     const p = pos + dir;
     if (p < 0 || p > 13) return null;
     return () => {
@@ -377,7 +377,7 @@ export default function SchedulePage() {
                   <button
                     key={d}
                     type="button"
-                    onClick={() => setDay(d)}
+                    onClick={() => d !== day && slide(d > day ? 1 : -1, () => setDay(d))}
                     aria-pressed={day === d}
                     className={cn('day min-w-0 flex-1', day === d && 'on', isToday && 'today', free && 'free')}
                   >
@@ -395,7 +395,8 @@ export default function SchedulePage() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setWeek(week === 1 ? 2 : 1)}
+                // The next week is later in time: slides in like a swipe forward.
+                onClick={() => slide(week === currentWeek ? 1 : -1, () => setWeek((w) => (w === 1 ? 2 : 1)))}
               >
                 Показати {ROMAN[week === 1 ? 2 : 1]} тиждень
               </button>

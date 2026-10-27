@@ -1,15 +1,20 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 
 /** +1 = swipe left (next), -1 = swipe right (previous). Returns the switch to make, or null at an end. */
 export type SwipeTarget = (dir: 1 | -1) => (() => void) | null;
+/** Runs `go` with the swipe's slide: the content leaves against `dir`, the new one comes in from its side. */
+export type Slide = (dir: 1 | -1, go: () => void) => void;
 
-const LOCK_PX = 10; // movement before the gesture picks an axis
+const SLOP_PX = 6; // movement before the gesture picks an axis — under the browser's own scroll slop
+const H_SLOPE = 1; // tan 45°: up to 45° off horizontal counts as a swipe, steeper is a scroll
 const EDGE_PX = 16; // OS / Telegram back gestures start at the screen edges
-const COMMIT = 0.25; // share of the width that switches on release
-const FLING = 0.4; // px/ms — a quick flick switches below COMMIT
+const COMMIT = 0.15; // share of the width that switches on release
+const FLING = 0.2; // px/ms over the last VEL_MS — a light flick switches below COMMIT
+const FLING_MIN_PX = 20; // a fling still needs this much travel: iOS reports a tap's jitter from the first pixel
+const VEL_MS = 100;
 const EASE_OUT = 'cubic-bezier(0.22, 1, 0.36, 1)'; // --ease-out
 const EASE_SPRING = 'cubic-bezier(0.34, 1.4, 0.64, 1)'; // --ease-spring
 
@@ -17,36 +22,40 @@ const EASE_SPRING = 'cubic-bezier(0.34, 1.4, 0.64, 1)'; // --ease-spring
 const rubber = (d: number, w: number) => d / (1 + Math.abs(d) / (w * 0.25));
 
 /**
- * Horizontal swipe between pages of content (touch and pen; the mouse keeps text selection).
- * `touch-action: pan-y` leaves vertical scrolling to the browser and hands horizontal moves to us.
- * While dragging the element follows the finger via direct style writes (no React state per move);
- * on release past COMMIT / a fling it slides out, the switch renders, and the new content slides in
- * from the other side. A click right after a swipe is swallowed (rows are links). Returns a callback ref.
+ * Horizontal swipe between pages of content (touch only; the mouse keeps text selection).
+ * Touch Events with a non-passive touchmove: the first moves past SLOP_PX pick the axis. Horizontal
+ * (within 45°) → every following move is preventDefault-ed, so the page doesn't scroll; vertical →
+ * the gesture is dropped and the page scrolls. (`touch-action: pan-y` would let the browser claim
+ * any diagonal move and cancel the swipe.) While dragging the element follows the finger via direct
+ * style writes; on release past COMMIT / a fling it slides out, the switch renders, and the new
+ * content slides in from the other side. `slide` is for buttons: the switch renders at once (the
+ * control reacts on tap) and the new content slides in the same way. A click right after a swipe is
+ * swallowed (rows are links). Move / end listeners sit on the touch's own target: touch events keep
+ * going to it even when React removes it mid-gesture (the content is re-keyed), never to `el`.
  */
-export function useSwipe(target: SwipeTarget) {
+export function useSwipe(target: SwipeTarget): { ref: (el: HTMLElement | null) => void; slide: Slide } {
   const [el, setEl] = useState<HTMLElement | null>(null);
   const targetRef = useRef(target);
   targetRef.current = target;
+  const slideRef = useRef<Slide>((_, go) => go());
+  const slide = useCallback<Slide>((dir, go) => slideRef.current(dir, go), []);
 
   useEffect(() => {
     if (!el) return;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
-    el.style.touchAction = 'pan-y';
 
     type Gesture = {
-      id: number;
       x0: number;
       y0: number;
-      /** Last sample, for the release velocity. */
-      x: number;
-      t: number;
-      v: number;
-      /** Set once the gesture locks horizontal. */
-      locked?: { w: number; dx: number; next: (() => void) | null; prev: (() => void) | null };
+      /** Recent samples, for the release velocity. */
+      pts: Array<{ x: number; t: number }>;
+      /** Set once the gesture locks horizontal; `x` is where, so the element follows without a jump. */
+      locked?: { x: number; w: number; dx: number; next: (() => void) | null; prev: (() => void) | null };
     };
     let g: Gesture | null = null;
     let anim: Animation | null = null;
-    let leaving = false;
+    /** The switch waiting for the slide-out to end; a new one meanwhile retargets it. */
+    let pending: { dir: 1 | -1; go: () => void } | null = null;
     let blockClickUntil = 0;
 
     const place = (dx: number, w: number) => {
@@ -65,80 +74,124 @@ export function useSwipe(target: SwipeTarget) {
         anim = el.animate([from, { transform: 'translate3d(0,0,0)', opacity: 1 }], { duration: 240, easing: EASE_SPRING });
       }
     };
-    const leave = (dir: 1 | -1, go: () => void, dx: number, w: number) => {
+    const arrive = (dir: 1 | -1) => {
+      // Opacity comes from the content's own entrance (.anim-rise on the re-keyed list).
+      const w = el.offsetWidth || 1;
+      anim = el.animate(
+        [{ transform: `translate3d(${dir * w * 0.15}px,0,0)` }, { transform: 'translate3d(0,0,0)' }],
+        { duration: 240, easing: EASE_OUT },
+      );
+    };
+    const leave = (dir: 1 | -1, go: () => void, dx: number) => {
       if (reduce.matches) return go();
-      leaving = true;
+      pending = { dir, go };
+      anim?.cancel();
+      const w = el.offsetWidth || 1;
       const out = el.animate(
         [release(), { transform: `translate3d(${dx - dir * w * 0.3}px,0,0)`, opacity: 0 }],
         { duration: 150, easing: EASE_OUT, fill: 'forwards' },
       );
       out.onfinish = () => {
-        flushSync(go); // the new day is in the DOM before it slides in
+        const p = pending!;
+        pending = null;
+        flushSync(p.go); // the new day is in the DOM before it slides in
         out.cancel();
-        leaving = false;
-        // Opacity comes from the content's own entrance (.anim-rise on the re-keyed list).
-        anim = el.animate(
-          [{ transform: `translate3d(${dir * w * 0.15}px,0,0)` }, { transform: 'translate3d(0,0,0)' }],
-          { duration: 240, easing: EASE_OUT },
-        );
+        arrive(p.dir);
       };
     };
+    slideRef.current = (dir, go) => {
+      if (reduce.matches) return go();
+      if (pending) {
+        // A swipe is leaving: this switch follows its own once it lands.
+        const prev = pending.go;
+        pending.go = () => {
+          prev();
+          go();
+        };
+        return;
+      }
+      anim?.cancel();
+      flushSync(go);
+      arrive(dir);
+    };
+
+    let tgt: HTMLElement | null = null;
+    const unbind = () => {
+      tgt?.removeEventListener('touchmove', onMove);
+      tgt?.removeEventListener('touchend', onEnd);
+      tgt?.removeEventListener('touchcancel', cancel);
+      tgt = null;
+    };
     const cancel = () => {
+      unbind();
       const s = g;
       g = null;
       if (s?.locked) settle();
     };
 
-    const onDown = (e: PointerEvent) => {
-      if (g || leaving || e.pointerType === 'mouse' || !e.isPrimary) return;
-      if (e.clientX < EDGE_PX || e.clientX > window.innerWidth - EDGE_PX) return;
-      g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, t: e.timeStamp, v: 0 };
-    };
-    // On window: a second finger anywhere cancels; any new press ends the click block.
-    const onAnyDown = (e: PointerEvent) => {
+    const onStart = (e: TouchEvent) => {
       blockClickUntil = 0;
-      if (g && e.pointerId !== g.id) cancel();
+      if (e.touches.length > 1) return cancel(); // a second finger: pinch, not a swipe
+      cancel(); // a gesture whose end never arrived
+      const t = e.touches[0];
+      if (pending || t.clientX < EDGE_PX || t.clientX > window.innerWidth - EDGE_PX) return;
+      g = { x0: t.clientX, y0: t.clientY, pts: [{ x: t.clientX, t: e.timeStamp }] };
+      tgt = e.target as HTMLElement;
+      tgt.addEventListener('touchmove', onMove, { passive: false });
+      tgt.addEventListener('touchend', onEnd);
+      tgt.addEventListener('touchcancel', cancel);
     };
-    const onMove = (e: PointerEvent) => {
-      if (!g || e.pointerId !== g.id) return;
-      const dt = e.timeStamp - g.t;
-      if (dt > 0) g.v = 0.6 * ((e.clientX - g.x) / dt) + 0.4 * g.v;
-      g.x = e.clientX;
-      g.t = e.timeStamp;
+    const onMove = (e: TouchEvent) => {
+      if (!g) return;
+      if (e.touches.length > 1) return cancel();
+      const t = e.touches[0];
+      g.pts.push({ x: t.clientX, t: e.timeStamp });
+      while (g.pts[0].t < e.timeStamp - VEL_MS) g.pts.shift();
       if (!g.locked) {
-        const dx = e.clientX - g.x0;
-        const dy = e.clientY - g.y0;
-        if (Math.max(Math.abs(dx), Math.abs(dy)) < LOCK_PX) return;
-        if (Math.abs(dy) >= Math.abs(dx)) {
-          g = null; // vertical: the page scrolls
+        const dx = Math.abs(t.clientX - g.x0);
+        const dy = Math.abs(t.clientY - g.y0);
+        if (Math.max(dx, dy) < SLOP_PX) return;
+        // Vertical, or the browser already scrolls (its touchmoves stop being cancelable): let it.
+        if (dy > dx * H_SLOPE || !e.cancelable) {
+          g = null;
           return;
         }
         anim?.cancel();
-        g.x0 = e.clientX; // start following from here, no jump
-        g.locked = { w: el.offsetWidth || 1, dx: 0, next: targetRef.current(1), prev: targetRef.current(-1) };
+        g.locked = {
+          x: t.clientX,
+          w: el.offsetWidth || 1,
+          dx: 0,
+          next: targetRef.current(1),
+          prev: targetRef.current(-1),
+        };
       }
+      if (e.cancelable) e.preventDefault(); // ours now: the page doesn't scroll
       const l = g.locked;
-      const d = e.clientX - g.x0;
+      const d = t.clientX - l.x;
       l.dx = (d < 0 ? l.next : l.prev) ? d : rubber(d, l.w);
       if (!reduce.matches) place(l.dx, l.w);
     };
-    const onUp = (e: PointerEvent) => {
-      if (!g || e.pointerId !== g.id) return;
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length) return;
+      unbind();
+      if (!g) return;
       const s = g;
       g = null;
       if (!s.locked) return;
       blockClickUntil = performance.now() + 600;
       const { w, dx } = s.locked;
-      const d = e.clientX - s.x0;
+      // From the touch start: Chrome may not deliver moves inside its scroll slop, which would eat a light swipe.
+      const d = e.changedTouches[0].clientX - s.x0;
       const dir = d < 0 ? 1 : -1;
       const go = dir === 1 ? s.locked.next : s.locked.prev;
-      const v = e.timeStamp - s.t < 100 ? s.v : 0; // finger held still before lifting: no fling
-      const fling = Math.abs(v) > FLING && Math.sign(v) === Math.sign(d);
-      if (go && d && (Math.abs(d) > w * COMMIT || fling)) leave(dir, go, dx, w);
+      // Velocity over the last VEL_MS; a finger held still before lifting leaves one sample: no fling.
+      const pts = s.pts.filter((p) => p.t >= e.timeStamp - VEL_MS);
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      const v = pts.length > 1 && b.t > a.t ? (b.x - a.x) / (b.t - a.t) : 0;
+      const fling = Math.abs(d) > FLING_MIN_PX && Math.abs(v) > FLING && Math.sign(v) === Math.sign(d);
+      if (go && d && (Math.abs(d) > w * COMMIT || fling)) leave(dir, go, dx);
       else settle();
-    };
-    const onCancel = (e: PointerEvent) => {
-      if (g && e.pointerId === g.id) cancel();
     };
     const onClick = (e: MouseEvent) => {
       if (performance.now() >= blockClickUntil) return;
@@ -146,22 +199,21 @@ export function useSwipe(target: SwipeTarget) {
       e.stopPropagation();
     };
 
-    el.addEventListener('pointerdown', onDown);
+    // Does nothing: keeps `el` in the browser's cancelable-touchmove region, which iOS reads at touchstart,
+    // before the target's own listener exists — else the moves arrive uncancelable and the swipe is dropped.
+    const keepCancelable = () => {};
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', keepCancelable, { passive: false });
     el.addEventListener('click', onClick, true);
-    window.addEventListener('pointerdown', onAnyDown);
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onCancel);
     return () => {
-      el.removeEventListener('pointerdown', onDown);
+      unbind();
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', keepCancelable);
       el.removeEventListener('click', onClick, true);
-      window.removeEventListener('pointerdown', onAnyDown);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onCancel);
+      slideRef.current = (_, go) => go();
       anim?.cancel();
     };
   }, [el]);
 
-  return setEl;
+  return { ref: setEl, slide };
 }
