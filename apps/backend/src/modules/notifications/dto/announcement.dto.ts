@@ -7,7 +7,12 @@ export class CreateAnnouncementDto {
   @IsOptional() @IsBoolean() broadcastToChat?: boolean;
 }
 
-export class UpdatePrefsDto {
+/** No groupId → the user-wide values (what clients before per-group prefs read and write). */
+export class PrefsQueryDto {
+  @IsOptional() @IsMongoId() groupId?: string;
+}
+
+export class UpdatePrefsDto extends PrefsQueryDto {
   @IsOptional() @IsBoolean() dmQueueOpen?: boolean;
   @IsOptional() @IsBoolean() dmNextInQueue?: boolean;
   @IsOptional() @IsBoolean() dmDeadlineTomorrow?: boolean;

@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Patch, Post, Query } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-import { CreateAnnouncementDto, UpdatePrefsDto } from './dto/announcement.dto';
+import { CreateAnnouncementDto, PrefsQueryDto, UpdatePrefsDto } from './dto/announcement.dto';
 import { Role } from '@fice/shared';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequestUser } from '../../common/types/request-user';
@@ -14,12 +14,13 @@ export class NotificationsController {
   ) {}
 
   @Get('prefs')
-  prefs(@CurrentUser() user: RequestUser) {
-    return this.svc.getOrCreatePrefs(user.userId);
+  prefs(@CurrentUser() user: RequestUser, @Query() q: PrefsQueryDto) {
+    return this.svc.getPrefs(user.userId, memberGroup(user, q.groupId));
   }
 
   @Patch('prefs')
   updatePrefs(@CurrentUser() user: RequestUser, @Body() dto: UpdatePrefsDto) {
+    memberGroup(user, dto.groupId);
     return this.svc.updatePrefs(user.userId, dto);
   }
 
@@ -34,4 +35,12 @@ export class NotificationsController {
     await this.access.assertAccess(user, dto.groupId, Role.DeputyHead);
     return this.svc.createAnnouncement(user.userId, dto);
   }
+}
+
+/** Per-group prefs only for the user's own memberships — DMs go to members, never to a taught-only group. */
+function memberGroup(user: RequestUser, groupId?: string): string | undefined {
+  if (groupId && !user.memberships.some((m) => m.groupId === groupId)) {
+    throw new ForbiddenException('Немає доступу до цієї групи');
+  }
+  return groupId;
 }

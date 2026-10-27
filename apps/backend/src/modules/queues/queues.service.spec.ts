@@ -65,3 +65,30 @@ describe('QueuesService advance / compact', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 });
+
+describe('QueuesService queue-open DMs', () => {
+  it("follow each member's choice for this queue's group, else their user-wide one", async () => {
+    const other = new Types.ObjectId();
+    const rows = [
+      { userId: ids[0], dmQueueOpen: true, groups: [{ groupId: new Types.ObjectId(G), dmQueueOpen: false }] },
+      { userId: ids[1], dmQueueOpen: false, groups: [{ groupId: new Types.ObjectId(G), dmQueueOpen: true }] },
+      { userId: ids[2], dmQueueOpen: false, groups: [{ groupId: other, dmQueueOpen: true }] },
+      // ids[3]: no prefs row → default (send)
+    ];
+    const members = ids.slice(0, 4).map((_id, i) => ({ _id, telegramId: 10 + i }));
+    const db = {
+      collection: (name: string) =>
+        name === 'academic_groups'
+          ? { findOne: async () => ({ _id: new Types.ObjectId(G) }) } // no chat → DMs only
+          : { find: () => ({ toArray: async () => rows }) },
+    };
+    const sendMessage = jest.fn(async (_id: number, _text: string) => undefined);
+    const users = { find: () => ({ lean: () => ({ exec: async () => members }) }) };
+    const svc = new QueuesService({} as never, { db } as never, {} as never, users as never, { sendMessage } as never);
+    await (svc as never as { dispatchQueueOpenNotifications: (q: object) => Promise<void> }).dispatchQueueOpenNotifications({
+      groupId: new Types.ObjectId(G),
+      title: 'ОС',
+    });
+    expect(sendMessage.mock.calls.map(([id]) => id)).toEqual([11, 13]);
+  });
+});

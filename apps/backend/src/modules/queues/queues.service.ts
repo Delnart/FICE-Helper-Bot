@@ -14,6 +14,7 @@ import { QueueSwapRequest, QueueSwapRequestDocument } from './swap-request.schem
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
+import { effectivePref, PrefKey, PrefsLike } from '../notifications/notification-prefs.schema';
 import { RequestUser } from '../../common/types/request-user';
 import {
   AdminEnrollDto,
@@ -36,6 +37,8 @@ type QueueRulesInput = {
 
 /** Plain (`.lean()`) or hydrated queue — read-only serializers accept either. */
 type LeanQueue = Queue & { _id: Types.ObjectId };
+
+type PrefsRow = PrefsLike & { userId: Types.ObjectId };
 
 type Promotion = { slotIndex: number; userId: Types.ObjectId; toStatus: QueueStatus };
 
@@ -393,7 +396,7 @@ export class QueuesService {
 
   /**
    * Announce a freshly-opened queue:
-   *   • Telegram DM to every group member who has `dmQueueOpen=true` in prefs.
+   *   • Telegram DM to every group member whose `dmQueueOpen` is on for this group.
    *   • One message in the group chat if `group.notificationsEnabled=true`.
    * Both channels are best-effort — one failing doesn't stop the other.
    */
@@ -428,12 +431,10 @@ export class QueuesService {
     if (members.length === 0) return;
 
     const prefsByUser = await this.swaps.db
-      .collection('notification_prefs')
-      .find({ userId: { $in: members.map((m) => m._id) } })
+      .collection<PrefsRow>('notification_prefs')
+      .find({ userId: { $in: members.map((m) => m._id) } }, { projection: { userId: 1, dmQueueOpen: 1, groups: 1 } })
       .toArray();
-    const optInMap = new Map<string, boolean>(
-      prefsByUser.map((p) => [String(p.userId), p.dmQueueOpen !== false]),
-    );
+    const prefsMap = new Map(prefsByUser.map((p) => [String(p.userId), p]));
 
     const dmText =
       `<b>🔔 Черга відкрилась</b>\n\n` +
@@ -442,10 +443,8 @@ export class QueuesService {
 
     for (const m of members) {
       if (!m.telegramId) continue;
-      // Default = opt-in: if user never opened settings, prefs row may not exist
-      // → treat as "send" (matches schema default true).
-      const optedIn = optInMap.get(String(m._id)) ?? true;
-      if (!optedIn) continue;
+      // No prefs row (never opened settings) → the default, i.e. send.
+      if (!effectivePref(prefsMap.get(String(m._id)), groupId, 'dmQueueOpen')) continue;
       await this.bot
         .sendMessage(m.telegramId, dmText)
         .catch((err) =>
@@ -847,11 +846,7 @@ export class QueuesService {
     const u = await this.users.findById(p.userId).lean().exec();
     if (!u?.telegramId) return;
 
-    // Honour `dmNextInQueue` notification preference.
-    const prefs = await this.swaps.db
-      .collection('notification_prefs')
-      .findOne({ userId: new Types.ObjectId(String(u._id)) });
-    if (prefs && prefs.dmNextInQueue === false) return;
+    if (!(await this.wantsDm(u._id, q.groupId, 'dmNextInQueue'))) return;
 
     // Currently only `preparing` ever gets promoted (status chain simplified
     // after a chaotic queue run — passed/missed/failed no longer cascade).
@@ -927,7 +922,7 @@ export class QueuesService {
       this.users.findById(user.userId).lean().exec(),
       this.users.findById(target.userId).lean().exec(),
     ]);
-    if (them?.telegramId) {
+    if (them?.telegramId && (await this.wantsDm(them._id, q.groupId, 'dmSwapRequests'))) {
       const fromName =
         me?.fullName?.trim() ||
         [me?.firstName, me?.lastName].filter(Boolean).join(' ').trim() ||
@@ -939,7 +934,7 @@ export class QueuesService {
         `Місце ${own.slotIndex} ↔ Місце ${target.slotIndex}.\n\n` +
         `Відкрийте FICE Helper, щоб прийняти або відхилити.`;
       await this.bot.sendMessage(them.telegramId, text);
-    } else {
+    } else if (!them?.telegramId) {
       this.logger.warn(`Swap target user ${target.userId} has no telegramId`);
     }
 
@@ -964,7 +959,7 @@ export class QueuesService {
     }
 
     if (!accept) {
-      const q = await this.queues.findById(swap.queueId, { title: 1 }).lean().exec();
+      const q = await this.queues.findById(swap.queueId, { title: 1, groupId: 1 }).lean().exec();
       if (!q) throw new NotFoundException('Queue gone');
       void this.notifySwapResolved(swap, q, false).catch((err) =>
         this.logger.warn(`swap decline DM failed: ${(err as Error).message}`),
@@ -1080,17 +1075,13 @@ export class QueuesService {
    */
   private async notifySwapResolved(
     swap: QueueSwapRequestDocument,
-    q: Pick<Queue, 'title'>,
+    q: Pick<Queue, 'title' | 'groupId'>,
     accepted: boolean,
   ): Promise<void> {
     const fromUser = await this.users.findById(swap.fromUserId).lean().exec();
     if (!fromUser?.telegramId) return;
 
-    // Honour user's DM preference for swap-related events.
-    const prefs = await this.swaps.db
-      .collection('notification_prefs')
-      .findOne({ userId: new Types.ObjectId(String(fromUser._id)) });
-    if (prefs && prefs.dmSwapRequests === false) return;
+    if (!(await this.wantsDm(fromUser._id, q.groupId, 'dmSwapRequests'))) return;
 
     const target = await this.users.findById(swap.toUserId).lean().exec();
     const targetName =
@@ -1106,6 +1097,17 @@ export class QueuesService {
         `${escapeHtml(targetName)} відхилив запит на обмін у черзі «${escapeHtml(q.title)}» ` +
         `(місце ${swap.fromSlotIndex} ↔ ${swap.toSlotIndex}).`;
     await this.bot.sendMessage(fromUser.telegramId, text);
+  }
+
+  /**
+   * The user's DM preference for this queue's group. Raw collection: the
+   * notifications module depends on this one, not the other way round.
+   */
+  private async wantsDm(userId: unknown, groupId: unknown, key: PrefKey): Promise<boolean> {
+    const prefs = await this.swaps.db
+      .collection<PrefsRow>('notification_prefs')
+      .findOne({ userId: new Types.ObjectId(String(userId)) }, { projection: { [key]: 1, groups: 1 } });
+    return effectivePref(prefs, groupId, key);
   }
 
   private normaliseRules(dto?: QueueRulesInput | QueueRulesDto | undefined): Queue['rules'] {

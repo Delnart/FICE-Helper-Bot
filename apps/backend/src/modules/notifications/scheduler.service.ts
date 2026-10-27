@@ -18,7 +18,13 @@ import { User, UserDocument } from '../users/user.schema';
 import { CampusService } from '../campus/campus.service';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminder-mark.schema';
-import { NotificationPrefs, NotificationPrefsDocument } from './notification-prefs.schema';
+import {
+  effectivePref,
+  NotificationPrefs,
+  NotificationPrefsDocument,
+  optedInSomewhere,
+  PrefKey,
+} from './notification-prefs.schema';
 
 @Injectable()
 export class SchedulerService {
@@ -158,15 +164,23 @@ export class SchedulerService {
     this.digestRunning = true;
     try {
       const now = new Date();
-      const prefs = await this.prefs.find({ dmMorningDigest: true }, { userId: 1 }).lean().exec();
-      if (prefs.length === 0) return;
+      const prefs = await this.optedIn('dmMorningDigest');
+      if (prefs.size === 0) return;
       const rows = await this.users
         // Banned users can't open settings to switch it off.
-        .find({ _id: { $in: prefs.map((p) => p.userId) }, isBanned: { $ne: true } }, { telegramId: 1, memberships: 1 })
+        .find(
+          { _id: { $in: [...prefs.keys()].map((id) => new Types.ObjectId(id)) }, isBanned: { $ne: true } },
+          { telegramId: 1, memberships: 1 },
+        )
         .lean()
         .exec();
+      // Only the groups where the digest is on: on in G1 and off in G2 → G1's day only.
       const users = rows
-        .map((u) => ({ id: String(u._id), telegramId: u.telegramId, groupIds: studentGroupIds(u) }))
+        .map((u) => ({
+          id: String(u._id),
+          telegramId: u.telegramId,
+          groupIds: studentGroupIds(u).filter((g) => effectivePref(prefs.get(String(u._id)), g, 'dmMorningDigest')),
+        }))
         .filter((u) => u.groupIds.length > 0);
       if (users.length === 0) return;
       const groupIds = [...new Set(users.flatMap((u) => u.groupIds))].map((id) => new Types.ObjectId(id));
@@ -296,6 +310,7 @@ export class SchedulerService {
         if (doneIds.has(String(u._id))) continue;
         await this.notifications.sendDm(
           String(u._id),
+          String(h.groupId),
           'deadlineTomorrow',
           `⏳ Завтра дедлайн: <b>${escapeHtml(h.title)}</b>`,
         );
@@ -324,27 +339,41 @@ export class SchedulerService {
     }
   }
 
-  /** Opted-in (dmLessonReminder) members of the given groups, keyed by group id. */
+  /** Opted-in (dmLessonReminder, per group) members of the given groups, keyed by group id. */
   private async lessonDmRecipients(
     groupIds: Types.ObjectId[],
   ): Promise<Map<string, Array<{ id: string; telegramId: number }>>> {
     const byGroup = new Map<string, Array<{ id: string; telegramId: number }>>();
-    // Strictly opt-in: a prefs row without the field never matches `true`.
-    const prefs = await this.prefs.find({ dmLessonReminder: true }, { userId: 1 }).lean().exec();
-    if (prefs.length === 0) return byGroup;
+    const prefs = await this.optedIn('dmLessonReminder');
+    if (prefs.size === 0) return byGroup;
     const users = await this.users
       .find(
-        { _id: { $in: prefs.map((p) => p.userId) }, 'memberships.groupId': { $in: groupIds }, isBanned: { $ne: true } },
+        {
+          _id: { $in: [...prefs.keys()].map((id) => new Types.ObjectId(id)) },
+          'memberships.groupId': { $in: groupIds },
+          isBanned: { $ne: true },
+        },
         { telegramId: 1, memberships: 1 },
       )
       .lean()
       .exec();
     for (const u of users) {
       for (const groupId of studentGroupIds(u)) {
+        if (!effectivePref(prefs.get(String(u._id)), groupId, 'dmLessonReminder')) continue;
         byGroup.set(groupId, [...(byGroup.get(groupId) ?? []), { id: String(u._id), telegramId: u.telegramId }]);
       }
     }
     return byGroup;
+  }
+
+  /**
+   * Prefs rows (by user id) that switched an opt-in DM on user-wide or in some
+   * group; whether it's on for a given group is effectivePref's call.
+   * Strictly opt-in: a row without the field anywhere never matches `true`.
+   */
+  private async optedIn(key: PrefKey) {
+    const rows = await this.prefs.find(optedInSomewhere(key), { userId: 1, [key]: 1, groups: 1 }).lean().exec();
+    return new Map(rows.map((p) => [String(p.userId), p]));
   }
 
   /** One failed DM (user blocked the bot, …) must not stop the rest of the batch. */

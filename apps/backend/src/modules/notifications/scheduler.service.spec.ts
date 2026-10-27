@@ -20,6 +20,36 @@ const user = (telegramId: number, ...memberships: Array<[Types.ObjectId, Role?]>
   memberships: memberships.map(([groupId, role]) => ({ groupId, role: role ?? Role.Student })),
 });
 
+type PrefsRows = Record<string, object>;
+/** Values at a dotted path, through arrays as Mongo reads `groups.dmX`. */
+const valuesAt = (v: unknown, path: string[]): unknown[] =>
+  !path.length
+    ? [v]
+    : Array.isArray(v)
+      ? v.flatMap((x) => valuesAt(x, path))
+      : v && typeof v === 'object'
+        ? valuesAt((v as Record<string, unknown>)[path[0]], path.slice(1))
+        : [];
+/**
+ * Prefs rows: `optedIn` people switched it on user-wide, `prefs` replaces whole rows. Honors the
+ * opt-in filter (`{ path: value }`, optionally under `$or`), so a row it wouldn't match isn't returned.
+ */
+const prefsModel = (people: Record<string, StubUser>, key: string, optedIn: string[], prefs: PrefsRows) => {
+  const rows: PrefsRows = { ...Object.fromEntries(optedIn.map((k) => [k, { [key]: true }])), ...prefs };
+  return {
+    find: (filter: Record<string, unknown> & { $or?: Array<Record<string, unknown>> }) =>
+      query(
+        Object.entries(rows)
+          .map(([k, p]) => ({ userId: people[k]._id, ...p }))
+          .filter((row) =>
+            (filter.$or ?? [filter]).some((c) =>
+              Object.entries(c).every(([path, v]) => valuesAt(row, path.split('.')).includes(v)),
+            ),
+          ),
+      ),
+  };
+};
+
 /**
  * One group with three lessons + one elective at 10:25 and one at 12:20; `claimed` = subjects another
  * tick already announced. Students: A picked the elective, B didn't, C never opted in, T is a teacher.
@@ -29,6 +59,7 @@ function setup({
   notificationsEnabled = true,
   optedIn = ['A', 'B', 'T'],
   failDmFor = [] as number[],
+  prefs = (_G: Types.ObjectId): PrefsRows => ({}),
 } = {}) {
   const G = new Types.ObjectId();
   const people = { A: user(1, [G]), B: user(2, [G]), C: user(3, [G]), T: user(4, [G, Role.Teacher]) };
@@ -70,7 +101,7 @@ function setup({
     { find: () => query([]) } as never,
     { updateOne } as never,
     { refreshWeekParity: async () => 1 } as never,
-    { find: () => query(optedIn.map((k) => ({ userId: people[k as keyof typeof people]._id }))) } as never,
+    prefsModel(people, 'dmLessonReminder', optedIn, prefs(G)) as never,
   );
   /** telegramId → DM text */
   const dms = () => new Map(sendDirect.mock.calls.map(([id, text]) => [id, text]));
@@ -137,6 +168,19 @@ describe('SchedulerService.tickLessonReminders', () => {
     expect(sendDirect).not.toHaveBeenCalled();
   });
 
+  it("follows the group's own choice over the user-wide one, and the user-wide one when the group has none", async () => {
+    const { svc, dms } = setup({
+      optedIn: [],
+      prefs: (G) => ({
+        A: { dmLessonReminder: true, groups: [{ groupId: G, dmLessonReminder: false }] }, // off for this group
+        B: { groups: [{ groupId: G, dmLessonReminder: true }] }, // on only for this group
+        C: { dmLessonReminder: true, groups: [{ groupId: new Types.ObjectId(), dmLessonReminder: false }] }, // other group's entry
+      }),
+    });
+    await svc.tickLessonReminders();
+    expect([...dms().keys()].sort()).toEqual([2, 3]);
+  });
+
   it('keeps sending when one DM fails', async () => {
     const { svc, sendDirect } = setup({ failDmFor: [1] });
     await svc.tickLessonReminders();
@@ -151,7 +195,7 @@ describe('SchedulerService.tickMorningDigest', () => {
   });
   afterAll(() => jest.useRealTimers());
 
-  function digestSetup() {
+  function digestSetup(prefs = (_G1: Types.ObjectId, _G2: Types.ObjectId): PrefsRows => ({})) {
     const G1 = new Types.ObjectId();
     const G2 = new Types.ObjectId();
     const people = {
@@ -199,7 +243,7 @@ describe('SchedulerService.tickMorningDigest', () => {
       { find: () => query([{ _id: S, name: 'Операційні системи' }]) } as never,
       {} as never,
       { refreshWeekParity: async () => 1 } as never,
-      { find: () => query(['A', 'B', 'M', 'T'].map((k) => ({ userId: people[k as keyof typeof people]._id }))) } as never,
+      prefsModel(people, 'dmMorningDigest', ['A', 'B', 'M', 'T'], prefs(G1, G2)) as never,
     );
     return { svc, sendDirect };
   }
@@ -220,5 +264,23 @@ describe('SchedulerService.tickMorningDigest', () => {
     expect(m.indexOf('Вибіркова')).toBeLessThan(m.indexOf('ОС')); // start-time order
     expect(m).toContain('<i>ІП-31</i> · ОС');
     expect(m).toContain('<i>ІП-32</i> · <b>Есе</b>');
+  });
+
+  it("includes only the groups where the user's digest is on", async () => {
+    for (const rows of [
+      (G1: Types.ObjectId) => ({ M: { groups: [{ groupId: G1, dmMorningDigest: true }] } }), // on only in G1
+      (_G1: Types.ObjectId, G2: Types.ObjectId) => ({
+        M: { dmMorningDigest: true, groups: [{ groupId: G2, dmMorningDigest: false }] }, // on, but off in G2
+      }),
+    ]) {
+      const { svc, sendDirect } = digestSetup(rows);
+      await svc.tickMorningDigest();
+      const sent = new Map(sendDirect.mock.calls.map(([id, text]) => [id, text]));
+      expect([...sent.keys()].sort()).toEqual([1, 3]); // A keeps its user-wide choice
+      const m = sent.get(3)!;
+      expect(m).toContain('ОС');
+      expect(m).not.toContain('Есе'); // G2's deadline
+      expect(m).not.toContain('ІП-31'); // one group left → no prefix
+    }
   });
 });

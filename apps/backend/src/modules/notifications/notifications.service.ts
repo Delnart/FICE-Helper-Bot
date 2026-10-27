@@ -2,7 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Announcement, AnnouncementDocument } from './announcement.schema';
-import { NotificationPrefs, NotificationPrefsDocument } from './notification-prefs.schema';
+import {
+  effectivePref,
+  effectivePrefs,
+  NotificationPrefs,
+  NotificationPrefsDocument,
+  PrefKey,
+} from './notification-prefs.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
 import { CreateAnnouncementDto, UpdatePrefsDto } from './dto/announcement.dto';
@@ -30,7 +36,7 @@ export interface LessonReminder {
 /** Telegram rejects messages over 4096 chars; leave room for the "…і ще N" tail. */
 const MAX_REMINDER_CHARS = 3900;
 
-const PREF_KEY: Record<DmKind, keyof NotificationPrefs> = {
+const PREF_KEY: Record<DmKind, PrefKey> = {
   queueOpen: 'dmQueueOpen',
   nextInQueue: 'dmNextInQueue',
   deadlineTomorrow: 'dmDeadlineTomorrow',
@@ -57,34 +63,49 @@ export class NotificationsService {
     private readonly bot: BotService,
   ) {}
 
-  async getOrCreatePrefs(userId: string): Promise<NotificationPrefsDocument> {
-    const oid = new Types.ObjectId(userId);
-    let prefs = await this.prefs.findOne({ userId: oid }).exec();
-    if (!prefs) prefs = await this.prefs.create({ userId: oid });
-    return prefs;
+  async getPrefs(userId: string, groupId?: string): Promise<Record<PrefKey, boolean>> {
+    // Read-only: a missing row means the defaults, nothing to create.
+    const prefs = await this.prefs.findOne({ userId: new Types.ObjectId(userId) }).lean().exec();
+    return effectivePrefs(prefs, groupId);
   }
 
-  async updatePrefs(userId: string, dto: UpdatePrefsDto): Promise<NotificationPrefsDocument> {
-    // Atomic single-roundtrip update: `$set` only touches the keys present in
-    // `dto`, leaves all other booleans untouched. Earlier `Object.assign + save`
-    // approach could (rarely) lose recent writes if two PATCH requests landed
-    // on overlapping document instances — that's now impossible.
-    // `upsert: true` handles first-call-ever, `setDefaultsOnInsert` writes the
-    // schema defaults (opt-out flags `true`, opt-in ones `false`) on creation.
+  async updatePrefs(userId: string, dto: UpdatePrefsDto): Promise<Record<PrefKey, boolean>> {
+    const { groupId, ...rest } = dto;
+    // ES2022 class fields leave absent keys as own `undefined` properties.
+    const values = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
     const oid = new Types.ObjectId(userId);
-    const prefs = await this.prefs
-      .findOneAndUpdate(
-        { userId: oid },
-        { $set: dto, $setOnInsert: { userId: oid } },
-        { new: true, upsert: true, setDefaultsOnInsert: true },
-      )
-      .exec();
-    if (!prefs) {
-      // Theoretically unreachable because of `upsert: true`, but TypeScript
-      // narrows the return to `NotificationPrefsDocument | null`.
-      throw new Error('Failed to upsert notification prefs');
+    if (!groupId) {
+      // Atomic single-roundtrip update: `$set` only touches the keys present in
+      // `dto`. `upsert` handles first-call-ever, `setDefaultsOnInsert` writes the
+      // schema defaults (opt-out flags `true`, opt-in ones `false`) on creation.
+      const prefs = await this.prefs
+        .findOneAndUpdate(
+          { userId: oid },
+          { $set: values, $setOnInsert: { userId: oid } },
+          { new: true, upsert: true, setDefaultsOnInsert: true },
+        )
+        .lean()
+        .exec();
+      return effectivePrefs(prefs);
     }
-    return prefs;
+    // Row, then the group's entry, then its values: each step is a single-document
+    // atomic write that is a no-op when already done, so concurrent PATCHes can't
+    // create a second row (unique userId) or a second entry for the same group.
+    const gid = new Types.ObjectId(groupId);
+    await this.prefs.updateOne({ userId: oid }, { $setOnInsert: { userId: oid } }, { upsert: true }).exec();
+    await this.prefs
+      .updateOne({ userId: oid, 'groups.groupId': { $ne: gid } }, { $push: { groups: { groupId: gid } } })
+      .exec();
+    if (Object.keys(values).length) {
+      await this.prefs
+        .updateOne(
+          { userId: oid },
+          { $set: Object.fromEntries(Object.entries(values).map(([k, v]) => [`groups.$[g].${k}`, v])) },
+          { arrayFilters: [{ 'g.groupId': gid }] },
+        )
+        .exec();
+    }
+    return this.getPrefs(userId, groupId);
   }
 
   async createAnnouncement(userId: string, dto: CreateAnnouncementDto): Promise<AnnouncementDocument> {
@@ -120,15 +141,16 @@ export class NotificationsService {
       .exec();
   }
 
-  async sendDm(userId: string, kind: DmKind, text: string): Promise<void> {
-    // Read-only lookup: a missing row / field means the schema default (true),
-    // so there's no need to create a prefs document per recipient here.
+  /** `groupId`: the group the DM is about (homework, queue, …) — prefs are per group. */
+  async sendDm(userId: string, groupId: string, kind: DmKind, text: string): Promise<void> {
+    // Read-only lookup: a missing row / field means the default, so there's no
+    // need to create a prefs document per recipient here.
     const key = PREF_KEY[kind];
     const prefs = await this.prefs
-      .findOne({ userId: new Types.ObjectId(userId) }, { [key]: 1 })
+      .findOne({ userId: new Types.ObjectId(userId) }, { [key]: 1, groups: 1 })
       .lean()
       .exec();
-    if (prefs?.[key] === false) return;
+    if (!effectivePref(prefs, groupId, key)) return;
     const user = await this.users.findById(userId, { telegramId: 1 }).lean().exec();
     if (!user) return;
     await this.bot.sendMessage(user.telegramId, text);

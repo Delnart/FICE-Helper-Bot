@@ -57,9 +57,12 @@ export default function ProfilePage() {
   const canManage = useCanManage();
   const activeGroupId = useActiveGroup();
   const me = useMe();
+  // Prefs are per group: the active one, i.e. what settings/notifications opens on (same key, shared cache).
+  const groups = me.data?.memberships ?? [];
+  const prefsGroupId = (groups.find((m) => m.groupId === activeGroupId) ?? groups[0])?.groupId;
   const prefs = useQuery({
-    queryKey: ['prefs'],
-    queryFn: () => api<Prefs>('/notifications/prefs'),
+    queryKey: ['prefs', prefsGroupId ?? null],
+    queryFn: () => api<Prefs>(`/notifications/prefs${prefsGroupId ? `?groupId=${prefsGroupId}` : ''}`),
     enabled: !!me.data && !isTeacherOnly,
   });
   const [fullName, setFullName] = useState('');
