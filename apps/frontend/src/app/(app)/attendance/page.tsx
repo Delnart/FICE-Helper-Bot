@@ -9,6 +9,7 @@ import { api } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Icon } from '../../../components/icons';
+import { FilterChips } from '../../../components/ui/FilterChips';
 import { Sheet } from '../../../components/ui/Sheet';
 import { UserAvatar } from '../../../components/UserAvatar';
 import { getWebApp, haptic } from '../../../lib/telegram';
@@ -535,30 +536,17 @@ export default function AttendancePage() {
       </div>
 
       {subjectOptions.length > 1 ? (
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Дисципліна">
-          <button
-            type="button"
-            className={cn('chip chip-btn', !activeSubject && 'chip-ink')}
-            aria-pressed={!activeSubject}
-            onClick={() => setSubjectFilter(null)}
-          >
-            Усі дисципліни
-          </button>
-          {subjectOptions.map((o) => (
-            <button
-              key={o.name}
-              type="button"
-              className={cn('chip chip-btn max-w-full', activeSubject === o.name && 'chip-ink')}
-              aria-pressed={activeSubject === o.name}
-              aria-label={o.name}
-              title={o.name}
-              onClick={() => setSubjectFilter(activeSubject === o.name ? null : o.name)}
-            >
-              {/* Same short label as the column headers, like the mockup ("ОС", "БД"). */}
-              <span className="min-w-0 truncate">{o.short || subjectAcronym(o.name)}</span>
-            </button>
-          ))}
-        </div>
+        <FilterChips
+          aria-label="Дисципліна"
+          // '' = all; the others go by full name. Same short label as the column headers ("ОС", "БД").
+          options={[
+            { id: '', label: 'Усі дисципліни' },
+            ...subjectOptions.map((o) => ({ id: o.name, label: o.short || subjectAcronym(o.name), title: o.name })),
+          ]}
+          value={activeSubject ?? ''}
+          // Tapping the active discipline again shows all.
+          onChange={(id) => setSubjectFilter(id && id !== activeSubject ? id : null)}
+        />
       ) : null}
 
       {query.isLoading ? (
