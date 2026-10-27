@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../../lib/api';
@@ -73,6 +73,7 @@ export default function SubjectsPage() {
   const groupName = useActiveMembership()?.groupName;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [filtered, setFiltered] = useState(false); // a filter was used: the grid may animate
 
   const subjects = useQuery({
     queryKey: ['subjects'],
@@ -231,27 +232,26 @@ export default function SubjectsPage() {
             />
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
-            {FILTERS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                aria-pressed={filter === f.id}
-                className={cn('chip chip-btn', filter === f.id && 'chip-ink')}
-                onClick={() => setFilter(f.id)}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
+          <FilterChips
+            value={filter}
+            onChange={(f) => {
+              if (f === filter) return;
+              setFilter(f);
+              setFiltered(true);
+            }}
+          />
 
           {visible.length ? (
-            <section aria-label="Список дисциплін" className="grid grid-cols-2 gap-2.5">
-              {visible.map(({ s, chips, teacher }) => (
+            // Re-keyed per filter: once a filter is used, the cards rise in with a short stagger
+            // (not on page entry, e.g. Back from a subject). Search keeps the key, so only cards
+            // that newly match animate in.
+            <section key={filter} aria-label="Список дисциплін" className="grid grid-cols-2 gap-2.5">
+              {visible.map(({ s, chips, teacher }, i) => (
                 <Link
                   key={s._id}
                   href={`/subjects/${s._id}`}
-                  className="card-flat flex min-h-[150px] flex-col gap-3 p-3.5"
+                  className={cn('card-flat flex min-h-[150px] flex-col gap-3 p-3.5', filtered && 'anim-rise')}
+                  style={filtered ? { animationDelay: `${Math.min(i, 8) * 30}ms` } : undefined}
                 >
                   <SubjectTile name={s.name} icon={s.icon} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -281,6 +281,56 @@ export default function SubjectsPage() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * One row of filter chips (scrolls sideways only on very narrow screens). The ink pill slides
+ * to the active chip; chips differ in width, so it is placed from the chip's own box.
+ */
+function FilterChips({ value, onChange }: { value: Filter; onChange: (f: Filter) => void }) {
+  const row = useRef<HTMLDivElement>(null);
+  const pill = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const r = row.current;
+    const p = pill.current;
+    if (!r || !p) return;
+    const place = () => {
+      const on = r.querySelector<HTMLElement>('[aria-pressed="true"]');
+      if (!on) return;
+      // First placement jumps there; later ones slide (transition in globals.css).
+      const first = !p.style.width;
+      if (first) p.style.transition = 'none';
+      p.style.width = `${on.offsetWidth}px`;
+      p.style.transform = `translateX(${on.offsetLeft}px)`;
+      if (first) {
+        void p.offsetWidth; // commit the jump before the transition comes back
+        p.style.transition = '';
+      }
+    };
+    place();
+    // Chip widths change when the web font swaps in (or the text scales) — follow them.
+    const ro = new ResizeObserver(place);
+    r.querySelectorAll('button').forEach((b) => ro.observe(b));
+    return () => ro.disconnect();
+  }, [value]);
+
+  return (
+    <div ref={row} className="chips-slide scroll-x -mx-4 px-4" role="group" aria-label="Фільтр дисциплін">
+      <span ref={pill} className="slide-pill" aria-hidden="true" />
+      {FILTERS.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          aria-pressed={value === f.id}
+          // 10px sides fit all four on a 360px phone; a bit roomier from 390px.
+          className={cn('chip chip-btn px-2.5 min-[390px]:px-3', value === f.id && 'chip-ink')}
+          onClick={() => onChange(f.id)}
+        >
+          {f.label}
+        </button>
+      ))}
     </div>
   );
 }

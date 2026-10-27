@@ -203,7 +203,19 @@ body {
   .chip-lime { background: var(--lime); color: var(--lime-ink); }
   .chip-ink { background: var(--ink); color: var(--bg); }
   /* Tappable filter / toggle chip (mockups 08/15/22: 34px tall). */
-  .chip-btn { height: 34px; padding: 0 14px; font-size: 13px; }
+  .chip-btn { height: 34px; padding: 0 14px; font-size: 13px; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+  .chip-btn:active { transform: scale(0.96); }
+  /* Filter row with a sliding selection: the ink pill (.slide-pill, placed by JS — chips differ
+     in width) moves between the chips' fills (::before, below it) and their labels (above it). */
+  .chips-slide { position: relative; isolation: isolate; display: flex; gap: 6px; }
+  .chips-slide > .chip { position: relative; flex-shrink: 0; background: transparent; }
+  .chips-slide > .chip::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--surface-2); transition: transform var(--dur-fast) var(--ease-out); }
+  /* Press shrinks only the fill: a transform on the chip itself would lift its fill above the pill. */
+  .chips-slide > .chip-btn:active { transform: none; }
+  .chips-slide > .chip-btn:active::before { transform: scale(0.94); }
+  .chips-slide > .slide-pill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 999px; background: var(--ink); pointer-events: none; transition: transform var(--dur) var(--ease-out), width var(--dur) var(--ease-out); }
+  /* The row scrolls (overflow clips), so draw the focus ring inside the chip. */
+  .chips-slide > .chip:focus-visible { outline-offset: -2px; }
   .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; flex-shrink: 0; }
   .count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700; }
 
