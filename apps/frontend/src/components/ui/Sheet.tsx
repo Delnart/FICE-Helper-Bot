@@ -1,9 +1,15 @@
 'use client';
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Icon } from '../icons';
 
-/** Bottom sheet: scrim + rounded panel with a handle. Closes on scrim tap and Escape. */
+// When and by which sheet the last one closed — to spot one sheet swapped for another.
+let lastClosed: { at: number; by: object | null } = { at: -1e9, by: null };
+
+/**
+ * Bottom sheet: scrim + rounded panel with a handle. Closes on scrim tap and Escape.
+ * Opens with a scrim fade + slide-up (globals.css); closing unmounts at once.
+ */
 export function Sheet({
   open,
   onClose,
@@ -34,18 +40,32 @@ export function Sheet({
     };
   }, [open]);
 
+  // Another sheet closed in this same commit (e.g. «Посилання» → «Редагувати»): its scrim is already
+  // up, so skip the fade or the backdrop blinks. The old sheet's layout cleanup runs before this
+  // effect; `by` ignores StrictMode re-running this sheet's own effect.
+  const scrim = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    if (lastClosed.by !== scrim && performance.now() - lastClosed.at < 50) {
+      scrim.current?.style.setProperty('animation', 'none');
+    }
+    return () => {
+      lastClosed = { at: performance.now(), by: scrim };
+    };
+  }, [open]);
+
   if (!open) return null;
   return (
     <>
-      <div className="sheet-scrim" aria-hidden="true" onClick={onClose} />
+      <div ref={scrim} className="sheet-scrim" aria-hidden="true" onClick={onClose} />
       <section className="sheet flex flex-col gap-3.5" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="sheet-handle" aria-hidden="true" />
         <div className="flex items-center justify-between gap-3">
-          <h2 id={titleId} className="h2 text-[18px]">
+          <h2 id={titleId} className="h2 min-w-0 text-[18px]">
             {title}
           </h2>
-          <button type="button" className="icon-btn-plain -mr-2.5" aria-label="Закрити" onClick={onClose}>
-            <Icon name="close" size={22} />
+          <button type="button" className="sheet-close" aria-label="Закрити" onClick={onClose}>
+            <Icon name="close" size={18} strokeWidth={2.4} />
           </button>
         </div>
         {children}

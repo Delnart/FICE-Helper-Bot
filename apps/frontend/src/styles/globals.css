@@ -344,9 +344,16 @@ body {
   .action-bar { position: sticky; bottom: 0; z-index: 30; margin: 8px -16px -24px; padding: 12px 16px max(24px, calc(var(--safe-bottom) + 8px)); background: var(--bg); border-top: 1px solid var(--line); display: flex; gap: 8px; }
 
   /* ── Bottom sheet ─────────────────────────────────────────────────── */
-  .sheet-scrim { position: fixed; inset: 0; z-index: 50; background: rgba(8, 10, 20, 0.55); }
-  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; margin: 0 auto; max-width: 36rem; max-height: 88dvh; overflow-y: auto; background: var(--surface); border-radius: 28px 28px 0 0; padding: 12px 16px calc(var(--safe-bottom) + 28px); box-shadow: var(--shadow-bar); color: var(--ink); }
+  .sheet-scrim { position: fixed; inset: 0; z-index: 50; background: rgba(8, 10, 20, 0.55); animation: fade-in var(--dur) var(--ease-out) backwards; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; margin: 0 auto; max-width: 36rem; max-height: 88dvh; overflow-y: auto; background: var(--surface); border-radius: 28px 28px 0 0; padding: 12px 16px calc(var(--safe-bottom) + 28px); box-shadow: var(--shadow-bar); color: var(--ink); animation: sheet-up 280ms var(--ease-out) backwards; }
   .sheet-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--line-2); margin: 0 auto 14px; }
+  /* Round close button next to the sheet title (44px hit area via ::before). */
+  .sheet-close { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 999px; border: 0; padding: 0; background: var(--surface-2); color: var(--ink-2); flex-shrink: 0; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+  .sheet-close::before { content: ''; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%); }
+  .sheet-close:active { transform: scale(0.92); }
+  @media (hover: hover) and (pointer: fine) {
+    .sheet-close:hover { background: var(--surface-3); color: var(--ink); }
+  }
 
   .spinner { width: 28px; height: 28px; border-radius: 999px; border: 2.5px solid var(--line-2); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 
