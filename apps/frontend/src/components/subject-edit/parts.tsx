@@ -422,6 +422,10 @@ const REMINDER_ICON: Record<SubjectLinkReminderType, IconName> = {
 const reminderLabel = (t?: SubjectLinkReminderType) =>
   REMINDER_TYPES.find((o) => o.value === t)?.label ?? 'Лекція';
 
+/** Row / preview icon: the lesson type while the link is in reminders, else a plain link. */
+const linkIcon = (l: SubjectLink): IconName =>
+  (l.showInLessonReminder && REMINDER_ICON[l.lessonReminderType ?? 'lecture']) || 'link';
+
 /** Trimmed copy; the reminder type only survives while the reminder is on. */
 export function cleanLink(l: SubjectLink): SubjectLink {
   return {
@@ -492,10 +496,7 @@ export function LinksEditor({
                   className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-ink"
                 >
                   <span className="subj subj-sm">
-                    <Icon
-                      name={(l.showInLessonReminder && REMINDER_ICON[l.lessonReminderType ?? 'lecture']) || 'link'}
-                      strokeWidth={1.9}
-                    />
+                    <Icon name={linkIcon(l)} strokeWidth={1.9} />
                   </span>
                   <span className="flex min-w-0 flex-col">
                     <span className="h3 truncate">{l.label || 'Без назви'}</span>
@@ -551,16 +552,23 @@ export function LinksEditor({
 
       {sheet?.type === 'menu' && current ? (
         <Sheet open onClose={close} title="Посилання">
-          <div className="card-soft flex flex-col gap-1">
-            <span className="h3 truncate">{current.label || 'Без назви'}</span>
-            <span className="tiny faint truncate">
-              {getLinkMeta(current.url).displayUrl || current.url}
+          {/* Preview of the link — a quiet bordered card, same tile as its row in the list. */}
+          <div className="card-flat flex items-start gap-3 rounded-[18px] p-3.5">
+            <span className="subj subj-sm">
+              <Icon name={linkIcon(current)} strokeWidth={1.9} />
             </span>
-            {current.showInLessonReminder ? (
-              <span className="chip chip-ok mt-1 self-start">
-                У нагадуваннях: {reminderLabel(current.lessonReminderType)}
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="h3 truncate">{current.label || 'Без назви'}</span>
+              <span className="tiny faint truncate">
+                {getLinkMeta(current.url).displayUrl || current.url}
               </span>
-            ) : null}
+              {current.showInLessonReminder ? (
+                <span className="chip chip-accent mt-1.5 self-start">
+                  <Icon name="bell" size={13} strokeWidth={2.2} />
+                  У нагадуваннях · {reminderLabel(current.lessonReminderType)}
+                </span>
+              ) : null}
+            </div>
           </div>
           {error ? <div className="small text-bad">{error}</div> : null}
           <button
