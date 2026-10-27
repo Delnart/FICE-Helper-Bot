@@ -11,7 +11,7 @@ import { PageHeader } from '../../../components/PageHeader';
 import { Icon } from '../../../components/icons';
 import { Empty, ErrorState, Loading } from '../../../components/Empty';
 import { Section } from '../../../components/ui/Section';
-import { cn } from '../../../lib/cn';
+import { cn, slideVars } from '../../../lib/cn';
 import { shortenName } from '../../../lib/name';
 import {
   isQueueOpen,
@@ -348,7 +348,7 @@ export default function SchedulePage() {
       ) : (
         <>
           <section aria-label="Дні тижня" className="flex flex-col gap-2.5">
-            <div className="flex gap-1.5">
+            <div className="days" style={slideVars(day - 1)}>
               {WEEKDAYS.map((w, i) => {
                 const d = i + 1;
                 const isToday = d === today && week === currentWeek;
@@ -360,12 +360,7 @@ export default function SchedulePage() {
                     type="button"
                     onClick={() => setDay(d)}
                     aria-pressed={day === d}
-                    className={cn(
-                      'day min-w-0 flex-1',
-                      day === d && 'on',
-                      isToday && 'today',
-                      free && day !== d && 'opacity-50',
-                    )}
+                    className={cn('day min-w-0 flex-1', day === d && 'on', isToday && 'today', free && 'free')}
                   >
                     <span className="dow">{w}</span>
                     <span className="dnum">{monday.add(i, 'day').date()}</span>
@@ -388,62 +383,65 @@ export default function SchedulePage() {
             </div>
           </section>
 
-          {isLoading ? (
-            <Loading />
-          ) : isError ? (
-            <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити розклад" />
-          ) : dayLessons.length === 0 ? (
-            <Empty
-              title="Пар немає"
-              hint={`${capitalize(selectedDate.format('dddd, D MMMM'))} — вільний день.`}
-              icon="calendar"
-            />
-          ) : (
-            <section aria-label="Пари" className="flex flex-col gap-2.5">
-              {dayLessons.map((l, i) => {
-                const prev = dayLessons[i - 1];
-                // Free KPI slots between two lessons ("вікно").
-                const gaps = prev
-                  ? KPI_PAIRS.filter(
-                      (p) =>
-                        toMin(p.start) >= toMin(prev.endTime) &&
-                        toMin(p.end) <= toMin(l.startTime),
-                    )
-                  : [];
-                const start = toMin(l.startTime);
-                const end = toMin(l.endTime);
-                const isNow = isLiveDay && start <= nowMin && nowMin < end;
-                const isPast = isLiveDay && nowMin >= end;
-                return (
-                  <Fragment key={l._id}>
-                    {gaps.map((g) => (
-                      <TimelineMark key={g.start} time={g.start} label="вікно" />
-                    ))}
-                    <LessonRow
-                      l={l}
-                      canManage={canManage}
-                      past={isPast}
-                      mark={week === currentWeek ? markOf(l._id) : undefined}
-                      joinUrl={joinUrlOf(l)}
-                      live={
-                        isNow
-                          ? {
-                              left: end - nowMin,
-                              progress: Math.round(((nowMin - start) / (end - start)) * 100),
-                              ...liveExtras(l),
-                            }
-                          : undefined
-                      }
-                    />
-                  </Fragment>
-                );
-              })}
-              <TimelineMark
-                time={endOfDay(dayLessons[dayLessons.length - 1].endTime)}
-                label="пар більше немає"
+          {/* Re-keyed per day / week (and once loaded), so the new day's list rises in instead of a hard cut. */}
+          <div key={`${week}-${day}-${isLoading}`} className="anim-rise">
+            {isLoading ? (
+              <Loading />
+            ) : isError ? (
+              <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити розклад" />
+            ) : dayLessons.length === 0 ? (
+              <Empty
+                title="Пар немає"
+                hint={`${capitalize(selectedDate.format('dddd, D MMMM'))} — вільний день.`}
+                icon="calendar"
               />
-            </section>
-          )}
+            ) : (
+              <section aria-label="Пари" className="flex flex-col gap-2.5">
+                {dayLessons.map((l, i) => {
+                  const prev = dayLessons[i - 1];
+                  // Free KPI slots between two lessons ("вікно").
+                  const gaps = prev
+                    ? KPI_PAIRS.filter(
+                        (p) =>
+                          toMin(p.start) >= toMin(prev.endTime) &&
+                          toMin(p.end) <= toMin(l.startTime),
+                      )
+                    : [];
+                  const start = toMin(l.startTime);
+                  const end = toMin(l.endTime);
+                  const isNow = isLiveDay && start <= nowMin && nowMin < end;
+                  const isPast = isLiveDay && nowMin >= end;
+                  return (
+                    <Fragment key={l._id}>
+                      {gaps.map((g) => (
+                        <TimelineMark key={g.start} time={g.start} label="вікно" />
+                      ))}
+                      <LessonRow
+                        l={l}
+                        canManage={canManage}
+                        past={isPast}
+                        mark={week === currentWeek ? markOf(l._id) : undefined}
+                        joinUrl={joinUrlOf(l)}
+                        live={
+                          isNow
+                            ? {
+                                left: end - nowMin,
+                                progress: Math.round(((nowMin - start) / (end - start)) * 100),
+                                ...liveExtras(l),
+                              }
+                            : undefined
+                        }
+                      />
+                    </Fragment>
+                  );
+                })}
+                <TimelineMark
+                  time={endOfDay(dayLessons[dayLessons.length - 1].endTime)}
+                  label="пар більше немає"
+                />
+              </section>
+            )}
+          </div>
 
           {/* Electives link — visible to students and heads, not teachers */}
           {!isTeacher && (

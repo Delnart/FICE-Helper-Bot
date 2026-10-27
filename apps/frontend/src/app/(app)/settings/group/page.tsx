@@ -13,7 +13,7 @@ import { Toggle } from '../../../../components/ui/Toggle';
 import { UserAvatar } from '../../../../components/UserAvatar';
 import { haptic } from '../../../../lib/telegram';
 import { timeAgo } from '../../../../lib/time';
-import { cn } from '../../../../lib/cn';
+import { cn, slideVars } from '../../../../lib/cn';
 
 interface GroupSettings {
   _id: string;
@@ -141,7 +141,12 @@ export default function GroupSettingsPage() {
           />
           {/* Lead time only matters while reminders are on. */}
           <div className={cn('pb-3', !data.notificationsEnabled && 'hidden')}>
-            <div className="seg" role="radiogroup" aria-label="За скільки хвилин до пари сповіщати">
+            <div
+              className="seg seg-slide"
+              style={slideVars(reminderOptions.indexOf(minutesValue), reminderOptions.length)}
+              role="radiogroup"
+              aria-label="За скільки хвилин до пари сповіщати"
+            >
               {reminderOptions.map((m) => (
                 <button
                   key={m}

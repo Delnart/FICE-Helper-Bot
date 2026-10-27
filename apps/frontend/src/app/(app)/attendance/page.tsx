@@ -12,7 +12,7 @@ import { Icon } from '../../../components/icons';
 import { Sheet } from '../../../components/ui/Sheet';
 import { UserAvatar } from '../../../components/UserAvatar';
 import { getWebApp, haptic } from '../../../lib/telegram';
-import { cn } from '../../../lib/cn';
+import { cn, slideVars } from '../../../lib/cn';
 import { shortenName, subjectAcronym } from '../../../lib/name';
 import { useActiveMembership, useIsTeacherOnly } from '../../../hooks/useMe';
 
@@ -480,7 +480,12 @@ export default function AttendancePage() {
         }
       />
 
-      <div className="seg" role="tablist" aria-label="Період">
+      <div
+        className="seg seg-slide"
+        style={slideVars(PERIODS.findIndex((p) => p.k === period), PERIODS.length)}
+        role="tablist"
+        aria-label="Період"
+      >
         {PERIODS.map((p) => (
           <button
             key={p.k}

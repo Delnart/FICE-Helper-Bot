@@ -2,7 +2,7 @@
 
 import { Fragment, useState } from 'react';
 import type { SubjectLink, SubjectLinkReminderType } from '@fice/shared';
-import { cn } from '../../lib/cn';
+import { cn, slideVars } from '../../lib/cn';
 import { haptic } from '../../lib/telegram';
 import { Icon, type IconName } from '../icons';
 import { SUBJECT_ICONS, SUBJECT_ICON_LABELS, subjectIcon, type SubjectIconName } from '../SubjectIcon';
@@ -687,7 +687,15 @@ function LinkFormSheet({
         </div>
         {row.showInLessonReminder ? (
           <>
-            <div className="seg" role="radiogroup" aria-label="Тип заняття">
+            <div
+              className="seg seg-slide"
+              style={slideVars(
+                REMINDER_TYPES.findIndex((o) => o.value === (row.lessonReminderType ?? 'lecture')),
+                REMINDER_TYPES.length,
+              )}
+              role="radiogroup"
+              aria-label="Тип заняття"
+            >
               {REMINDER_TYPES.map((o) => {
                 const on = (row.lessonReminderType ?? 'lecture') === o.value;
                 return (

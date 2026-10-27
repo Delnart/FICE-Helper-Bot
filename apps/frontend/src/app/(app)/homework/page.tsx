@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import 'dayjs/locale/uk';
 import { api } from '../../../lib/api';
-import { cn } from '../../../lib/cn';
+import { cn, slideVars } from '../../../lib/cn';
 import { haptic } from '../../../lib/telegram';
 import { subjectAcronym } from '../../../lib/name';
 import { useIsTeacherOnly } from '../../../hooks/useMe';
@@ -271,7 +271,7 @@ export default function HomeworkListPage() {
         />
       ) : (
         <>
-          <div className="seg" role="tablist" aria-label="Фільтр завдань">
+          <div className="seg seg-slide" style={slideVars(tab === 'done' ? 1 : 0, 2)} role="tablist" aria-label="Фільтр завдань">
             <button
               type="button"
               role="tab"
