@@ -4,11 +4,11 @@
 # the rare "build on server" fallback.
 #
 # Deploy flow (automatic): push to main → GitHub Actions builds both images,
-# pushes ghcr.io/delnart/fice-*:{latest,sha-<commit>} and runs `pull` + `up -d`
+# pushes ghcr.io/delnart/fice-*:{latest,sha-<commit>,v<version>} and runs `pull` + `up -d`
 # here over SSH (see .github/workflows/ci.yml and docs/DEPLOY.md).
 # Manual:   docker compose -f docker/docker-compose.prod.yml --env-file .env pull
 #           docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
-# Rollback: IMAGE_TAG=sha-<commit> docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+# Rollback: IMAGE_TAG=v<version> (or sha-<commit>) docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 #
 # Memory budget for a ~1 GB VPS. The caps turn a slow leak into a quick
 # automatic restart (restart: unless-stopped) instead of the whole box

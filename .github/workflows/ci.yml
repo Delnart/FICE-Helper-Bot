@@ -58,6 +58,21 @@ jobs:
       - name: Short SHA
         id: sha
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Version tag
+        id: ver
+        # vX.Y.Z goes to the first main build of that version only, so commits that land
+        # before the next bump don't overwrite the release image used for rollbacks. Only a real
+        # "not found" counts as new; any other registry error skips the tag (with a warning)
+        # rather than blocking the deploy.
+        run: |
+          tag="${IMAGE_PREFIX}-${{ matrix.app }}:v$(jq -r .version package.json)"
+          if out=$(docker buildx imagetools inspect "$tag" 2>&1); then
+            :
+          elif grep -qiE 'not found|manifest unknown' <<<"$out"; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::$tag not checked, skipping the version tag: $out"
+          fi
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -66,6 +81,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}:latest
             ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}:sha-${{ steps.sha.outputs.short }}
+            ${{ steps.ver.outputs.tag }}
           build-args: |
             NEXT_PUBLIC_API_BASE=${{ vars.NEXT_PUBLIC_API_BASE || 'https://api.ficebot.dev' }}
           cache-from: type=gha,scope=${{ matrix.app }}
