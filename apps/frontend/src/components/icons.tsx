@@ -248,8 +248,8 @@ const PATHS = {
 export type IconName = keyof typeof PATHS;
 
 /* Filled ("active tab") glyphs for the nav icons: solid currentColor shapes, inner details
-   knocked out in the tab pill colour so they still read at 22px. */
-const KNOCK = { stroke: 'var(--accent-soft)' };
+   knocked out in the tab bar colour so they still read at 22px. */
+const KNOCK = { stroke: 'var(--surface)' };
 const FILLED: Partial<Record<IconName, ReactNode>> = {
   home: <path d="M3 11l9-7 9 7v9a2 2 0 0 1-2 2h-4v-6h-6v6H5a2 2 0 0 1-2-2z" fill="currentColor" />,
   calendar: (
