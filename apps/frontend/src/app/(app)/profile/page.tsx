@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { api, setActiveGroup } from '../../../lib/api';
 import { PageHeader } from '../../../components/PageHeader';
 import { Section } from '../../../components/ui/Section';
+import { SettingsRow } from '../../../components/ui/SettingsRow';
 import { Sheet } from '../../../components/ui/Sheet';
 import { ErrorState, Loading } from '../../../components/Empty';
-import { Icon, type IconName } from '../../../components/icons';
+import { Icon } from '../../../components/icons';
 import { UserAvatar, myAvatarUrl } from '../../../components/UserAvatar';
 import { getWebApp, haptic, syncTheme, THEME_KEY } from '../../../lib/telegram';
 import { cn } from '../../../lib/cn';
@@ -280,7 +281,12 @@ export default function ProfilePage() {
             }
           />
           <div className="divider" />
-          <SettingsRow icon="info" title="Про застосунок" hint="FICE Helper · розклад, черги, завдання" />
+          <SettingsRow
+            href={'/about' as Route}
+            icon="info"
+            title="Про застосунок"
+            hint="FICE Helper · розклад, черги, завдання"
+          />
         </div>
       </Section>
 
@@ -373,46 +379,6 @@ export default function ProfilePage() {
         </div>
       </Sheet>
     </div>
-  );
-}
-
-function SettingsRow({
-  href,
-  onClick,
-  icon,
-  title,
-  hint,
-}: {
-  href?: Route;
-  onClick?: () => void;
-  icon: IconName;
-  title: string;
-  hint: ReactNode;
-}) {
-  const body = (
-    <div className="flex min-w-0 items-center gap-3">
-      <span className="tile tile-soft h-9 w-9 rounded-[10px]">
-        <Icon name={icon} size={18} />
-      </span>
-      <div className="flex min-w-0 flex-col">
-        <span className="h3">{title}</span>
-        <span className="tiny faint truncate">{hint}</span>
-      </div>
-    </div>
-  );
-  if (onClick)
-    return (
-      <button type="button" className="row-plain w-full justify-between text-left" onClick={onClick}>
-        {body}
-        <Icon name="chevronRight" className="chev" />
-      </button>
-    );
-  if (!href) return <div className="row-plain">{body}</div>;
-  return (
-    <Link href={href} className="row-plain justify-between">
-      {body}
-      <Icon name="chevronRight" className="chev" />
-    </Link>
   );
 }
 

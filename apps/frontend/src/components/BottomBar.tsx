@@ -24,13 +24,13 @@ const STUDENT_ITEMS: NavItem[] = [
   { href: '/schedule' as Route, label: 'Розклад', icon: 'calendar' },
   { href: '/subjects' as Route, label: 'Предмети', icon: 'book', also: ['/queues'] },
   { href: '/homework' as Route, label: 'Завдання', icon: 'task', badge: 'homework' },
-  { href: '/profile' as Route, label: 'Профіль', icon: 'user', also: ['/settings'] },
+  { href: '/profile' as Route, label: 'Профіль', icon: 'user', also: ['/settings', '/about'] },
 ];
 
 const TEACHER_ITEMS: NavItem[] = [
   { href: '/' as Route, label: 'Дисципліни', icon: 'book', also: ['/subjects', '/queues'] },
   { href: '/schedule' as Route, label: 'Розклад', icon: 'calendar' },
-  { href: '/profile' as Route, label: 'Профіль', icon: 'user', also: ['/settings'] },
+  { href: '/profile' as Route, label: 'Профіль', icon: 'user', also: ['/settings', '/about'] },
 ];
 
 /** Focused flows with their own sticky action bar — no tab bar there. */
