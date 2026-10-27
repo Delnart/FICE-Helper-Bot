@@ -7,7 +7,7 @@ import { Fragment, useMemo, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { cn } from '../../../../lib/cn';
-import { useActiveMembership, useMe } from '../../../../hooks/useMe';
+import { useMe } from '../../../../hooks/useMe';
 import { useTelegramBackButton } from '../../../../components/PageHeader';
 import { Empty, ErrorState, Loading } from '../../../../components/Empty';
 import { Icon, type IconName } from '../../../../components/icons';
@@ -64,14 +64,6 @@ interface HomeworkRow {
   teamSize?: number;
 }
 
-/** GET /attendance/my/stats?subjectId= — the caller's marks in this subject. */
-interface MyAttendance {
-  present: number;
-  absent: number;
-  late: number;
-  excused: number;
-}
-
 /** Queue entry statuses that no longer hold a place in line. */
 const QUEUE_DONE = ['passed', 'missed', 'failed'];
 
@@ -79,7 +71,6 @@ export default function SubjectDetailPage() {
   useTelegramBackButton();
   const { id } = useParams<{ id: string }>();
   const me = useMe();
-  const isMember = !!useActiveMembership();
   const subject = useQuery({
     queryKey: ['subject', id],
     queryFn: () => api<SubjectDetail>(`/subjects/${id}`),
@@ -111,12 +102,6 @@ export default function SubjectDetailPage() {
     queryKey: ['subject-hw', id],
     queryFn: () => api<HomeworkRow[]>('/homework', { query: { subjectId: id } }),
     enabled: !!id && !!v?.homeworkVisible,
-  });
-  // «Моя відвідуваність» — students only (teachers get the journal card instead).
-  const attendance = useQuery({
-    queryKey: ['attendance-my-stats', id],
-    queryFn: () => api<MyAttendance>('/attendance/my/stats', { query: { subjectId: id } }),
-    enabled: !!id && isMember && !!subject.data && !subject.data.isTeacher,
   });
 
   const isCurrent = !!subject.data && isLessonOf(now.data?.current, subject.data);
@@ -165,11 +150,7 @@ export default function SubjectDetailPage() {
         .join(' · ')
     : '';
 
-  const att = attendance.data;
-  const attMarked = att ? att.present + att.late + att.absent + att.excused : 0;
-  const attMissed = att ? att.absent + att.excused : 0;
-
-  const hasCards = !!(v?.queueVisible || v?.homeworkVisible || isTeacher || att);
+  const hasCards = !!(v?.queueVisible || v?.homeworkVisible || isTeacher);
   // Links are shown once — in the «Корисні посилання» section; editors (same rule as
   // the links page) still get a way in when the list is empty.
   const canEditLinks = canManage || isTeacher;
@@ -250,26 +231,6 @@ export default function SubjectDetailPage() {
                   : hw.data?.length
                     ? 'Усе виконано'
                     : 'Перегляд та додавання'
-              }
-            />
-          ) : null}
-          {att ? (
-            <QuickCard
-              href={canManage ? journalHref : ('/schedule' as Route)}
-              icon="clock"
-              value={attMarked ? `${Math.round(((att.present + att.late) / attMarked) * 100)}%` : '—'}
-              title="Моя відвідуваність"
-              sub={
-                attMarked
-                  ? [
-                      attMissed
-                        ? `${attMissed} ${pluralUk(attMissed, ['пропуск', 'пропуски', 'пропусків'])}`
-                        : 'без пропусків',
-                      att.late ? `${att.late} ${pluralUk(att.late, ['запізнення', 'запізнення', 'запізнень'])}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  : 'Ще немає відміток'
               }
             />
           ) : null}
