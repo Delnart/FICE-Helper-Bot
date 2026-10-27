@@ -46,6 +46,11 @@
   --shadow-bar: 0 -6px 24px rgba(14, 17, 32, 0.08);
   --font-body: var(--font-onest), 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-display: var(--font-unbounded), var(--font-onest), system-ui, sans-serif;
+  /* motion: slides use ease-out (no overshoot past the track), small pops the spring */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dur-fast: 150ms;
+  --dur: 240ms;
   color-scheme: light;
 }
 
@@ -300,8 +305,34 @@ body {
   .sheet-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--line-2); margin: 0 auto 14px; }
 
   .spinner { width: 28px; height: 28px; border-radius: 999px; border: 2.5px solid var(--line-2); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+
+  /* Entrance: fade + short rise. `backwards` holds the start frame through a stagger delay and
+     leaves no transform behind once it ends. */
+  .anim-rise { animation: rise-in var(--dur) var(--ease-out) backwards; }
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+}
+
+/* Reduced motion: transitions and entrances finish instantly, loops run once (the pulse dot stays
+   solid); only the loading spinners keep turning. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+  .spinner, .animate-spin { animation-duration: 0.8s !important; animation-iteration-count: infinite !important; }
 }
