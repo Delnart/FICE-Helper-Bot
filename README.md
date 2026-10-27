@@ -186,7 +186,7 @@ npm run docker:up
 
 ### Продакшн деплой (CI/CD)
 Кожен push у `main` проходить перевірки, збирає образи в GitHub Actions, пушить їх у GHCR
-(`latest` і `sha-<commit>`) і по SSH оновлює сервер. Одноразове налаштування секретів, swap і відкат —
+(`latest`, `sha-<commit>` і `v<версія>`) і по SSH оновлює сервер. Одноразове налаштування секретів, swap, релізи й відкат —
 у [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Ручний варіант без Actions:
@@ -211,6 +211,7 @@ docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 - 📖 [Повний гайд користувача (User Guide)](docs/USER_GUIDE.md)
 - 🛠️ [Посібник з локального налаштування з тунелем](docs/LOCAL_SETUP.md)
 - 🚢 [Деплой і CI/CD](docs/DEPLOY.md)
+- 🏷️ [Журнал змін і версії](CHANGELOG.md)
 - 📐 [PlantUML діаграма класів проєкту](docs/class_diagram.puml)
 - 🛡️ [Політика безпеки та вразливостей](SECURITY.md)
 

@@ -5,7 +5,7 @@
 | Подія | Що відбувається |
 |---|---|
 | Pull request | `checks`: `npm ci`, typecheck бекенду й фронтенду, `next build` |
-| Push у `main` (або ручний запуск) | `checks` → `images`: збирає `fice-backend` і `fice-frontend`, пушить у GHCR з тегами `latest` і `sha-<commit>` → `deploy`: по SSH оновлює compose-файл на сервері, `pull` + `up -d`, чистить старі образи й перевіряє, що контейнери піднялися |
+| Push у `main` (або ручний запуск) | `checks` → `images`: збирає `fice-backend` і `fice-frontend`, пушить у GHCR з тегами `latest`, `sha-<commit>` і `v<версія>` → `deploy`: по SSH оновлює compose-файл на сервері, `pull` + `up -d`, чистить старі образи й перевіряє, що контейнери піднялися |
 
 Образи збираються на раннерах GitHub, сервер нічого не збирає.
 
@@ -144,11 +144,46 @@ docker stats --no-stream
 публічний `POST /api/auth/telegram` (`RATE_LIMIT_MAX` запитів за `RATE_LIMIT_TTL` секунд з однієї IP, за замовчуванням 120/60);
 решта маршрутів закрита JWT.
 
+## Версії та релізи
+
+Версія одна на весь монорепозиторій (кореневий `package.json`, `apps/*`, `packages/shared`), схема MAJOR.MINOR.PATCH
+та історія — у [CHANGELOG.md](../CHANGELOG.md). Фронтенд вшиває її під час збірки й показує в профілі, бекенд пише в лог
+при старті: `FICE Helper backend v2.1.0 listening on :3000`.
+
+Як випустити реліз:
+
+1. Підняти версію в усіх `package.json` і `package-lock.json` (друга команда оновлює лише lock, `node_modules` не
+   чіпає):
+
+   ```bash
+   npm version 2.2.0 --workspaces --include-workspace-root --no-git-tag-version --no-workspaces-update
+   npm install --package-lock-only --legacy-peer-deps
+   ```
+
+2. Додати розділ `## 2.2.0 — <дата>` зверху [CHANGELOG.md](../CHANGELOG.md).
+3. Закомітити, поставити тег і запушити разом із ним:
+
+   ```bash
+   git commit -am "chore(release): 2.2.0"
+   git tag -a v2.2.0 -m "v2.2.0"
+   git push --follow-tags
+   ```
+
+CI додає образам тег `v2.2.0` сам. Його отримує лише перша збірка `main` з новою версією — пізніші коміти до наступного
+підняття версії його не перезаписують (вони є як `latest` і `sha-<commit>`). Тому піднімайте версію останнім комітом
+релізу й пушіть реліз одним `git push`.
+
 ## Відкат
 
+На версію (`v<версія>`) або на будь-яку збірку `main` (`sha-<commit>`):
+
 ```bash
-IMAGE_TAG=sha-<commit> docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+IMAGE_TAG=v2.1.0 docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 ```
+
+Образу з цим тегом на сервері може ще не бути — compose його завантажить, але для приватних пакетів GHCR спершу
+`docker login ghcr.io` (токен із `read:packages`). Наступний деплой із `main` знову поставить свіжу збірку. Відкат на
+1.x, тобто за міграцію даних 2.0.0, можливий лише разом із відновленням бекапу бази.
 
 Або перезапустіть workflow для потрібного коміту (Actions → CI/CD → Re-run).
 
