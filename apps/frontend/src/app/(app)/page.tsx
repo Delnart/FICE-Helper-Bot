@@ -1098,7 +1098,12 @@ function StudentHomePage() {
                         canManage && state === 'past' && 'text-ink-3',
                       )}
                     >
-                      {l.startTime}
+                      {/* Same start as the row above (subgroups, electives): shown once. */}
+                      {todayLessons[i - 1]?.startTime === l.startTime ? (
+                        <span className="sr-only">{l.startTime}</span>
+                      ) : (
+                        l.startTime
+                      )}
                     </span>
                     <div className="flex min-w-0 flex-1 flex-col">
                       <span className={cn('h3 truncate', struck && 'line-through decoration-ink-3')}>

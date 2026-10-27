@@ -418,6 +418,7 @@ export default function SchedulePage() {
                       ))}
                       <LessonRow
                         l={l}
+                        sameSlot={!!prev && prev.startTime === l.startTime && prev.endTime === l.endTime}
                         canManage={canManage}
                         past={isPast}
                         mark={week === currentWeek ? markOf(l._id) : undefined}
@@ -485,6 +486,7 @@ function TimelineMark({ time, label }: { time: string; label: string }) {
 
 function LessonRow({
   l,
+  sameSlot,
   canManage,
   past,
   mark,
@@ -492,6 +494,8 @@ function LessonRow({
   live,
 }: {
   l: Lesson;
+  /** Same start/end as the row above (subgroups, electives): the time isn't repeated. */
+  sameSlot?: boolean;
   canManage?: boolean;
   past?: boolean;
   /** The user's own attendance mark for this lesson (this week). */
@@ -548,7 +552,7 @@ function LessonRow({
   ) : null;
 
   return (
-    <div className={cn('relative flex gap-3', past && 'opacity-60')}>
+    <div className={cn('relative flex gap-3', sameSlot && '-mt-1', past && 'opacity-60')}>
       {/* Whole row opens the subject; buttons/links sit above this overlay. */}
       {l.subjectId ? (
         <Link
@@ -559,8 +563,16 @@ function LessonRow({
       ) : null}
 
       <div className="flex w-[50px] flex-shrink-0 flex-col gap-0.5 pt-3.5">
-        <span className={cn('num text-[13px]', live && 'text-accent-text')}>{l.startTime}</span>
-        <span className="tiny faint">{l.endTime}</span>
+        {sameSlot ? (
+          <span className="sr-only">
+            {l.startTime}–{l.endTime}
+          </span>
+        ) : (
+          <>
+            <span className={cn('num text-[13px]', live && 'text-accent-text')}>{l.startTime}</span>
+            <span className="tiny faint">{l.endTime}</span>
+          </>
+        )}
       </div>
 
       {live ? (
