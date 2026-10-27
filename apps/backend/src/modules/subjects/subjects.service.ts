@@ -426,7 +426,7 @@ export class SubjectsService {
    */
   private assertTeacherAccessForSubject(user: RequestUser, subject: SubjectDocument): void {
     if (!this.hasTeacherAccessForSubject(user, subject)) {
-      throw new ForbiddenException('Доступ заборонено: ви не викладач цього предмета.');
+      throw new ForbiddenException('Доступ заборонено: ви не викладач цієї дисципліни.');
     }
   }
 
@@ -447,7 +447,7 @@ export class SubjectsService {
     );
     const out = ids.map((id) => members.get(String(id)));
     if (out.some((id) => !id)) {
-      throw new BadRequestException('Студент не належить до групи цього предмета');
+      throw new BadRequestException('Студент не належить до групи цієї дисципліни');
     }
     return [...new Set(out as Types.ObjectId[])];
   }

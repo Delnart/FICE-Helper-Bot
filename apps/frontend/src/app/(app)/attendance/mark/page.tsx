@@ -48,7 +48,7 @@ interface WeekGrid {
   marks: Array<{ lessonId: string; status: Status }>;
 }
 
-/** The slice of GET /queues used here (same cache as Home / Предмети). */
+/** The slice of GET /queues used here (same cache as Home / Дисципліни). */
 interface QueueLite {
   subjectId: string;
   entries?: Array<{ userId: string; status?: string; labNumber?: number }>;

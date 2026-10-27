@@ -266,7 +266,7 @@ export default function SchedulePage() {
   const liveSubjectId = isTeacher ? undefined : liveLesson?.subjectId;
 
   // Card extras (students/heads only): own marks this week, the subject's
-  // reminder link / queue / homework. Same cache keys as Сьогодні and Предмети.
+  // reminder link / queue / homework. Same cache keys as Сьогодні and Дисципліни.
   const marks = useQuery({
     queryKey: ['attendance', 'my'],
     queryFn: () => api<Array<{ lessonId: string; status: AttStatus }>>('/attendance/my'),

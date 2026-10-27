@@ -756,7 +756,7 @@ function StudentHomePage() {
     queryFn: () => api<GroupJoinRequest[]>('/teachers/join-requests', { query: { groupId } }),
     enabled: canManage && !!groupId,
   });
-  // Same caches as the Предмети tab / electives / group settings screens.
+  // Same caches as the Дисципліни tab / electives / group settings screens.
   const queues = useQuery({
     queryKey: ['queues-all'],
     queryFn: () => api<RawQueue[]>('/queues'),

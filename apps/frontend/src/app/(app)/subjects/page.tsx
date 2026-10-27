@@ -171,7 +171,7 @@ export default function SubjectsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        title="Предмети"
+        title="Дисципліни"
         subtitle={subtitle}
         action={
           canManage ? (

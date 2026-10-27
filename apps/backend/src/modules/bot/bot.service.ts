@@ -576,7 +576,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             '',
             'Вас верифіковано як викладача КПІ.',
             '',
-            'Відкрийте FICE Helper — система знайде ваші предмети у розкладі Кампус КПІ',
+            'Відкрийте FICE Helper — система знайде ваші дисципліни у розкладі Кампус КПІ',
             'і надасть доступ до черг і журналів автоматично.',
           ].join('\n'),
           { parse_mode: 'HTML', ...(appKb ? { reply_markup: appKb } : {}) },

@@ -569,7 +569,7 @@ export class AttendanceService {
           ((!!lesson.subjectId && String(lesson.subjectId) === String(s._id)) ||
             [s.name, s.shortName].some((n) => !!n && normaliseName(n) === lessonName)),
       );
-      if (!ok) throw new ForbiddenException('Можна відмічати лише заняття свого предмета');
+      if (!ok) throw new ForbiddenException('Можна відмічати лише заняття своєї дисципліни');
     }
 
     const ids = [...new Set(userIds)];
