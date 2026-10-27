@@ -81,7 +81,9 @@ export function BottomBar() {
             className={cn('tab', active && 'on')}
           >
             <span className="tab-ic">
-              <Icon name={it.icon} size={22} strokeWidth={1.9} />
+              {/* Both glyphs stay mounted: .tab.on crossfades outline → filled (globals.css). */}
+              <Icon name={it.icon} size={22} strokeWidth={1.9} className="ic-line" />
+              <Icon name={it.icon} size={22} strokeWidth={1.9} filled className="ic-fill" />
               {count > 0 ? (
                 <span className="count absolute -top-0.5 right-0.5 h-[18px] min-w-[18px] text-[11px]">
                   {count > 9 ? '9+' : count}

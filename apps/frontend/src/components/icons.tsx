@@ -240,15 +240,50 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS;
 
+/* Filled ("active tab") glyphs for the nav icons: solid currentColor shapes, inner details
+   knocked out in the tab pill colour so they still read at 22px. */
+const KNOCK = { stroke: 'var(--accent-soft)' };
+const FILLED: Partial<Record<IconName, ReactNode>> = {
+  home: <path d="M3 11l9-7 9 7v9a2 2 0 0 1-2 2h-4v-6h-6v6H5a2 2 0 0 1-2-2z" fill="currentColor" />,
+  calendar: (
+    <>
+      <rect x="3" y="5" width="18" height="16" rx="3" fill="currentColor" />
+      <path d="M3 10h18" style={KNOCK} />
+      <path d="M8 3v4M16 3v4" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" fill="currentColor" />
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" style={KNOCK} />
+    </>
+  ),
+  task: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor" />
+      <path d="M8 12l3 3 5-6" style={KNOCK} strokeWidth={2.2} />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" fill="currentColor" />
+      <path d="M4 21a8 8 0 0 1 16 0z" fill="currentColor" />
+    </>
+  ),
+};
+
 export function Icon({
   name,
   size = 20,
   strokeWidth = 2,
+  filled,
   className,
 }: {
   name: IconName;
   size?: number;
   strokeWidth?: number;
+  /** Solid variant where one exists (nav icons), else the line icon. */
+  filled?: boolean;
   className?: string;
 }) {
   return (
@@ -264,7 +299,7 @@ export function Icon({
       aria-hidden="true"
       className={className}
     >
-      {PATHS[name]}
+      {(filled && FILLED[name]) || PATHS[name]}
     </svg>
   );
 }
