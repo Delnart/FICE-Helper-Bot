@@ -244,6 +244,7 @@ function CampusBindingCard({
       qc.invalidateQueries({ queryKey: ['schedule'] });
       qc.invalidateQueries({ queryKey: ['schedule-group-week'] });
       qc.invalidateQueries({ queryKey: ['attendance-grid'] });
+      qc.invalidateQueries({ queryKey: ['group-settings'] });
     },
     onError: (err: unknown) => {
       haptic('error');
