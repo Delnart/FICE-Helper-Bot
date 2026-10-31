@@ -14,6 +14,7 @@ import { Toggle } from '../../../../../components/ui/Toggle';
 import { UserAvatar, myAvatarUrl } from '../../../../../components/UserAvatar';
 import { haptic } from '../../../../../lib/telegram';
 import { cn } from '../../../../../lib/cn';
+import { runsOn } from '../../../../../lib/lessons';
 import { LabNumberInput } from '../../../../../components/LabNumberInput';
 
 type QueueStatus =
@@ -96,6 +97,7 @@ interface Lesson {
   dayOfWeek: number;
   startTime: string;
   endTime: string;
+  dates?: string[];
 }
 
 type View = 'student' | 'manager' | 'teacher';
@@ -1516,13 +1518,14 @@ function useNextLesson(subjectId: string): { start: dayjs.Dayjs; end: dayjs.Dayj
   const monday = t.startOf('day').subtract((t.day() + 6) % 7, 'day');
   for (let d = 0; d < 21; d++) {
     const date = monday.add(d, 'day');
+    const iso = date.format('YYYY-MM-DD');
     const w = Math.floor(d / 7) % 2 === 0 ? cur : cur === 1 ? 2 : 1;
     const at = (hhmm: string) => {
       const [h, m] = hhmm.split(':').map(Number);
       return date.hour(h).minute(m);
     };
     const hit = byWeek[w]
-      .filter((l) => l.subjectId === subjectId && l.dayOfWeek === (d % 7) + 1)
+      .filter((l) => l.subjectId === subjectId && l.dayOfWeek === (d % 7) + 1 && runsOn(l, iso))
       .map((l) => ({ start: at(l.startTime), end: at(l.endTime) }))
       .filter((l) => l.start.isAfter(t))
       .sort((a, b) => a.start.valueOf() - b.start.valueOf())[0];

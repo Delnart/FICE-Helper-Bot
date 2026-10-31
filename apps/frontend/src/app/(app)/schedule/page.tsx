@@ -15,6 +15,7 @@ import { cn, slideVars } from '../../../lib/cn';
 import { haptic } from '../../../lib/telegram';
 import { useSwipe } from '../../../hooks/useSwipe';
 import { shortenName } from '../../../lib/name';
+import { runsOn } from '../../../lib/lessons';
 import {
   isQueueOpen,
   queueBySubject,
@@ -45,6 +46,7 @@ interface Lesson {
   meetingUrl?: string;
   type?: string;
   weekType?: number;
+  dates?: string[];
   isElective?: boolean;
 }
 
@@ -214,8 +216,10 @@ export default function SchedulePage() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['schedule', week, isTeacher],
     queryFn: () => api<Lesson[]>(weekEndpoint, { query: { week } }),
-    enabled: view === 'week',
+    // `week` is a guess until `now` answers, and the other parity's rows filtered by this week's dates read as a free day.
+    enabled: view === 'week' && !now.isLoading,
   });
+  const loading = isLoading || now.isLoading; // a held query isn't "loading"
 
   const sessions = useQuery({
     queryKey: ['schedule-sessions', isTeacher],
@@ -230,18 +234,19 @@ export default function SchedulePage() {
     enabled: !!me.data && !isTeacher && view === 'week',
   });
 
-  const dayLessons = useMemo(() => {
-    return (data ?? [])
-      .filter((l) => l.dayOfWeek === day)
-      .sort((a, b) => a.startTime.localeCompare(b.startTime));
-  }, [data, day]);
-
   // Calendar dates for the strip: this week, or the next one when the other
   // week type is selected (weeks alternate).
   const monday = dayjs()
     .subtract((dayjs().day() + 6) % 7, 'day')
     .add(now.data && week !== currentWeek ? 7 : 0, 'day');
   const selectedDate = monday.add(day - 1, 'day');
+  const selectedIso = selectedDate.format('YYYY-MM-DD');
+
+  const dayLessons = useMemo(() => {
+    return (data ?? [])
+      .filter((l) => l.dayOfWeek === day && runsOn(l, selectedIso))
+      .sort((a, b) => a.startTime.localeCompare(b.startTime));
+  }, [data, day, selectedIso]);
 
   // Swipe between days across the two visible weeks: 0–6 this one, 7–13 the next.
   const pos = (week === currentWeek ? 0 : 7) + day - 1;
@@ -370,9 +375,11 @@ export default function SchedulePage() {
             <div key={week} ref={daysRef} className="days" style={slideVars(day - 1)}>
               {WEEKDAYS.map((w, i) => {
                 const d = i + 1;
+                const date = monday.add(i, 'day');
+                const iso = date.format('YYYY-MM-DD');
                 const isToday = d === today && week === currentWeek;
                 // Days without lessons are dimmed, like Sunday in the mockup.
-                const free = !!data && !data.some((l) => l.dayOfWeek === d);
+                const free = !!data && !data.some((l) => l.dayOfWeek === d && runsOn(l, iso));
                 return (
                   <button
                     key={d}
@@ -382,7 +389,7 @@ export default function SchedulePage() {
                     className={cn('day min-w-0 flex-1', day === d && 'on', isToday && 'today', free && 'free')}
                   >
                     <span className="dow">{w}</span>
-                    <span className="dnum">{monday.add(i, 'day').date()}</span>
+                    <span className="dnum">{date.date()}</span>
                   </button>
                 );
               })}
@@ -407,8 +414,8 @@ export default function SchedulePage() {
               Re-keyed per day / week (and once loaded), so the new day's list rises in instead of a hard cut.
               min-h: a free day's short card would leave the blank space below it dead to swipes. */}
           <div ref={swipeRef} className="min-h-[40dvh]">
-            <div key={`${week}-${day}-${isLoading}`} className="anim-rise">
-              {isLoading ? (
+            <div key={`${week}-${day}-${loading}`} className="anim-rise">
+              {loading ? (
                 <Loading />
               ) : isError ? (
                 <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити розклад" />

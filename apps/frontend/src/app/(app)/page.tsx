@@ -23,6 +23,7 @@ import {
 } from '../../components/subjects/helpers';
 import { cn } from '../../lib/cn';
 import { shortenName, subjectAcronym, vocative } from '../../lib/name';
+import { runsOn } from '../../lib/lessons';
 import { useActiveMembership, useCanManage, useIsTeacherOnly, useMe } from '../../hooks/useMe';
 import { getWebApp, haptic } from '../../lib/telegram';
 import { timeAgo } from '../../lib/time';
@@ -84,6 +85,7 @@ interface Lesson {
   meetingUrl?: string;
   groupName?: string;
   teacherNames?: string[];
+  dates?: string[];
 }
 
 interface NowResponse {
@@ -708,6 +710,7 @@ function StudentHomePage() {
   const membership = useActiveMembership();
   const nowMin = useNowMinutes();
   const today = ((new Date().getDay() + 6) % 7) + 1; // Mon=1..Sun=7
+  const todayIso = dayjs().format('YYYY-MM-DD');
   const weekIso = useMemo(() => {
     const d = dayjs();
     return d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD');
@@ -790,9 +793,9 @@ function StudentHomePage() {
   const todayLessons = useMemo(
     () =>
       (lessonsQ.data ?? [])
-        .filter((l) => l.dayOfWeek === today)
+        .filter((l) => l.dayOfWeek === today && runsOn(l, todayIso))
         .sort((a, b) => a.startTime.localeCompare(b.startTime)),
-    [lessonsQ.data, today],
+    [lessonsQ.data, today, todayIso],
   );
   const myMarkByLesson = useMemo(
     () => new Map((myMarks.data ?? []).map((m) => [m.lessonId, m.status])),

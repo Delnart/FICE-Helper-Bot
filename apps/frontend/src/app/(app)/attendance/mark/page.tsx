@@ -13,6 +13,7 @@ import { Sheet } from '../../../../components/ui/Sheet';
 import { haptic } from '../../../../lib/telegram';
 import { cn } from '../../../../lib/cn';
 import { subjectAcronym } from '../../../../lib/name';
+import { runsOn } from '../../../../lib/lessons';
 import { useActiveMembership } from '../../../../hooks/useMe';
 
 type Status = 'present' | 'absent' | 'late' | 'excused' | 'unknown';
@@ -27,6 +28,7 @@ interface GroupLesson {
   room?: string;
   type?: string;
   weekType: 0 | 1 | 2;
+  dates?: string[];
   isElective?: boolean;
 }
 
@@ -157,19 +159,24 @@ export default function MarkAttendancePage() {
     enabled: !!selectedLesson,
   });
 
+  const markedLessons = useMemo(
+    () => new Set((gridQ.data?.marks ?? []).filter((m) => m.status !== 'unknown').map((m) => m.lessonId)),
+    [gridQ.data],
+  );
+  const shortNames = new Map((gridQ.data?.lessons ?? []).map((l) => [l._id, l.subjectShortName]));
+
+  // A lesson not running on this date stays while it has marks that week, so they remain reachable.
   const dayLessons = useMemo(() => {
     const dow = dayOfWeekFromIso(date);
     return (lessonsQ.data ?? [])
-      .filter((l) => l.dayOfWeek === dow)
+      .filter((l) => l.dayOfWeek === dow && (runsOn(l, date) || markedLessons.has(l._id)))
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
-  }, [lessonsQ.data, date]);
-
-  const markedLessons = new Set((gridQ.data?.marks ?? []).filter((m) => m.status !== 'unknown').map((m) => m.lessonId));
-  const shortNames = new Map((gridQ.data?.lessons ?? []).map((l) => [l._id, l.subjectShortName]));
+  }, [lessonsQ.data, date, markedLessons]);
 
   // Today: preselect the lesson in progress (else the last one that started), once per date —
   // Home's "Відмітити присутніх" lands here without params. Home's per-lesson «Відмітити» chip
   // passes ?lessonId= of a today's lesson: that one wins; an id not on today's schedule is ignored.
+  // Only lessons that run today count: one kept for its marks is never preselected.
   const askedLesson = useSearchParams()?.get('lessonId');
   const [autoPickedFor, setAutoPickedFor] = useState<string | null>(null);
   useEffect(() => {
@@ -178,9 +185,10 @@ export default function MarkAttendancePage() {
     setAutoPickedFor(date);
     if (date !== todayIso) return;
     const hm = dayjs().format('HH:mm');
-    const started = dayLessons.filter((l) => l.startTime <= hm);
+    const running = dayLessons.filter((l) => runsOn(l, date));
+    const started = running.filter((l) => l.startTime <= hm);
     const pick =
-      dayLessons.find((l) => l._id === askedLesson) ??
+      running.find((l) => l._id === askedLesson) ??
       started.find((l) => hm < l.endTime) ??
       started[started.length - 1];
     if (pick) setSelectedLesson(pick._id);
