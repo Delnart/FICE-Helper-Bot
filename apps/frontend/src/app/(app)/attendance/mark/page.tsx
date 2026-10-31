@@ -250,7 +250,10 @@ export default function MarkAttendancePage() {
       qc.invalidateQueries({ queryKey: ['attendance-period'] });
       qc.invalidateQueries({ queryKey: ['attendance-lesson', selectedLesson, date] });
     },
-    onError: () => haptic('error'),
+    onError: () => {
+      haptic('error');
+      qc.invalidateQueries({ queryKey: ['attendance-grid'] });
+    },
   });
 
   // Placeholder students the head added by hand (no Telegram account) are marked here too.

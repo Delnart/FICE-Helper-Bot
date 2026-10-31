@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { AttendanceService } from './attendance.service';
 
@@ -45,6 +46,35 @@ function grid(lessons: Array<ReturnType<typeof lesson>>, records: Array<ReturnTy
     return { names: res.lessons.map((l) => l.subjectName), res };
   };
 }
+
+describe('AttendanceService marks on a day', () => {
+  const DAY = new Date('2026-10-28');
+  const check = (l: ReturnType<typeof lesson>, saved: boolean) =>
+    new AttendanceService(
+      { exists: () => query(saved ? { _id: 'r' } : null) } as never,
+      { findOne: () => query(l) } as never,
+      {} as never,
+      { find: () => query([]) } as never,
+      {} as never,
+      {} as never,
+      { listForGroup: async () => [] } as never,
+    )['assertTargets']({} as never, G, String(l._id), DAY, [], false);
+
+  it('refuses a row that does not run that day: a page from before a sync must not count it twice', async () => {
+    await expect(check(lesson('ОНС', ['2026-10-14']), false)).rejects.toThrow(ConflictException);
+  });
+
+  it('still lets a mark stuck on such a row be fixed', async () => {
+    await expect(check(lesson('ОНС', ['2026-10-14']), true)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['listing that day', ['2026-10-28']],
+    ['without dates', undefined],
+  ])('allows a row %s', async (_name, dates) => {
+    await expect(check(lesson('ОНС', dates), false)).resolves.toBeUndefined();
+  });
+});
 
 describe('AttendanceService.weekGrid', () => {
   it('shows a date-limited lesson only in the week of its date', async () => {

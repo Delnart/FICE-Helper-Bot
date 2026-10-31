@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AttendanceStatus, Role, ROLE_LEVEL } from '@fice/shared';
@@ -562,10 +562,18 @@ export class AttendanceService {
     }
     const gid = new Types.ObjectId(groupId);
     const lesson = await this.lessons
-      .findOne({ _id: new Types.ObjectId(lessonId), groupId: gid }, { subjectId: 1, subjectName: 1 })
+      .findOne({ _id: new Types.ObjectId(lessonId), groupId: gid }, { subjectId: 1, subjectName: 1, dates: 1 })
       .lean()
       .exec();
     if (!lesson) throw new BadRequestException('Lesson is not in this group');
+    // A page opened before a sync can still hold the row its marks moved off: a write there would
+    // count the day twice. A mark no sync could move keeps its record, so it stays editable.
+    if (
+      !runsOn(lesson, day.toISOString().slice(0, 10)) &&
+      !(await this.records.exists({ groupId: gid, scheduleLessonId: lesson._id, date: day }).exec())
+    ) {
+      throw new ConflictException('Розклад щойно оновився, тож відмітку не збережено. Перевірте пару й спробуйте ще раз.');
+    }
 
     if (subjectTeacherOnly) {
       // Load the group's subjects and match teachers in JS: String() also

@@ -297,7 +297,10 @@ export default function AttendancePage() {
       haptic('success');
       refreshJournal();
     },
-    onError: () => haptic('error'),
+    onError: () => {
+      haptic('error');
+      refreshJournal();
+    },
   });
 
   const data = grid.data;
