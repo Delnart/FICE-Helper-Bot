@@ -241,7 +241,9 @@ function CampusBindingCard({
       haptic('success');
       setSyncMsg(`Завантажено пар: ${res.count}`);
       qc.invalidateQueries({ queryKey: ['schedule-now'] });
-      qc.invalidateQueries({ queryKey: ['my-schedule'] });
+      qc.invalidateQueries({ queryKey: ['schedule'] });
+      qc.invalidateQueries({ queryKey: ['schedule-group-week'] });
+      qc.invalidateQueries({ queryKey: ['attendance-grid'] });
     },
     onError: (err: unknown) => {
       haptic('error');
