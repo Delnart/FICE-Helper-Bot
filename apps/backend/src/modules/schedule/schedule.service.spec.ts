@@ -323,4 +323,13 @@ describe('ScheduleService now', () => {
     expect(list.map((l) => l.dates)).toEqual([['2026-10-14'], ['2026-10-28'], ['2026-11-11', '2026-11-25'], undefined]);
     expect((await service().getForGroup(G, 1)).map((l) => l.dates)).toEqual(list.map((l) => l.dates));
   });
+
+  it('reads the current lesson link from its subject, else takes its own', async () => {
+    const zoom = { label: 'Zoom', url: 'https://zoom.us/j/1', showInLessonReminder: true, lessonReminderType: 'lecture' };
+    const svc = new ScheduleService({} as never, {} as never, { findById: () => query({ links: [zoom] }) } as never, {} as never, {} as never);
+    const own = { type: 'lecture', meetingUrl: 'meet.google.com/abc' };
+    await expect(svc.lessonLink({ subjectId: 's', ...own })).resolves.toEqual({ label: 'Zoom', url: zoom.url });
+    await expect(svc.lessonLink(own)).resolves.toEqual({ label: 'Зустріч', url: 'https://meet.google.com/abc' });
+    await expect(svc.lessonLink(null)).resolves.toBeUndefined();
+  });
 });

@@ -16,7 +16,7 @@ import { HomeworkCompletion, HomeworkCompletionDocument } from '../homework/home
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { CampusService } from '../campus/campus.service';
-import { Subject, SubjectDocument } from '../subjects/subject.schema';
+import { pickLessonLink, Subject, SubjectDocument } from '../subjects/subject.schema';
 import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminder-mark.schema';
 import {
   effectivePref,
@@ -128,7 +128,7 @@ export class SchedulerService {
               startTime: l.startTime,
               endTime: l.endTime,
               room: l.room,
-              link: this.pickReminderLink(subject, l),
+              link: pickLessonLink(subject, l),
             },
           },
         ]);
@@ -428,26 +428,6 @@ export class SchedulerService {
       throw err;
     }
   }
-
-  private pickReminderLink(
-    subject: ReminderSubject | undefined,
-    lesson: Pick<ScheduleLesson, 'type' | 'meetingUrl'>,
-  ): { label: string; url: string } | undefined {
-    const reminderLink = subject?.links.find(
-      (link) => link.showInLessonReminder && link.lessonReminderType === lesson.type,
-    );
-    const preferredUrl = reminderLink ? normalizeHttpUrl(reminderLink.url) : undefined;
-    if (preferredUrl) {
-      return {
-        label: reminderLink?.label?.trim() || 'Посилання',
-        url: preferredUrl,
-      };
-    }
-
-    const fallbackUrl = normalizeHttpUrl(lesson.meetingUrl ?? '');
-    if (!fallbackUrl) return undefined;
-    return { label: 'Зустріч', url: fallbackUrl };
-  }
 }
 
 type ReminderSubject = Pick<Subject, 'name' | 'shortName' | 'links'> & { _id: unknown };
@@ -472,18 +452,6 @@ function normalizeName(s: string): string {
     .replace(/["'«»()\[\].,!?:;]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function normalizeHttpUrl(raw: string): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  try {
-    const url = new URL(candidate);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function isDuplicateKeyError(err: unknown): boolean {

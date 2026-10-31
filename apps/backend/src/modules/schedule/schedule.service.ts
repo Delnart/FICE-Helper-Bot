@@ -13,7 +13,7 @@ import { Role, ROLE_LEVEL } from '@fice/shared';
 import { localDateKey, runsOn, ScheduleLesson, ScheduleLessonDocument } from './schedule.schema';
 import { CampusScheduleItem, CampusService } from '../campus/campus.service';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
-import { Subject, SubjectDocument } from '../subjects/subject.schema';
+import { pickLessonLink, Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { RequestUser } from '../../common/types/request-user';
 
@@ -120,12 +120,22 @@ export class ScheduleService {
           subjectName: l.subjectName,
           teacherNames: l.teacherNames,
           room: l.room,
+          meetingUrl: l.meetingUrl,
           type: l.type,
           weekType: l.weekType,
           dates: l.dates,
           isElective: l.isElective,
         };
       });
+  }
+
+  /** The link of a lesson from getForUser/getForGroup: the one its reminder carries. */
+  async lessonLink(lesson: { subjectId?: string; type?: string; meetingUrl?: string } | null) {
+    if (!lesson) return undefined;
+    const subject = lesson.subjectId
+      ? await this.subjects.findById(lesson.subjectId, { links: 1 }).lean().exec()
+      : null;
+    return pickLessonLink(subject, lesson);
   }
 
   async nowFor(

@@ -70,3 +70,36 @@ export const SubjectSchema = SchemaFactory.createForClass(Subject);
 SubjectSchema.index({ groupId: 1, name: 1 }, { unique: true });
 // "Subjects I teach" lookups (/users/me, teacher home, lecturer schedule, sheets sync).
 SubjectSchema.index({ 'teachers.teacherUserId': 1 });
+
+/** The link a lesson's reminder and /now show: the subject's link flagged for this lesson type, else the lesson's own. */
+export function pickLessonLink(
+  subject: Pick<Subject, 'links'> | null | undefined,
+  lesson: { type?: string; meetingUrl?: string },
+): { label: string; url: string } | undefined {
+  const reminderLink = subject?.links.find(
+    (link) => link.showInLessonReminder && link.lessonReminderType === lesson.type,
+  );
+  const preferredUrl = reminderLink ? normalizeHttpUrl(reminderLink.url) : undefined;
+  if (preferredUrl) {
+    return {
+      label: reminderLink?.label?.trim() || 'Посилання',
+      url: preferredUrl,
+    };
+  }
+
+  const fallbackUrl = normalizeHttpUrl(lesson.meetingUrl ?? '');
+  if (!fallbackUrl) return undefined;
+  return { label: 'Зустріч', url: fallbackUrl };
+}
+
+function normalizeHttpUrl(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}

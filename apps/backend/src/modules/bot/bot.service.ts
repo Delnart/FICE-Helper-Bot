@@ -676,12 +676,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const next = result.next as LessonSlim | null;
         text =
           kind === 'now'
-            ? formatNow(group.academicName, current, next, result.weekType)
+            ? formatNow(group.academicName, current, next, result.weekType, await this.schedule.lessonLink(current))
             : formatLeft(group.academicName, current, next);
       } catch {
         text = 'Розклад ще не імпортовано для цієї групи.';
       }
-      await ctx.reply(text, { parse_mode: 'HTML' });
+      await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
       return;
     }
 
@@ -711,12 +711,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const next = result.next as LessonSlim | null;
       text =
         kind === 'now'
-          ? formatNow(groupName, current, next, result.weekType)
+          ? formatNow(groupName, current, next, result.weekType, await this.schedule.lessonLink(current))
           : formatLeft(groupName, current, next);
     } catch {
       text = 'Розклад ще не імпортовано для вашої групи.';
     }
-    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: this.supportKeyboard });
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      reply_markup: this.supportKeyboard,
+    });
   }
 
   // ---------- /today /tomorrow ----------
@@ -1401,7 +1405,9 @@ function escapeHtml(s: string): string {
 // ── Schedule formatting ───────────────────────────────────────────────────────
 
 interface LessonSlim {
+  subjectId?: string;
   subjectName: string;
+  type?: string;
   startTime: string;
   endTime: string;
   room?: string;
@@ -1413,6 +1419,7 @@ function formatNow(
   current: LessonSlim | null,
   next: LessonSlim | null,
   weekType: 1 | 2,
+  link?: { label: string; url: string },
 ): string {
   const week = weekType === 1 ? 'I тиждень' : 'II тиждень';
   const lines: string[] = [`<b>${escapeHtml(groupName)}</b> · ${week}`];
@@ -1422,7 +1429,7 @@ function formatNow(
       `\n🟢 <b>Зараз:</b> ${escapeHtml(current.subjectName)}` +
         `\n    ${current.startTime} — ${current.endTime}` +
         (current.room ? ` · ${escapeHtml(current.room)}` : '') +
-        (current.meetingUrl ? `\n    🔗 <a href="${current.meetingUrl}">Перейти до зустрічі</a>` : ''),
+        (link ? `\n    🔗 <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>` : ''),
     );
   }
 
