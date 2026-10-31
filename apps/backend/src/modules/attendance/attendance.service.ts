@@ -5,7 +5,7 @@ import { AttendanceStatus, Role, ROLE_LEVEL } from '@fice/shared';
 import { AttendanceRecord, AttendanceRecordDocument } from './attendance.schema';
 import { UpsertAttendanceDto } from './dto/attendance.dto';
 import { RequestUser } from '../../common/types/request-user';
-import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
+import { runsOn, ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { UsersService } from '../users/users.service';
@@ -112,25 +112,6 @@ export class AttendanceService {
       (l) => l.weekType === 0 || l.weekType === weekType,
     );
     const shortNameOf = await this.shortNames(groupId);
-    const lessons: WeekGridLesson[] = weekLessons.map((l) => {
-      const date = new Date(start);
-      date.setUTCDate(date.getUTCDate() + (l.dayOfWeek - 1));
-      return {
-        _id: String(l._id),
-        subjectId: l.subjectId ? String(l.subjectId) : undefined,
-        subjectName: l.subjectName,
-        type: l.type,
-        dayOfWeek: l.dayOfWeek,
-        lessonNumber: l.lessonNumber,
-        startTime: l.startTime,
-        endTime: l.endTime,
-        date: date.toISOString(),
-        weekType: l.weekType,
-        subjectShortName: shortNameOf(l),
-      };
-    });
-
-    const students = await this.groupStudents(groupId);
 
     // Marks for this week
     const records = await this.records
@@ -140,6 +121,37 @@ export class AttendanceService {
       })
       .lean()
       .exec();
+    // Real marks only, like the mark screen: clearing leaves a record with no entries or 'unknown' ones.
+    const marked = new Set(
+      records
+        .filter((r) => r.entries.some((e) => e.status !== AttendanceStatus.Unknown))
+        .map((r) => String(r.scheduleLessonId)),
+    );
+
+    const lessons: WeekGridLesson[] = weekLessons.flatMap((l) => {
+      const date = new Date(start);
+      date.setUTCDate(date.getUTCDate() + (l.dayOfWeek - 1));
+      // A lesson marked this week stays whatever its dates say, so the marks can be seen and fixed:
+      // the first dated sync hands dates to same-slot rows arbitrarily (migrate-data moves them back).
+      if (!runsOn(l, date.toISOString().slice(0, 10)) && !marked.has(String(l._id))) return [];
+      return [
+        {
+          _id: String(l._id),
+          subjectId: l.subjectId ? String(l.subjectId) : undefined,
+          subjectName: l.subjectName,
+          type: l.type,
+          dayOfWeek: l.dayOfWeek,
+          lessonNumber: l.lessonNumber,
+          startTime: l.startTime,
+          endTime: l.endTime,
+          date: date.toISOString(),
+          weekType: l.weekType,
+          subjectShortName: shortNameOf(l),
+        },
+      ];
+    });
+
+    const students = await this.groupStudents(groupId);
 
     const marks: WeekGridMark[] = [];
     const perStudentWeek: Record<string, { absent: number; excused: number; late: number }> = {};
