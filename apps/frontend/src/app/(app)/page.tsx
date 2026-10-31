@@ -17,6 +17,7 @@ import { UserAvatar, myAvatarUrl } from '../../components/UserAvatar';
 import {
   isLessonOf,
   isQueueOpen,
+  lessonJoinUrl,
   queueBySubject,
   takenSlots,
   type RawQueue,
@@ -389,6 +390,7 @@ function TeacherHomePage() {
   const currentQueue = currentSubject ? queueOf.get(currentSubject._id) : undefined;
   const inQueue = currentQueue && isQueueOpen(currentQueue) ? waitingCount(currentQueue) : 0;
   const nextSubject = next?.subjectId ? subjects.find((s) => s._id === next.subjectId) : undefined;
+  const joinUrl = current ? lessonJoinUrl(current) : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -429,9 +431,9 @@ function TeacherHomePage() {
                   </button>
                 </>
               ) : null}
-              {current.meetingUrl ? (
+              {joinUrl ? (
                 <a
-                  href={current.meetingUrl}
+                  href={joinUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="btn btn-now-ghost min-w-max flex-1"
@@ -828,11 +830,7 @@ function StudentHomePage() {
   const currentSubject = current?.subjectId
     ? subjects.data?.find((s) => s._id === current.subjectId)
     : undefined;
-  const joinUrl =
-    current?.meetingUrl ??
-    currentSubject?.links?.find(
-      (l) => l.showInLessonReminder && (!l.lessonReminderType || l.lessonReminderType === current?.type),
-    )?.url;
+  const joinUrl = current ? lessonJoinUrl(current, currentSubject) : undefined;
   const queueHref =
     current?.subjectId && (canManage || !currentSubject?.settings?.hideQueue)
       ? (`/subjects/${current.subjectId}/queue` as Route)
@@ -1095,7 +1093,8 @@ function StudentHomePage() {
                   );
               } else if (state === 'now') chip = <span className="chip chip-lime">зараз</span>;
               else if (state === 'past' && mark) chip = <span className={cn('chip', mark.cls)}>{mark.label}</span>;
-              else if (l.meetingUrl) chip = <span className="chip chip-accent">Meet</span>;
+              else if (lessonJoinUrl(l, subjects.data?.find((s) => s._id === l.subjectId)))
+                chip = <span className="chip chip-accent">Meet</span>;
               return (
                 <Fragment key={l._id}>
                   {i > 0 ? <div className="divider" /> : null}

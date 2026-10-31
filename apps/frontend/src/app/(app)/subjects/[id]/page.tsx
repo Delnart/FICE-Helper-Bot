@@ -17,6 +17,7 @@ import { UserAvatar } from '../../../../components/UserAvatar';
 import {
   LESSON_TYPE_LABEL,
   dueSoon,
+  getLinkMeta,
   isLessonOf,
   isQueueOpen,
   pluralUk,
@@ -291,7 +292,7 @@ export default function SubjectDetailPage() {
           {s.links.length ? (
             <div className="card-flat flex flex-col px-3.5 py-1">
               {s.links.slice(0, 3).map((l, i) => {
-                const meta = linkMeta(l.url);
+                const meta = getLinkMeta(l.url);
                 const type = l.lessonReminderType && LINK_TYPE_LABEL[l.lessonReminderType];
                 // Skip the type when the label already says it («Практика» · практика).
                 const sub = [meta.host, type && !l.label.toLowerCase().includes(type.slice(0, 5)) && type]
@@ -476,15 +477,4 @@ function linkIcon(host: string, type?: string): IconName {
   if (/^t\.me$|telegram/i.test(host)) return 'send';
   if (type === 'lab') return 'flask';
   return 'link';
-}
-
-/** Normalised href + bare host for a stored link (mirrors the links screen). */
-function linkMeta(raw: string): { href: string; host: string } {
-  const trimmed = raw.trim();
-  try {
-    const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
-    return { href: url.toString(), host: url.hostname.replace(/^www\./i, '') };
-  } catch {
-    return { href: trimmed, host: '' };
-  }
 }

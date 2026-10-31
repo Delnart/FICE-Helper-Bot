@@ -6,6 +6,7 @@ import { cn, slideVars } from '../../lib/cn';
 import { haptic } from '../../lib/telegram';
 import { Icon, type IconName } from '../icons';
 import { SUBJECT_ICONS, SUBJECT_ICON_LABELS, subjectIcon, type SubjectIconName } from '../SubjectIcon';
+import { getLinkMeta } from '../subjects/helpers';
 import { Sheet } from '../ui/Sheet';
 import { Section } from '../ui/Section';
 import { Toggle } from '../ui/Toggle';
@@ -435,20 +436,6 @@ export function cleanLink(l: SubjectLink): SubjectLink {
     showInLessonReminder: Boolean(l.showInLessonReminder),
     lessonReminderType: l.showInLessonReminder ? l.lessonReminderType ?? 'lecture' : undefined,
   };
-}
-
-export function getLinkMeta(rawUrl: string): { href: string; host: string; displayUrl: string } {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return { href: '', host: '', displayUrl: '' };
-  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  try {
-    const url = new URL(candidate);
-    const host = url.hostname.replace(/^www\./i, '');
-    const displayUrl = `${host}${url.pathname === '/' ? '' : url.pathname}${url.search}`;
-    return { href: url.toString(), host, displayUrl };
-  } catch {
-    return { href: trimmed, host: '', displayUrl: trimmed };
-  }
 }
 
 type LinkSheetState = { type: 'menu'; index: number } | { type: 'form'; index: number | null } | null;

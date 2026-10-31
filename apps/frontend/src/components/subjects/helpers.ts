@@ -46,6 +46,40 @@ export function isLessonOf(
   return a === s.name.trim().toLowerCase() || (!!s.shortName && a === s.shortName.trim().toLowerCase());
 }
 
+/** Normalised href, bare host and short form of a stored link; the host stays empty when it isn't a URL. */
+export function getLinkMeta(rawUrl: string): { href: string; host: string; displayUrl: string } {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return { href: '', host: '', displayUrl: '' };
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(candidate);
+    const host = url.hostname.replace(/^www\.(?=.)/i, '');
+    const displayUrl = `${host}${url.pathname === '/' ? '' : url.pathname}${url.search}`;
+    // Chromium escapes a host with spaces where Node refuses it, so `Google Meet` parses in the WebView.
+    return { href: url.toString(), host: host.includes('%') ? '' : host, displayUrl };
+  } catch {
+    return { href: trimmed, host: '', displayUrl: trimmed };
+  }
+}
+
+/**
+ * Same link as the backend's pickLessonLink: the subject's link flagged for this lesson type, else
+ * the lesson's own. Absolute http(s), undefined when neither is a URL.
+ */
+export function lessonJoinUrl(
+  lesson: Pick<NowLesson, 'type' | 'meetingUrl'>,
+  subject?: {
+    links?: Array<{ url: string; showInLessonReminder?: boolean; lessonReminderType?: string }>;
+  },
+): string | undefined {
+  const flagged = subject?.links?.find(
+    (l) => l.showInLessonReminder && l.lessonReminderType === lesson.type,
+  );
+  return [flagged?.url, lesson.meetingUrl]
+    .map((url) => getLinkMeta(url ?? ''))
+    .find((meta) => meta.host)?.href;
+}
+
 /** Raw queue document as returned by GET /queues. */
 export interface RawQueue {
   _id: string;

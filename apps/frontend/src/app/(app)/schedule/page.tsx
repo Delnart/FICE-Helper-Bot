@@ -18,6 +18,7 @@ import { shortenName } from '../../../lib/name';
 import { runsOn } from '../../../lib/lessons';
 import {
   isQueueOpen,
+  lessonJoinUrl,
   queueBySubject,
   takenSlots,
   type RawQueue,
@@ -296,12 +297,6 @@ export default function SchedulePage() {
   const markOf = (id: string) =>
     ATT_CHIP[marks.data?.find((m) => m.lessonId === id)?.status ?? 'unknown'];
   const subjectOf = (id?: string) => (id ? subjects.data?.find((s) => s._id === id) : undefined);
-  // Lesson link, else the subject link the head flagged for lesson reminders.
-  const joinUrlOf = (l: Lesson) =>
-    l.meetingUrl ??
-    subjectOf(l.subjectId)?.links?.find(
-      (k) => k.showInLessonReminder && (!k.lessonReminderType || k.lessonReminderType === l.type),
-    )?.url;
 
   const liveExtras = (l: Lesson): Pick<LiveInfo, 'queue' | 'hw'> => {
     if (!liveSubjectId || l.subjectId !== liveSubjectId) return {};
@@ -452,7 +447,7 @@ export default function SchedulePage() {
                           canManage={canManage}
                           past={isPast}
                           mark={week === currentWeek ? markOf(l._id) : undefined}
-                          joinUrl={joinUrlOf(l)}
+                          joinUrl={lessonJoinUrl(l, subjectOf(l.subjectId))}
                           online={!!subjectOf(l.subjectId)?.isOnline}
                           live={
                             isNow
