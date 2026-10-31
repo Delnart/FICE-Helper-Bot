@@ -1,4 +1,6 @@
+const fs = require('fs');
 const path = require('path');
+const { parseChangelog } = require('./changelog');
 
 /** @type {import('next').NextConfig} */
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:3000';
@@ -8,8 +10,14 @@ const nextConfig = {
   // Self-contained server (`node server.js`) with only the traced deps — see docker/frontend.Dockerfile.
   output: 'standalone',
   transpilePackages: ['@fice/shared'],
-  // Shown on the profile page; bump with `npm version` (see docs/DEPLOY.md).
-  env: { NEXT_PUBLIC_APP_VERSION: require('./package.json').version },
+  env: {
+    // Shown on the profile page; bump with `npm version` (see docs/DEPLOY.md).
+    NEXT_PUBLIC_APP_VERSION: require('./package.json').version,
+    // The «Оновлення» page. The root file sits outside the app, so docker/frontend.Dockerfile copies it in.
+    NEXT_PUBLIC_CHANGELOG: JSON.stringify(
+      parseChangelog(fs.readFileSync(path.join(__dirname, '../../CHANGELOG.md'), 'utf8')),
+    ),
+  },
   experimental: {
     typedRoutes: true,
     // Monorepo: trace from the repo root so hoisted node_modules are included.

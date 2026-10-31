@@ -291,6 +291,11 @@ body {
   .tile-ink { background: var(--ink); color: var(--bg); }
   .tile-lime { background: var(--lime); color: var(--lime-ink); }
   .chev { color: var(--ink-3); flex-shrink: 0; }
+
+  /* Accordion: grid rows animate to the content's real height, opening and closing alike. */
+  .fold { display: grid; grid-template-rows: 0fr; visibility: hidden; transition: grid-template-rows var(--dur) var(--ease-out), visibility var(--dur); }
+  .fold.open { grid-template-rows: 1fr; visibility: visible; }
+  .fold > * { min-height: 0; overflow: hidden; }
   .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 
   /* ── Subject tiles: an icon per discipline, never initials ────────── */

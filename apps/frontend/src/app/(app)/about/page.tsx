@@ -65,6 +65,13 @@ export default function AboutPage() {
         />
         <div className="divider" />
         <SettingsRow
+          href={'/updates' as Route}
+          icon="refresh"
+          title="Оновлення"
+          hint="Що нового в застосунку й боті"
+        />
+        <div className="divider" />
+        <SettingsRow
           href={'/privacy' as Route}
           icon="file"
           title="Політика конфіденційності"

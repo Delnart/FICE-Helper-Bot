@@ -8,6 +8,7 @@ COPY apps/frontend/package.json apps/frontend/
 COPY apps/backend/package.json apps/backend/
 RUN npm ci -w @fice/frontend -w @fice/shared --include=dev --no-audit --no-fund --legacy-peer-deps
 COPY packages ./packages
+COPY CHANGELOG.md ./
 COPY apps/frontend ./apps/frontend
 ARG NEXT_PUBLIC_API_BASE
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE \

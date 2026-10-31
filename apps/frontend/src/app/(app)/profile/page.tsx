@@ -285,6 +285,13 @@ export default function ProfilePage() {
           />
           <div className="divider" />
           <SettingsRow
+            href={'/updates' as Route}
+            icon="refresh"
+            title="Оновлення"
+            hint="Що нового в застосунку й боті"
+          />
+          <div className="divider" />
+          <SettingsRow
             href={'/about' as Route}
             icon="info"
             title="Про застосунок"
