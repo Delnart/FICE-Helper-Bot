@@ -9,6 +9,7 @@ import { UsersService } from '../users/users.service';
 import { CampusService } from '../campus/campus.service';
 import { SheetsService, SheetGroupHead } from '../sheets/sheets.service';
 import { ScheduleService } from '../schedule/schedule.service';
+import { localDateKey, runsOn } from '../schedule/schedule.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { SupportTicket, SupportTicketDocument } from './support-ticket.schema';
@@ -733,10 +734,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       let text: string;
       try {
-        const { day, weekType, label } = await this.resolveDayAndWeek(kind);
+        const { day, date, weekType, label } = await this.resolveDayAndWeek(kind);
         const lessons = await this.schedule.getForGroup(String(group._id), weekType);
         const dayLessons = lessons
-          .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day)
+          .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day && runsOn(l as { dates?: string[] }, date))
           .sort(
             (a, b) =>
               (a as { lessonNumber: number }).lessonNumber -
@@ -771,10 +772,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     let text: string;
     try {
-      const { day, weekType, label } = await this.resolveDayAndWeek(kind);
+      const { day, date, weekType, label } = await this.resolveDayAndWeek(kind);
       const lessons = await this.schedule.getForUser(groupId, userId, weekType);
       const dayLessons = lessons
-        .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day)
+        .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day && runsOn(l as { dates?: string[] }, date))
         .sort(
           (a, b) =>
             (a as { lessonNumber: number }).lessonNumber -
@@ -788,14 +789,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Resolve the target day-of-week (Mon=1..Sun=7), the correct week type,
-   * and a Ukrainian day label for /today and /tomorrow commands.
+   * Resolve the target day-of-week (Mon=1..Sun=7), its calendar day, the correct
+   * week type, and a Ukrainian day label for /today and /tomorrow commands.
    *
    * "Tomorrow" flips the week parity when crossing Sunday→Monday.
    */
   private async resolveDayAndWeek(
     kind: 'today' | 'tomorrow',
-  ): Promise<{ day: number; weekType: 1 | 2; label: string }> {
+  ): Promise<{ day: number; date: string; weekType: 1 | 2; label: string }> {
     const now = new Date();
     // JS: 0=Sun..6=Sat  →  internal: Mon=1..Sun=7
     const todayDow = ((now.getDay() + 6) % 7) + 1;
@@ -820,8 +821,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     const DAY_NAMES = ['', 'Понеділок', 'Вівторок', 'Середа', 'Четвер', 'Пʼятниця', 'Субота', 'Неділя'];
     const label = DAY_NAMES[targetDow] ?? '';
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (kind === 'tomorrow' ? 1 : 0));
 
-    return { day: targetDow, weekType, label };
+    return { day: targetDow, date: localDateKey(target), weekType, label };
   }
 
   // ---------- /verify ----------
