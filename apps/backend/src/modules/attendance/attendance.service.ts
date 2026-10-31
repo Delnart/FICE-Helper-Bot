@@ -132,7 +132,7 @@ export class AttendanceService {
       const date = new Date(start);
       date.setUTCDate(date.getUTCDate() + (l.dayOfWeek - 1));
       // A lesson marked this week stays whatever its dates say, so the marks can be seen and fixed:
-      // the first dated sync hands dates to same-slot rows arbitrarily (migrate-data moves them back).
+      // the sync moves a mark to the row that ran, this card is the safety net for a mark with no free row.
       if (!runsOn(l, date.toISOString().slice(0, 10)) && !marked.has(String(l._id))) return [];
       return [
         {

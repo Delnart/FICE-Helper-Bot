@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { ScheduleService } from './schedule.service';
 import { CampusScheduleItem } from '../campus/campus.service';
@@ -28,17 +29,17 @@ const item = (dates: string[], over: Partial<CampusScheduleItem> = {}): CampusSc
 const SLOT = [['2026-10-14'], ['2026-11-11', '2026-11-25'], ['2026-12-09'], ['2026-12-23', '2027-01-06', '2027-01-20']];
 
 type Doc = Record<string, unknown> & { _id: Types.ObjectId; dates?: string[] };
+type Rec = { _id: Types.ObjectId; scheduleLessonId: Types.ObjectId; date: Date; entries: Array<{ status: string }> };
 /** A stored lesson from before `dates`: the field isn't there at all. */
 const legacyDoc = (over: Partial<CampusScheduleItem> = {}): Doc => {
   const { dates: _none, ...fields } = item([], over);
   return { _id: new Types.ObjectId(), ...fields, isElective: false, electiveStudentIds: [] };
 };
 
-function syncSetup(stored: Doc[] = []) {
+function syncSetup(stored: Doc[] = [], marks: Rec[] = []) {
   let campus: CampusScheduleItem[] = [];
   const bulkWrite = jest.fn(async (ops: Array<Record<string, any>>) => {
-    for (const { deleteMany, updateOne, insertOne } of ops) {
-      if (deleteMany) stored.splice(0, stored.length, ...stored.filter((d) => !deleteMany.filter._id.$in.includes(d._id)));
+    for (const { updateOne, insertOne } of ops) {
       if (insertOne) stored.push({ _id: new Types.ObjectId(), ...insertOne.document });
       if (updateOne) {
         const doc = stored.find((d) => d._id === updateOne.filter._id)!;
@@ -47,12 +48,26 @@ function syncSetup(stored: Doc[] = []) {
       }
     }
   });
+  const deleteMany = jest.fn(async ({ _id }: { _id: { $in: Types.ObjectId[] } }) => {
+    stored.splice(0, stored.length, ...stored.filter((d) => !_id.$in.includes(d._id)));
+  });
+  const records = {
+    find: ({ scheduleLessonId }: { scheduleLessonId: { $in: Types.ObjectId[] } }) =>
+      query(marks.filter((r) => scheduleLessonId.$in.includes(r.scheduleLessonId)).map((r) => ({ ...r }))),
+    updateOne: jest.fn(async (filter: Pick<Rec, '_id' | 'scheduleLessonId'>, update: { $set: Pick<Rec, 'scheduleLessonId'> }) => {
+      const r = marks.find((m) => m._id === filter._id && m.scheduleLessonId === filter.scheduleLessonId);
+      if (r) Object.assign(r, update.$set);
+      return { matchedCount: r ? 1 : 0 };
+    }),
+  };
+  const groups = { updateOne: jest.fn(() => query(undefined)) };
   const svc = new ScheduleService(
-    { find: () => query(stored.map((d) => ({ ...d }))), bulkWrite } as never,
-    { updateOne: () => query(undefined) } as never,
+    { find: () => query(stored.map((d) => ({ ...d }))), bulkWrite, deleteMany } as never,
+    groups as never,
     {} as never,
     {} as never,
     { fetchGroupSchedule: async () => campus } as never,
+    records as never,
   );
   const sync = (items: CampusScheduleItem[]) => {
     campus = items;
@@ -61,7 +76,7 @@ function syncSetup(stored: Doc[] = []) {
   const idWith = (dates: string[]) => String(stored.find((d) => String(d.dates) === String(dates))?._id);
   /** Every op of the last sync, by kind. */
   const opKinds = () => bulkWrite.mock.lastCall![0].map((op) => Object.keys(op)[0]);
-  return { stored, bulkWrite, sync, idWith, opKinds };
+  return { stored, bulkWrite, deleteMany, records, groups, sync, idWith, opKinds };
 }
 
 describe('ScheduleService sync with dates', () => {
@@ -74,10 +89,11 @@ describe('ScheduleService sync with dates', () => {
   });
 
   it('gives legacy docs their dates in place on the first dated sync', async () => {
-    const { stored, sync, bulkWrite, opKinds } = syncSetup(SLOT.map(() => legacyDoc()));
+    const { stored, sync, bulkWrite, deleteMany, opKinds } = syncSetup(SLOT.map(() => legacyDoc()));
     const ids = stored.map((d) => d._id);
     await sync(rows());
     expect(opKinds()).toEqual(['updateOne', 'updateOne', 'updateOne', 'updateOne']); // no deletes, no inserts
+    expect(deleteMany).not.toHaveBeenCalled();
     expect(stored.map((d) => d._id)).toEqual(ids);
     expect(stored.map((d) => d.dates)).toEqual(SLOT);
 
@@ -218,12 +234,14 @@ describe('ScheduleService sync with dates', () => {
   });
 
   it('deletes a row Campus dropped and leaves the others alone', async () => {
-    const { stored, sync, opKinds, idWith } = syncSetup();
+    const { stored, sync, bulkWrite, deleteMany, idWith } = syncSetup();
     await sync(rows());
     const ids = SLOT.map(idWith);
 
+    bulkWrite.mockClear();
     await sync(rows().slice(1));
-    expect(opKinds()).toEqual(['deleteMany']);
+    expect(bulkWrite).not.toHaveBeenCalled();
+    expect(deleteMany).toHaveBeenCalledTimes(1);
     expect(stored.map((d) => String(d._id))).toEqual(ids.slice(1));
   });
 
@@ -254,6 +272,277 @@ describe('ScheduleService sync with dates', () => {
     const { stored, sync } = syncSetup([{ ...legacyDoc(), dates: SLOT[0], isElective: true, electiveStudentIds: [student] }]);
     await sync([item(SLOT[0]), item(SLOT[1])]);
     expect(stored[1]).toEqual(expect.objectContaining({ dates: SLOT[1], isElective: true, electiveStudentIds: [student] }));
+  });
+});
+
+describe('ScheduleService sync moves marks', () => {
+  const [OLD, NEW] = ['2026-10-14', '2026-10-28'];
+  const row = (dates: string[], over: Partial<CampusScheduleItem> = {}): Doc => ({ ...legacyDoc(over), dates });
+  const record = (l: Doc, day: string, statuses = ['absent']): Rec => ({
+    _id: new Types.ObjectId(),
+    scheduleLessonId: l._id,
+    date: new Date(day),
+    entries: statuses.map((status) => ({ status })),
+  });
+  /** Campus rows that leave `docs` as they are. */
+  const same = (docs: Doc[]) => docs.map((d) => ({ ...d }) as unknown as CampusScheduleItem);
+
+  let log: jest.SpyInstance;
+  beforeEach(() => {
+    log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+  });
+  afterEach(() => log.mockRestore());
+
+  it('moves a mark to the row that ran that day, on a sync that changed no rows', async () => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const r = record(ghost, NEW);
+    const { sync, bulkWrite } = syncSetup([ghost, ran], [r]);
+    await sync(same([ghost, ran]));
+    expect(bulkWrite).not.toHaveBeenCalled();
+    expect(r.scheduleLessonId).toBe(ran._id);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Moved 1 attendance record(s)'));
+  });
+
+  it('sorts out the marks of legacy rows on the first dated sync', async () => {
+    const legacy = SLOT.map(() => legacyDoc());
+    // The old mark page picked the first row, so the marks of the whole slot piled up there.
+    const days = [SLOT[0][0], SLOT[1][1], SLOT[3][2]];
+    const marks = days.map((day) => record(legacy[0], day));
+    const { sync, idWith } = syncSetup(legacy, marks);
+    await sync(SLOT.map((dates) => item(dates)));
+    expect(marks.map((r) => String(r.scheduleLessonId))).toEqual([idWith(SLOT[0]), idWith(SLOT[1]), idWith(SLOT[3])]);
+  });
+
+  it('gives a new row the marks of its day', async () => {
+    const ghost = row([OLD]);
+    const r = record(ghost, NEW);
+    const { sync, idWith } = syncSetup([ghost], [r]);
+    await sync([item([OLD]), item([NEW])]);
+    expect(String(r.scheduleLessonId)).toBe(idWith([NEW]));
+  });
+
+  it('follows a date Campus moved to another row', async () => {
+    const [first, second] = [row([OLD, NEW]), row(['2026-11-11'])];
+    const r = record(first, NEW);
+    const { sync } = syncSetup([first, second], [r]);
+    await sync([item([OLD]), item([NEW, '2026-11-11'])]);
+    expect(r.scheduleLessonId).toBe(second._id);
+  });
+
+  it('sends two marks of one row to different rows', async () => {
+    const [ghost, a, b] = [row(['2026-09-30']), row([OLD]), row([NEW])];
+    const [toA, toB] = [record(ghost, OLD), record(ghost, NEW)];
+    const { sync } = syncSetup([ghost, a, b], [toA, toB]);
+    await sync(same([ghost, a, b]));
+    expect([toA.scheduleLessonId, toB.scheduleLessonId]).toEqual([a._id, b._id]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Moved 2 attendance record(s)'));
+  });
+
+  it('prefers the row of the same teachers', async () => {
+    const lab = (dates: string[], name: string) => row(dates, { type: 'lab', teacherNames: [name] });
+    const [ghost, other, own] = [lab([OLD], 'Козленко'), lab([NEW], 'Федотов'), lab([NEW], 'Козленко')];
+    const r = record(ghost, NEW);
+    const { sync } = syncSetup([ghost, other, own], [r]);
+    await sync(same([ghost, other, own]));
+    expect(r.scheduleLessonId).toBe(own._id);
+  });
+
+  it('takes another free row when the one of the same teachers is taken', async () => {
+    const lab = (dates: string[], name: string) => row(dates, { type: 'lab', teacherNames: [name] });
+    const [ghost, other, own] = [lab([OLD], 'Козленко'), lab([NEW], 'Федотов'), lab([NEW], 'Козленко')];
+    const r = record(ghost, NEW);
+    const { sync } = syncSetup([ghost, other, own], [r, record(own, NEW, [])]);
+    await sync(same([ghost, other, own]));
+    expect(r.scheduleLessonId).toBe(other._id);
+  });
+
+  it.each([
+    ['real marks', ['present']],
+    ['no entries', []],
+    ['only unknown', ['unknown']],
+  ])('leaves a mark alone when the row that ran already has a record with %s', async (_name, statuses) => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const r = record(ghost, NEW);
+    const { sync, records } = syncSetup([ghost, ran], [r, record(ran, NEW, statuses)]);
+    await sync(same([ghost, ran]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+    expect(r.scheduleLessonId).toBe(ghost._id);
+  });
+
+  it('counts a planned move: never two records on one row and day', async () => {
+    const [a, b, ran] = [row(['2026-09-30']), row([OLD]), row([NEW])];
+    const [first, second] = [record(a, NEW), record(b, NEW)];
+    const { sync } = syncSetup([a, b, ran], [first, second]);
+    await sync(same([a, b, ran]));
+    expect([first.scheduleLessonId, second.scheduleLessonId]).toEqual([ran._id, b._id]);
+  });
+
+  it.each([
+    ['no entries', []],
+    ['only unknown', ['unknown', 'unknown']],
+  ])('leaves a record with %s: it holds no marks', async (_name, statuses) => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const { sync, records } = syncSetup([ghost, ran], [record(ghost, NEW, statuses)]);
+    await sync(same([ghost, ran]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('moves a record with one real mark among unknown ones', async () => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const r = record(ghost, NEW, ['unknown', 'late']);
+    const { sync } = syncSetup([ghost, ran], [r]);
+    await sync(same([ghost, ran]));
+    expect(r.scheduleLessonId).toBe(ran._id);
+  });
+
+  it('leaves a mark on a row that ran that day', async () => {
+    const [ran, twin] = [row([NEW]), row([NEW], { teacherNames: ['Бех'] })];
+    const { sync, records } = syncSetup([ran, twin], [record(ran, NEW)]);
+    await sync(same([ran, twin]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, Partial<CampusScheduleItem>]>([
+    ['day', { dayOfWeek: 4 }],
+    ['lesson number', { lessonNumber: 5 }],
+    ['parity', { weekType: 2 }],
+    ['type', { type: 'lab' }],
+    ['subject', { subjectName: 'Фізика' }],
+  ])('stays inside the slot: another %s is another lesson', async (_name, over) => {
+    const [ghost, other] = [row([OLD]), row([NEW], over)];
+    const { sync, records } = syncSetup([ghost, other], [record(ghost, NEW)]);
+    await sync(same([ghost, other]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('moves the marks of a merged row to the row that now holds the date, then deletes it', async () => {
+    const [kept, merged] = [row([OLD]), row([NEW])];
+    const r = record(merged, NEW);
+    const { stored, sync, records, deleteMany } = syncSetup([kept, merged], [r]);
+    await sync([item([OLD, NEW])]);
+    expect(r.scheduleLessonId).toBe(kept._id);
+    expect(stored).toEqual([expect.objectContaining({ _id: kept._id, dates: [OLD, NEW] })]);
+    expect(records.updateOne.mock.invocationCallOrder[0]).toBeLessThan(deleteMany.mock.invocationCallOrder[0]);
+  });
+
+  it('finds the slot by its normalised name: a leftover spelt another way still gives', async () => {
+    const [kept, gone] = [row([OLD]), row([NEW], { subjectName: `«${ONS}»` })];
+    const r = record(gone, NEW);
+    const { sync } = syncSetup([kept, gone], [r]);
+    await sync([item([OLD, NEW])]);
+    expect(r.scheduleLessonId).toBe(kept._id);
+  });
+
+  it('never moves a mark onto a row about to be deleted', async () => {
+    const [ghost, gone] = [row([OLD]), row([NEW])];
+    const { sync, records } = syncSetup([ghost, gone], [record(ghost, NEW)]);
+    await sync(same([ghost]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('leaves the record of a dropped row with no sibling, and deletes the row', async () => {
+    const [gone, other] = [row([NEW], { subjectName: 'Фізика' }), row([OLD])];
+    const r = record(gone, NEW);
+    const { stored, sync, records } = syncSetup([gone, other], [r]);
+    await sync([item([OLD])]);
+    expect(records.updateOne).not.toHaveBeenCalled();
+    expect(r.scheduleLessonId).toBe(gone._id);
+    expect(stored.map((d) => d._id)).toEqual([other._id]);
+  });
+
+  it('never gives from a row without dates, nor takes for one', async () => {
+    const [undated, ran] = [row([]), row([NEW])];
+    const [ghost, sibling] = [row([OLD], { lessonNumber: 5 }), row([], { lessonNumber: 5 })];
+    const { sync, records } = syncSetup(
+      [undated, ran, ghost, sibling],
+      [record(undated, NEW), record(ghost, NEW)],
+    );
+    await sync(same([undated, ran, ghost, sibling]));
+    expect(records.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('does take the marks of a dropped row without dates', async () => {
+    const [kept, gone] = [legacyDoc(), legacyDoc()];
+    const r = record(gone, NEW);
+    const { stored, sync } = syncSetup([kept, gone], [r]);
+    await sync([item([NEW])]);
+    expect(r.scheduleLessonId).toBe(kept._id);
+    expect(stored).toHaveLength(1);
+  });
+
+  it('gives the marks of a dropped row to a free row without dates', async () => {
+    const [weekly, oneOff] = [row([]), row([NEW])];
+    const r = record(oneOff, NEW);
+    const { stored, sync } = syncSetup([weekly, oneOff], [r]);
+    await sync([item([])]);
+    expect(r.scheduleLessonId).toBe(weekly._id);
+    expect(stored.map((d) => d._id)).toEqual([weekly._id]);
+  });
+
+  it('moves nothing on the next sync', async () => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const { sync, records } = syncSetup([ghost, ran], [record(ghost, NEW)]);
+    await sync(same([ghost, ran]));
+    log.mockClear();
+    await sync(same([ghost, ran]));
+    expect(records.updateOne).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('heals by itself once a row of that day appears', async () => {
+    const [ghost, other] = [row([OLD]), row(['2026-11-11'])];
+    const r = record(ghost, NEW);
+    const { sync } = syncSetup([ghost, other], [r]);
+    await sync(same([ghost, other]));
+    expect(r.scheduleLessonId).toBe(ghost._id);
+
+    await sync([item([OLD]), item(['2026-11-11', NEW])]);
+    expect(r.scheduleLessonId).toBe(other._id);
+  });
+
+  it('skips a row that got a record meanwhile and moves the rest', async () => {
+    const [ghost, a, b] = [row(['2026-09-30']), row([OLD]), row([NEW])];
+    const [lost, won] = [record(ghost, OLD), record(ghost, NEW)];
+    const { sync, records } = syncSetup([ghost, a, b], [lost, won]);
+    records.updateOne.mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+    await expect(sync(same([ghost, a, b]))).resolves.toBe(3);
+    expect([lost.scheduleLessonId, won.scheduleLessonId]).toEqual([ghost._id, b._id]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Moved 1 attendance record(s)'));
+  });
+
+  it('does not count a record that went away meanwhile', async () => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const { sync, records } = syncSetup([ghost, ran], [record(ghost, NEW)]);
+    records.updateOne.mockResolvedValueOnce({ matchedCount: 0 });
+    await sync(same([ghost, ran]));
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('filters the move on the row it read, for a head marking at the same moment', async () => {
+    const [ghost, ran] = [row([OLD]), row([NEW])];
+    const r = record(ghost, NEW);
+    const { sync, records } = syncSetup([ghost, ran], [r]);
+    await sync(same([ghost, ran]));
+    expect(records.updateOne).toHaveBeenCalledWith(
+      { _id: r._id, scheduleLessonId: ghost._id },
+      { $set: { scheduleLessonId: ran._id } },
+    );
+  });
+
+  it('keeps the leftover row when the move fails, and the next sync retries', async () => {
+    const [kept, merged] = [row([OLD]), row([NEW])];
+    const r = record(merged, NEW);
+    const { stored, sync, records, deleteMany, groups } = syncSetup([kept, merged], [r]);
+    records.updateOne.mockRejectedValueOnce(new Error('connection lost'));
+    await expect(sync([item([OLD, NEW])])).rejects.toThrow('connection lost');
+    expect(stored).toHaveLength(2);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(groups.updateOne).not.toHaveBeenCalled();
+
+    await sync([item([OLD, NEW])]);
+    expect(r.scheduleLessonId).toBe(kept._id);
+    expect(stored.map((d) => d._id)).toEqual([kept._id]);
+    expect(groups.updateOne).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -295,6 +584,7 @@ describe('ScheduleService now', () => {
       { find: () => query([]) } as never,
       { findById: () => query({ _id: new Types.ObjectId(), campusLecturerId: 'L' }) } as never,
       { refreshWeekParity: async () => 1, getLecturerLessons: async () => LESSONS.map((l) => ({ ...l, groupCampusId: '5627' })) } as never,
+      {} as never,
     );
 
   it.each([
@@ -314,6 +604,7 @@ describe('ScheduleService now', () => {
       { find: () => query([]) } as never,
       {} as never,
       { refreshWeekParity: async () => 1 } as never,
+      {} as never,
     );
     await expect(svc.nowFor(G, U)).resolves.toEqual({ current: null, next: null, weekType: 1 });
   });
@@ -326,7 +617,7 @@ describe('ScheduleService now', () => {
 
   it('reads the current lesson link from its subject, else takes its own', async () => {
     const zoom = { label: 'Zoom', url: 'https://zoom.us/j/1', showInLessonReminder: true, lessonReminderType: 'lecture' };
-    const svc = new ScheduleService({} as never, {} as never, { findById: () => query({ links: [zoom] }) } as never, {} as never, {} as never);
+    const svc = new ScheduleService({} as never, {} as never, { findById: () => query({ links: [zoom] }) } as never, {} as never, {} as never, {} as never);
     const own = { type: 'lecture', meetingUrl: 'meet.google.com/abc' };
     await expect(svc.lessonLink({ subjectId: 's', ...own })).resolves.toEqual({ label: 'Zoom', url: zoom.url });
     await expect(svc.lessonLink(own)).resolves.toEqual({ label: 'Зустріч', url: 'https://meet.google.com/abc' });

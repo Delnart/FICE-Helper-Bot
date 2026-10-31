@@ -9,8 +9,9 @@ import {
 import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { AnyBulkWriteOperation, Model, Types } from 'mongoose';
-import { Role, ROLE_LEVEL } from '@fice/shared';
+import { AttendanceStatus, Role, ROLE_LEVEL } from '@fice/shared';
 import { localDateKey, runsOn, ScheduleLesson, ScheduleLessonDocument } from './schedule.schema';
+import { AttendanceRecord, AttendanceRecordDocument } from '../attendance/attendance.schema';
 import { CampusScheduleItem, CampusService } from '../campus/campus.service';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { pickLessonLink, Subject, SubjectDocument } from '../subjects/subject.schema';
@@ -28,6 +29,7 @@ export class ScheduleService {
     @InjectModel(Subject.name) private readonly subjects: Model<SubjectDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly campus: CampusService,
+    @InjectModel(AttendanceRecord.name) private readonly records: Model<AttendanceRecordDocument>,
   ) {}
 
   /**
@@ -434,8 +436,8 @@ export class ScheduleService {
    * Sync schedule from Campus for a specific group. Lessons are upserted in place
    * so their `_id`s stay stable — attendance records and reminder marks reference
    * them — and app-owned fields (subjectId, meetingUrl, elective flags/students)
-   * survive. Lessons gone from Campus are deleted; new ones inherit elective
-   * status/students by normalized subject name.
+   * survive. Lessons gone from Campus are deleted once their marks have moved
+   * (see moveMarks); new ones inherit elective status/students by normalized subject name.
    */
   async syncGroupSchedule(group: { _id: Types.ObjectId; campusGroupId?: string }): Promise<number> {
     if (!group.campusGroupId) return 0;
@@ -503,7 +505,6 @@ export class ScheduleService {
 
     const ops: AnyBulkWriteOperation[] = [];
     const leftover = existing.filter((l) => !taken.has(l)).map((l) => l._id);
-    if (leftover.length) ops.push({ deleteMany: { filter: { _id: { $in: leftover } } } });
     for (const item of items) {
       const prev = matched.get(item);
       if (prev) {
@@ -553,9 +554,69 @@ export class ScheduleService {
       });
     }
     if (ops.length) await this.lessons.bulkWrite(ops);
+    // Before the delete: if the move fails, the rows are still there and the next sync retries.
+    await this.moveMarks(group._id, leftover);
+    if (leftover.length) await this.lessons.deleteMany({ _id: { $in: leftover } });
     await this.groups.updateOne({ _id: group._id }, { $set: { scheduleSyncedAt: new Date() } }).exec();
 
     return items.length;
+  }
+
+  /**
+   * Moves real marks to the row of their slot that ran on their day, off a row Campus dropped or whose
+   * dates exclude it. Slot rows often differ only by dates: the old mark page piled marks on the first
+   * one, the first dated sync gave out the dates by chance, and Campus can still move a date between
+   * rows or merge them. Runs on every sync, so it heals by itself. An undated row deals only with a
+   * dropped one: it runs every week, so that's when it can take marks, and it gives them only if dropped.
+   * A mark with no free row stays put; on a dropped row that means leaving the journal with the row.
+   */
+  private async moveMarks(groupId: Types.ObjectId, leftover: Types.ObjectId[]): Promise<void> {
+    const rows = await this.lessons
+      .find({ groupId }, { dayOfWeek: 1, lessonNumber: 1, weekType: 1, type: 1, subjectName: 1, teacherNames: 1, dates: 1 })
+      .lean()
+      .exec();
+    const dropped = new Set(leftover.map(String));
+    const rowById = new Map(rows.map((l) => [String(l._id), l]));
+    const slots = new Map<string, typeof rows>();
+    for (const l of rows) {
+      if (dropped.has(String(l._id))) continue;
+      const k = lessonKey(l);
+      slots.set(k, [...(slots.get(k) ?? []), l]);
+    }
+
+    const records = await this.records
+      .find({ scheduleLessonId: { $in: rows.map((l) => l._id) } }, { scheduleLessonId: 1, date: 1, 'entries.status': 1 })
+      .lean()
+      .exec();
+    const dayOf = (r: { date: Date }) => r.date.toISOString().slice(0, 10);
+    // Every record counts, empty ones too: the unique index doesn't let a second one onto the row and day.
+    const taken = new Set(records.map((r) => `${r.scheduleLessonId}|${dayOf(r)}`));
+
+    let moved = 0;
+    for (const r of records) {
+      const row = rowById.get(String(r.scheduleLessonId));
+      const day = dayOf(r);
+      const gone = dropped.has(String(r.scheduleLessonId));
+      if (!row || (!gone && runsOn(row, day))) continue;
+      if (!r.entries.some((e) => e.status !== AttendanceStatus.Unknown)) continue;
+      const free = (slots.get(lessonKey(row)) ?? []).filter(
+        (l) => (gone ? runsOn(l, day) : l.dates?.includes(day)) && !taken.has(`${l._id}|${day}`),
+      );
+      const to = free.find((l) => JSON.stringify(l.teacherNames) === JSON.stringify(row.teacherNames)) ?? free[0];
+      if (!to) continue;
+      taken.add(`${to._id}|${day}`);
+      try {
+        const { matchedCount } = await this.records.updateOne(
+          { _id: r._id, scheduleLessonId: r.scheduleLessonId },
+          { $set: { scheduleLessonId: to._id } },
+        );
+        moved += matchedCount;
+      } catch (err) {
+        // A head marked that row meanwhile, so it isn't free after all: this record stays put.
+        if ((err as { code?: number }).code !== 11000) throw err;
+      }
+    }
+    if (moved) this.logger.log(`Moved ${moved} attendance record(s) of group ${groupId} to the row that ran`);
   }
 
   async syncFromCampus(user: RequestUser, groupId: string): Promise<number> {
