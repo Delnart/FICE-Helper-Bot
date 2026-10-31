@@ -143,28 +143,10 @@ export class ScheduleService {
   async nowFor(
     groupId: string,
     userId: string,
-  ): Promise<{ current: unknown; next: unknown; weekType: 1 | 2 }> {
+  ): Promise<{ running: unknown[]; current: unknown; next: unknown; weekType: 1 | 2 }> {
     const week = await this.campus.refreshWeekParity();
     const list = await this.getForUser(groupId, userId, week);
-    const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = lessonsOn(list, now);
-    const current =
-      today.find((l) => {
-        const [sH, sM] = (l as { startTime: string }).startTime.split(':').map(Number);
-        const [eH, eM] = (l as { endTime: string }).endTime.split(':').map(Number);
-        return sH * 60 + sM <= minutes && minutes < eH * 60 + eM;
-      }) ?? null;
-    const next =
-      today
-        .filter((l) => {
-          const [sH, sM] = (l as { startTime: string }).startTime.split(':').map(Number);
-          return sH * 60 + sM > minutes;
-        })
-        .sort((a, b) =>
-          (a as { startTime: string }).startTime.localeCompare((b as { startTime: string }).startTime),
-        )[0] ?? null;
-    return { current, next, weekType: week };
+    return { ...lessonsNow(list, new Date()), weekType: week };
   }
 
   /**
@@ -173,34 +155,10 @@ export class ScheduleService {
    */
   async nowForGroup(
     groupId: string,
-  ): Promise<{ current: Record<string, unknown> | null; next: Record<string, unknown> | null; weekType: 1 | 2 }> {
+  ): Promise<{ running: unknown[]; current: Record<string, unknown> | null; next: Record<string, unknown> | null; weekType: 1 | 2 }> {
     const week = await this.campus.refreshWeekParity();
     const list = await this.getForGroup(groupId, week);
-    const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = lessonsOn(list, now);
-
-    const current =
-      today.find((l) => {
-        const cast = l as { startTime: string; endTime: string };
-        const [sH, sM] = cast.startTime.split(':').map(Number);
-        const [eH, eM] = cast.endTime.split(':').map(Number);
-        return sH * 60 + sM <= minutes && minutes < eH * 60 + eM;
-      }) ?? null;
-
-    const next =
-      today
-        .filter((l) => {
-          const [sH, sM] = (l as { startTime: string }).startTime.split(':').map(Number);
-          return sH * 60 + sM > minutes;
-        })
-        .sort((a, b) =>
-          (a as { startTime: string }).startTime.localeCompare(
-            (b as { startTime: string }).startTime,
-          ),
-        )[0] ?? null;
-
-    return { current, next, weekType: week };
+    return { ...lessonsNow(list, new Date()), weekType: week };
   }
 
   // ── Session (exam) schedule ──────────────────────────────────────────────────
@@ -332,31 +290,10 @@ export class ScheduleService {
   /** Current and next lessons for a teacher (live from Campus). */
   async lecturerNow(
     userId: string,
-  ): Promise<{ current: unknown; next: unknown; weekType: 1 | 2 }> {
+  ): Promise<{ running: unknown[]; current: unknown; next: unknown; weekType: 1 | 2 }> {
     const week = await this.campus.refreshWeekParity();
     const list = await this.lecturerWeek(userId, week);
-    const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = lessonsOn(list, now);
-    const current =
-      today.find((l) => {
-        const cast = l as { startTime: string; endTime: string };
-        const [sH, sM] = cast.startTime.split(':').map(Number);
-        const [eH, eM] = cast.endTime.split(':').map(Number);
-        return sH * 60 + sM <= minutes && minutes < eH * 60 + eM;
-      }) ?? null;
-    const next =
-      today
-        .filter((l) => {
-          const [sH, sM] = (l as { startTime: string }).startTime.split(':').map(Number);
-          return sH * 60 + sM > minutes;
-        })
-        .sort((a, b) =>
-          (a as { startTime: string }).startTime.localeCompare(
-            (b as { startTime: string }).startTime,
-          ),
-        )[0] ?? null;
-    return { current, next, weekType: week };
+    return { ...lessonsNow(list, new Date()), weekType: week };
   }
 
   /**
@@ -800,6 +737,22 @@ function lessonsOn(list: Array<Record<string, unknown>>, now: Date): Array<Recor
   const weekday = ((now.getDay() + 6) % 7) + 1; // Mon=1..Sat=6
   const day = localDateKey(now);
   return list.filter((l) => l.dayOfWeek === weekday && runsOn(l as { dates?: string[] }, day));
+}
+
+/** Today's lessons of `list` at `now`: every one in progress, the first of them, and the next to start. */
+function lessonsNow(list: Array<Record<string, unknown>>, now: Date) {
+  const today = lessonsOn(list, now) as Array<Record<string, unknown> & { startTime: string; endTime: string }>;
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  const toMinutes = (time: string) => {
+    const [h, m] = time.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const running = today.filter((l) => toMinutes(l.startTime) <= minutes && minutes < toMinutes(l.endTime));
+  const next =
+    today
+      .filter((l) => toMinutes(l.startTime) > minutes)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))[0] ?? null;
+  return { running, current: running[0] ?? null, next };
 }
 
 /** Normalise a subject name for fuzzy lookup: lower-case, strip whitespace/punct. */

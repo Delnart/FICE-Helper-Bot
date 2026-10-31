@@ -676,7 +676,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const next = result.next as LessonSlim | null;
         text =
           kind === 'now'
-            ? formatNow(group.academicName, current, next, result.weekType, await this.schedule.lessonLink(current))
+            ? formatNow(group.academicName, await this.withLinks(result.running as LessonSlim[]), next, result.weekType)
             : formatLeft(group.academicName, current, next);
       } catch {
         text = 'Розклад ще не імпортовано для цієї групи.';
@@ -711,7 +711,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const next = result.next as LessonSlim | null;
       text =
         kind === 'now'
-          ? formatNow(groupName, current, next, result.weekType, await this.schedule.lessonLink(current))
+          ? formatNow(groupName, await this.withLinks(result.running as LessonSlim[]), next, result.weekType)
           : formatLeft(groupName, current, next);
     } catch {
       text = 'Розклад ще не імпортовано для вашої групи.';
@@ -721,6 +721,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       link_preview_options: { is_disabled: true },
       reply_markup: this.supportKeyboard,
     });
+  }
+
+  /** Each lesson with the link its reminder carries; a failed lookup costs only that link. */
+  private withLinks(lessons: LessonSlim[]) {
+    return Promise.all(
+      lessons.map(async (lesson) => ({
+        lesson,
+        link: await this.schedule.lessonLink(lesson).catch((err: Error) => {
+          this.logger.warn(`Lesson link lookup failed: ${err.message}`);
+          return undefined;
+        }),
+      })),
+    );
   }
 
   // ---------- /today /tomorrow ----------
@@ -1416,22 +1429,22 @@ interface LessonSlim {
 
 function formatNow(
   groupName: string,
-  current: LessonSlim | null,
+  running: Array<{ lesson: LessonSlim; link?: { label: string; url: string } }>,
   next: LessonSlim | null,
   weekType: 1 | 2,
-  link?: { label: string; url: string },
 ): string {
   const week = weekType === 1 ? 'I тиждень' : 'II тиждень';
   const lines: string[] = [`<b>${escapeHtml(groupName)}</b> · ${week}`];
 
-  if (current) {
-    lines.push(
-      `\n🟢 <b>Зараз:</b> ${escapeHtml(current.subjectName)}` +
-        `\n    ${current.startTime} — ${current.endTime}` +
-        (current.room ? ` · ${escapeHtml(current.room)}` : '') +
-        (link ? `\n    🔗 <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>` : ''),
-    );
-  }
+  // A Set: two rows of one subject with the same room and link read as one lesson.
+  const blocks = running.map(
+    ({ lesson, link }) =>
+      `\n🟢 <b>Зараз:</b> ${escapeHtml(lesson.subjectName)}` +
+      `\n    ${lesson.startTime} — ${lesson.endTime}` +
+      (lesson.room ? ` · ${escapeHtml(lesson.room)}` : '') +
+      (link ? `\n    🔗 <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>` : ''),
+  );
+  lines.push(...new Set(blocks));
 
   if (next) {
     lines.push(
@@ -1441,7 +1454,7 @@ function formatNow(
     );
   }
 
-  if (!current && !next) {
+  if (!running.length && !next) {
     lines.push('\nСьогодні пар більше немає 🎉');
   }
 

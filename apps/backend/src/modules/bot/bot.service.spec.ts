@@ -59,13 +59,18 @@ describe('BotService /today and /tomorrow', () => {
 
 const ZOOM = { label: 'Zoom <лекції>', url: 'https://zoom.us/j/1?pwd=a&b=c', showInLessonReminder: true, lessonReminderType: 'lecture' };
 
-function now(chatType: 'private' | 'supergroup', links: unknown[], kind: 'now' | 'left' = 'now') {
+const ONS = { subjectId: 's', subjectName: 'ОНС', type: 'lecture', startTime: '10:25', endTime: '12:00', room: '18-101' };
+const NEXT = { subjectId: 's', subjectName: 'БД', type: 'lecture', startTime: '12:20', endTime: '13:55' };
+
+function now(
+  chatType: 'private' | 'supergroup',
+  links: unknown[],
+  kind: 'now' | 'left' = 'now',
+  running: unknown[] = [ONS],
+  next: unknown = NEXT,
+) {
   const reply = jest.fn(async (_text: string) => undefined);
-  const result = {
-    current: { subjectId: 's', subjectName: 'ОНС', type: 'lecture', startTime: '10:25', endTime: '12:00' },
-    next: { subjectId: 's', subjectName: 'БД', type: 'lecture', startTime: '12:20', endTime: '13:55' },
-    weekType: 1,
-  };
+  const result = { running, current: running[0] ?? null, next, weekType: 1 };
   const svc = new BotService(
     {} as never,
     { findByChat: async () => ({ _id: 'g', academicName: 'ІП-55' }), findById: async () => ({ academicName: 'ІП-55' }) } as never,
@@ -75,7 +80,10 @@ function now(chatType: 'private' | 'supergroup', links: unknown[], kind: 'now' |
     {
       nowFor: async () => result,
       nowForGroup: async () => result,
-      lessonLink: async (l: { type?: string }) => pickLessonLink({ links } as Pick<Subject, 'links'>, l),
+      lessonLink: async (l: { type?: string }) => {
+        if (l.type === 'broken') throw new Error('Mongo is down');
+        return pickLessonLink({ links } as Pick<Subject, 'links'>, l);
+      },
     } as never,
     {} as never,
     {} as never,
@@ -104,5 +112,66 @@ describe('BotService /now', () => {
 
   it('/left stays without a link', async () => {
     expect(await now('private', [ZOOM], 'left')).not.toContain('🔗');
+  });
+
+  const CHATS = ['private', 'supergroup'] as const;
+  const LAB = { ...ONS, subjectName: 'БД <лаб>', type: 'lab', room: '18-202' };
+  const MEET = { ...ZOOM, label: 'Meet', url: 'https://meet.google.com/abc', lessonReminderType: 'lab' };
+
+  it.each(CHATS)('%s: a failed link lookup costs only that link', async (chat) => {
+    const text = await now(chat, [ZOOM], 'now', [ONS, { ...LAB, type: 'broken' }]);
+    expect(text).toContain('<b>Зараз:</b> БД &lt;лаб&gt;');
+    expect(text.match(/🔗/g)).toHaveLength(1);
+    expect(text).toContain('Наступна');
+  });
+
+  it.each(CHATS)('%s: shows every lesson in progress with its own link, the next one after them', async (chat) => {
+    const text = await now(chat, [ZOOM, MEET], 'now', [ONS, LAB]);
+    expect(text.split('\n')).toEqual([
+      '<b>ІП-55</b> · I тиждень',
+      '🟢 <b>Зараз:</b> ОНС',
+      '    10:25 — 12:00 · 18-101',
+      '    🔗 <a href="https://zoom.us/j/1?pwd=a&amp;b=c">Zoom &lt;лекції&gt;</a>',
+      '🟢 <b>Зараз:</b> БД &lt;лаб&gt;',
+      '    10:25 — 12:00 · 18-202',
+      '    🔗 <a href="https://meet.google.com/abc">Meet</a>',
+      '⏳ <b>Наступна:</b> БД',
+      '    12:20 — 13:55',
+    ]);
+  });
+
+  it.each(CHATS)('%s: a lesson with no link still gets its block', async (chat) => {
+    const text = await now(chat, [MEET], 'now', [ONS, LAB]);
+    expect(text.match(/🟢/g)).toHaveLength(2);
+    expect(text.match(/🔗/g)).toHaveLength(1);
+    expect(text).toContain('Meet');
+  });
+
+  it.each(CHATS)('%s: identical rows collapse to one block', async (chat) => {
+    const text = await now(chat, [ZOOM], 'now', [ONS, { ...ONS, teacherNames: ['Інший'] }]);
+    expect(text.match(/🟢/g)).toHaveLength(1);
+    expect(text.match(/🔗/g)).toHaveLength(1);
+  });
+
+  it('rows of one subject in different rooms stay two blocks', async () => {
+    const text = await now('private', [ZOOM], 'now', [ONS, { ...ONS, room: '18-303' }]);
+    expect(text.match(/🟢/g)).toHaveLength(2);
+  });
+
+  it.each(CHATS)('%s: says the day is over only with nothing running and nothing next', async (chat) => {
+    expect(await now(chat, [], 'now', [], null)).toContain('Сьогодні пар більше немає');
+    expect(await now(chat, [], 'now', [ONS], null)).not.toContain('Сьогодні пар більше немає');
+    const onlyNext = await now(chat, [], 'now', []);
+    expect(onlyNext).toContain('Наступна');
+    expect(onlyNext).not.toContain('Зараз');
+    expect(onlyNext).not.toContain('Сьогодні пар більше немає');
+  });
+
+  it('/left names only the first lesson in progress', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date(2026, 9, 28, 11, 0, 0));
+    const text = await now('supergroup', [ZOOM], 'left', [ONS, LAB]);
+    jest.useRealTimers();
+    expect(text).toBe('<b>ІП-55</b>\n🟢 <b>ОНС</b>\nДо кінця: <b>60 хв</b> (до 12:00)');
   });
 });

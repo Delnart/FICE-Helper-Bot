@@ -577,24 +577,42 @@ describe('ScheduleService now', () => {
     lesson('14:15', '15:50', 'Щотижнева'), // no field: a doc not re-synced yet
   ];
 
-  const service = () =>
+  const service = (lessons = LESSONS) =>
     new ScheduleService(
-      { find: () => query(LESSONS) } as never,
+      { find: () => query(lessons) } as never,
       {} as never,
       { find: () => query([]) } as never,
       { findById: () => query({ _id: new Types.ObjectId(), campusLecturerId: 'L' }) } as never,
-      { refreshWeekParity: async () => 1, getLecturerLessons: async () => LESSONS.map((l) => ({ ...l, groupCampusId: '5627' })) } as never,
+      { refreshWeekParity: async () => 1, getLecturerLessons: async () => lessons.map((l) => ({ ...l, groupCampusId: '5627' })) } as never,
       {} as never,
     );
 
-  it.each([
-    ['nowFor', () => service().nowFor(G, U)],
-    ['nowForGroup', () => service().nowForGroup(G)],
-    ['lecturerNow', () => service().lecturerNow(U)],
-  ])('%s only sees lessons that run today', async (_name, now) => {
-    const { current, next } = (await now()) as unknown as { current: { subjectName: string }; next: { subjectName: string } };
+  const NOWS: Array<[string, (s: ScheduleService) => Promise<unknown>]> = [
+    ['nowFor', (s) => s.nowFor(G, U)],
+    ['nowForGroup', (s) => s.nowForGroup(G)],
+    ['lecturerNow', (s) => s.lecturerNow(U)],
+  ];
+
+  it.each(NOWS)('%s only sees lessons that run today', async (_name, now) => {
+    const { current, next } = (await now(service())) as { current: { subjectName: string }; next: { subjectName: string } };
     expect(current.subjectName).toBe('Сьогоднішня');
     expect(next.subjectName).toBe('Щотижнева');
+  });
+
+  it.each(NOWS)('%s lists every lesson in progress, the first as current', async (_name, now) => {
+    const { running, current, next } = (await now(
+      service([
+        lesson('09:00', '10:30', 'Щойно скінчилась'),
+        lesson('10:25', '12:00', 'Перша підгрупа', ['2026-10-28']),
+        lesson('10:25', '12:00', 'Інша дата', ['2026-10-14']),
+        lesson('10:30', '12:05', 'Щойно почалась'),
+        lesson('12:20', '13:55', 'Пізніша'),
+        lesson('10:31', '12:05', 'Найближча'),
+      ]),
+    )) as { running: Array<{ subjectName: string }>; current: unknown; next: { subjectName: string } };
+    expect(running.map((l) => l.subjectName)).toEqual(['Перша підгрупа', 'Щойно почалась']);
+    expect(current).toBe(running[0]);
+    expect(next.subjectName).toBe('Найближча');
   });
 
   it('finds nothing when the only lesson of the slot runs on other dates', async () => {
@@ -606,7 +624,7 @@ describe('ScheduleService now', () => {
       { refreshWeekParity: async () => 1 } as never,
       {} as never,
     );
-    await expect(svc.nowFor(G, U)).resolves.toEqual({ current: null, next: null, weekType: 1 });
+    await expect(svc.nowFor(G, U)).resolves.toEqual({ running: [], current: null, next: null, weekType: 1 });
   });
 
   it('hands the week lists over unfiltered, with their dates', async () => {
