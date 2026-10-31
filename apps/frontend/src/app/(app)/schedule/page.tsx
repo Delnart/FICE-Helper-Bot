@@ -413,7 +413,7 @@ export default function SchedulePage() {
           {/* Swipe left/right here switches the day; the strip above stays the tap / a11y control.
               Re-keyed per day / week (and once loaded), so the new day's list rises in instead of a hard cut.
               min-h: a free day's short card would leave the blank space below it dead to swipes. */}
-          <div ref={swipeRef} className="min-h-[40dvh]">
+          <div ref={swipeRef} className="flex min-h-[60dvh] flex-col gap-4">
             <div key={`${week}-${day}-${loading}`} className="anim-rise">
               {loading ? (
                 <Loading />
@@ -474,27 +474,27 @@ export default function SchedulePage() {
                 </section>
               )}
             </div>
-          </div>
 
-          {/* Electives link — visible to students and heads, not teachers */}
-          {!isTeacher && (
-            <Link href="/schedule/electives" className="row justify-between">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="tile tile-soft h-10 w-10 rounded-[12px]">
-                  <Icon name="star" size={20} />
-                </span>
-                <div className="flex min-w-0 flex-col">
-                  <span className="h3 text-ink">Вибіркові дисципліни</span>
-                  <span className="tiny faint">
-                    {electives.data?.length
-                      ? `Обрано ${enrolledCount} з ${electives.data.length} · впливає на ваш розклад`
-                      : 'Оберіть, які вибіркові показувати в розкладі'}
+            {/* Electives link — visible to students and heads, not teachers */}
+            {!isTeacher && (
+              <Link href="/schedule/electives" className="row justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="tile tile-soft h-10 w-10 rounded-[12px]">
+                    <Icon name="star" size={20} />
                   </span>
+                  <div className="flex min-w-0 flex-col">
+                    <span className="h3 text-ink">Вибіркові дисципліни</span>
+                    <span className="tiny faint">
+                      {electives.data?.length
+                        ? `Обрано ${enrolledCount} з ${electives.data.length} · впливає на ваш розклад`
+                        : 'Оберіть, які вибіркові показувати в розкладі'}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <Icon name="chevronRight" size={20} className="chev" />
-            </Link>
-          )}
+                <Icon name="chevronRight" size={20} className="chev" />
+              </Link>
+            )}
+          </div>
         </>
       )}
     </div>
