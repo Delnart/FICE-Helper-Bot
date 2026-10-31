@@ -8,7 +8,11 @@ const query = <T>(value: T) => {
   return q;
 };
 
-type StubUser = { _id: Types.ObjectId; telegramId: number; memberships: Array<{ groupId: Types.ObjectId; role: Role }> };
+/** What Mongo returns for an inclusive projection: the listed fields and _id. */
+const project = (row: object, fields: Record<string, number>) =>
+  Object.fromEntries(Object.entries(row).filter(([k]) => k === '_id' || fields[k]));
+
+type StubUser ={ _id: Types.ObjectId; telegramId: number; memberships: Array<{ groupId: Types.ObjectId; role: Role }> };
 /** Honors the `_id: { $in }` part of the filter — that's how the service narrows users to the opted-in ones. */
 const usersModel = (users: StubUser[]) => ({
   find: (filter: { _id: { $in: Types.ObjectId[] } }) =>
@@ -60,10 +64,11 @@ function setup({
   optedIn = ['A', 'B', 'T'],
   failDmFor = [] as number[],
   prefs = (_G: Types.ObjectId): PrefsRows => ({}),
+  dated = false,
 } = {}) {
   const G = new Types.ObjectId();
   const people = { A: user(1, [G]), B: user(2, [G]), C: user(3, [G]), T: user(4, [G, Role.Teacher]) };
-  const at = (startTime: string, subjectName: string, electiveStudentIds?: Types.ObjectId[]) => ({
+  const at = (startTime: string, subjectName: string, electiveStudentIds?: Types.ObjectId[], dates?: string[]) => ({
     _id: new Types.ObjectId(),
     groupId: G,
     subjectName,
@@ -74,6 +79,7 @@ function setup({
     weekType: 0,
     isElective: !!electiveStudentIds,
     electiveStudentIds: electiveStudentIds ?? [],
+    ...(dates && { dates }),
   });
   const lessons = [
     at('10:25', 'ОС'),
@@ -81,6 +87,9 @@ function setup({
     at('10:25', 'Фізика'),
     at('10:25', 'Вибіркова', [people.A._id]),
     at('12:20', 'Пізніше'),
+    ...(dated
+      ? [at('10:25', 'Сьогоднішня', undefined, ['2026-10-26', '2026-11-09']), at('10:25', 'Минула', undefined, ['2026-10-12'])]
+      : []),
   ];
   const nameById = new Map(lessons.map((l) => [String(l._id), l.subjectName]));
   const broadcastLessonReminders = jest.fn(async (_g: string, _m: number, _l: Array<{ subjectName: string }>) => undefined);
@@ -186,6 +195,18 @@ describe('SchedulerService.tickLessonReminders', () => {
     await svc.tickLessonReminders();
     expect(sendDirect.mock.calls.map(([id]) => id).sort()).toEqual([1, 2]);
   });
+
+  it('skips a lesson that runs on other dates, in the chat and in DMs, and claims nothing for it', async () => {
+    const { svc, broadcastLessonReminders, dms, updateOne } = setup({ dated: true });
+    await svc.tickLessonReminders();
+    const list = broadcastLessonReminders.mock.calls[0][2].map((l) => l.subjectName);
+    expect(list).toContain('Сьогоднішня');
+    expect(list).toContain('ОС'); // no dates at all: every week
+    expect(list).not.toContain('Минула');
+    expect(dms().get(2)).toContain('Сьогоднішня');
+    expect(dms().get(2)).not.toContain('Минула');
+    expect(updateOne).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe('SchedulerService.tickMorningDigest', () => {
@@ -206,7 +227,13 @@ describe('SchedulerService.tickMorningDigest', () => {
       N: user(5, [G1]), // never opted in
     };
     const S = new Types.ObjectId();
-    const lesson = (groupId: Types.ObjectId, subjectName: string, startTime: string, electiveStudentIds?: Types.ObjectId[]) => ({
+    const lesson = (
+      groupId: Types.ObjectId,
+      subjectName: string,
+      startTime: string,
+      electiveStudentIds?: Types.ObjectId[],
+      dates?: string[],
+    ) => ({
       _id: new Types.ObjectId(),
       groupId,
       subjectName,
@@ -216,7 +243,14 @@ describe('SchedulerService.tickMorningDigest', () => {
       room: '18-511',
       isElective: !!electiveStudentIds,
       electiveStudentIds: electiveStudentIds ?? [],
+      ...(dates && { dates }),
     });
+    const lessons = [
+      lesson(G1, 'ОС', '10:25'),
+      lesson(G1, 'Вибіркова', '08:30', [people.M._id]),
+      lesson(G1, 'Сьогоднішня', '12:20', undefined, ['2026-10-27']),
+      lesson(G1, 'Минула', '12:20', undefined, ['2026-10-13']),
+    ];
     const hw = (groupId: Types.ObjectId, title: string) => ({
       _id: new Types.ObjectId(),
       groupId,
@@ -228,7 +262,7 @@ describe('SchedulerService.tickMorningDigest', () => {
     const sendDirect = jest.fn(async (_id: number, _text: string) => undefined);
     const svc = new SchedulerService(
       { sendDirect } as never,
-      { find: () => query([lesson(G1, 'ОС', '10:25'), lesson(G1, 'Вибіркова', '08:30', [people.M._id])]) } as never,
+      { find: (_filter: unknown, fields: Record<string, number>) => query(lessons.map((l) => project(l, fields))) } as never,
       {} as never,
       { find: () => query(homework) } as never,
       { find: () => query([{ homeworkId: homework[1]._id, userId: people.B._id }]) } as never,
@@ -282,5 +316,13 @@ describe('SchedulerService.tickMorningDigest', () => {
       expect(m).not.toContain('Есе'); // G2's deadline
       expect(m).not.toContain('ІП-31'); // one group left → no prefix
     }
+  });
+
+  it('leaves out a lesson that runs on other dates', async () => {
+    const { svc, sendDirect } = digestSetup();
+    await svc.tickMorningDigest();
+    const a = new Map(sendDirect.mock.calls.map(([id, text]) => [id, text])).get(1)!;
+    expect(a).toContain('Сьогоднішня');
+    expect(a).not.toContain('Минула');
   });
 });

@@ -9,7 +9,7 @@ import {
   LessonReminder,
   NotificationsService,
 } from './notifications.service';
-import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
+import { localDateKey, runsOn, ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
 import { Queue, QueueDocument } from '../queues/queue.schema';
 import { Homework, HomeworkDocument } from '../homework/homework.schema';
 import { HomeworkCompletion, HomeworkCompletionDocument } from '../homework/homework-completion.schema';
@@ -74,7 +74,9 @@ export class SchedulerService {
         .find({ groupId: { $in: groups.map((g) => g._id) }, dayOfWeek: day, weekType: { $in: [0, week] } })
         .lean()
         .exec();
+      const today = localDateKey(now);
       const due = lessons.filter((l) => {
+        if (!runsOn(l, today)) return false;
         const lead = minutesByGroup.get(String(l.groupId)) ?? 0;
         const target = new Date(now.getTime() + lead * 60_000);
         const [h, m] = l.startTime.split(':').map(Number);
@@ -97,7 +99,6 @@ export class SchedulerService {
         )
         .lean()
         .exec();
-      const reminderDate = formatLocalDateKey(now);
       // One chat message per group, however many lessons (subgroups,
       // electives) start at that minute. Claims stay per lesson, so a lesson
       // is never announced twice even if two ticks overlap.
@@ -105,7 +106,7 @@ export class SchedulerService {
       const lookups = new Map<string, ReturnType<SchedulerService['buildSubjectLookup']>>();
       for (const l of wanted) {
         const groupId = String(l.groupId);
-        const claimed = await this.claimLessonReminder(groupId, String(l._id), reminderDate);
+        const claimed = await this.claimLessonReminder(groupId, String(l._id), today);
         if (!claimed) continue;
 
         let lookup = lookups.get(groupId);
@@ -186,6 +187,7 @@ export class SchedulerService {
       const groupIds = [...new Set(users.flatMap((u) => u.groupIds))].map((id) => new Types.ObjectId(id));
 
       const day = ((now.getDay() + 6) % 7) + 1;
+      const today = localDateKey(now);
       const week = await this.campus.refreshWeekParity();
       // Rest of the local (Kyiv, TZ is set in production) day: a cut-off that already passed this morning is no news.
       const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -201,6 +203,7 @@ export class SchedulerService {
               startTime: 1,
               endTime: 1,
               room: 1,
+              dates: 1,
               isElective: 1,
               electiveStudentIds: 1,
             },
@@ -239,7 +242,7 @@ export class SchedulerService {
         const text = buildMorningDigestText(
           now,
           lessons
-            .filter((l) => mine.has(String(l.groupId)) && attendsLesson(l, u.id))
+            .filter((l) => mine.has(String(l.groupId)) && runsOn(l, today) && attendsLesson(l, u.id))
             .map((l) => ({
               groupName: label(l.groupId),
               subjectName: l.subjectName,
@@ -469,13 +472,6 @@ function normalizeName(s: string): string {
     .replace(/["'«»()\[\].,!?:;]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function formatLocalDateKey(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function normalizeHttpUrl(raw: string): string | undefined {
