@@ -1526,13 +1526,11 @@ function formatDaySchedule(
       startTime: string;
       endTime: string;
       room?: string;
-      meetingUrl?: string;
     };
     const num = NUMBERS[idx] ?? `${idx + 1}.`;
     let line = `${num} <b>${escapeHtml(lesson.subjectName)}</b>`;
     line += `\n    ${lesson.startTime} — ${lesson.endTime}`;
     if (lesson.room) line += ` · ${escapeHtml(lesson.room)}`;
-    if (lesson.meetingUrl) line += `\n    🔗 <a href="${lesson.meetingUrl}">Перейти до зустрічі</a>`;
     lines.push(line);
   });
 

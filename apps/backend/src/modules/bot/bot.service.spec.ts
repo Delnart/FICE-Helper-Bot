@@ -18,7 +18,7 @@ const LESSONS = [
   lesson('Щочетверга', 4),
 ];
 
-function ask(chatType: 'private' | 'supergroup', kind: 'today' | 'tomorrow') {
+function ask(chatType: 'private' | 'supergroup', kind: 'today' | 'tomorrow', lessons: unknown[] = LESSONS) {
   const reply = jest.fn(async (_text: string) => undefined);
   const svc = new BotService(
     {} as never,
@@ -26,7 +26,7 @@ function ask(chatType: 'private' | 'supergroup', kind: 'today' | 'tomorrow') {
     { findByTelegramId: async () => ({ _id: 'u', memberships: [{ groupId: 'g' }] }) } as never,
     { refreshWeekParity: async () => 1 } as never,
     {} as never,
-    { getForGroup: async () => LESSONS, getForUser: async () => LESSONS } as never,
+    { getForGroup: async () => lessons, getForUser: async () => lessons } as never,
     {} as never,
     {} as never,
     {} as never,
@@ -54,6 +54,13 @@ describe('BotService /today and /tomorrow', () => {
     expect(text).toContain('Цього четверга');
     expect(text).toContain('Щочетверга');
     expect(text).not.toContain('Іншого четверга');
+  });
+
+  it.each(['private', 'supergroup'] as const)('%s: /today shows no link, even for a lesson with its own', async (chat) => {
+    const text = await ask(chat, 'today', [{ ...LESSONS[0], meetingUrl: 'https://meet.example/"x' }]);
+    expect(text).toContain('Цієї середи');
+    expect(text).not.toContain('🔗');
+    expect(text).not.toContain('href');
   });
 });
 
