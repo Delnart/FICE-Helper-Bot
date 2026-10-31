@@ -10,17 +10,18 @@ import { haptic } from '../../../lib/telegram';
 
 interface Release {
   version: string;
-  date?: string;
-  sections: Array<{ title?: string; paragraphs: string[]; items: string[] }>;
+  date: string;
+  blocks: Array<{ title?: string; text?: string; items?: string[] }>;
 }
 
 // Inlined at build time (next.config.js): the releases come from the root CHANGELOG.md.
 const RELEASES: Release[] = JSON.parse(process.env.NEXT_PUBLIC_CHANGELOG ?? '[]');
 const CURRENT = process.env.NEXT_PUBLIC_APP_VERSION;
 
-/** "2026-10-31" → "31 жовтня 2026"; a period like «травень–вересень 2026» stays as written. */
-function dateLabel(date = ''): string {
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? dayjs(date).locale('uk').format('D MMMM YYYY') : date;
+/** "2026-10-31" → "31 жовтня 2026"; a period like «травень–вересень 2026» or a typo stays as written. */
+function dateLabel(date: string): string {
+  const day = dayjs(date);
+  return day.format('YYYY-MM-DD') === date ? day.locale('uk').format('D MMMM YYYY') : date;
 }
 
 export default function UpdatesPage() {
@@ -60,24 +61,27 @@ function ReleaseCard({ release, defaultOpen }: { release: Release; defaultOpen: 
       </button>
       <div className={cn('fold', open && 'open')}>
         <div>
-          <div className="flex flex-col gap-3 px-4 pb-4">
-            {release.sections.map((s, i) => (
-              <div key={i} className="flex flex-col gap-1.5">
-                {s.title ? <h3 className="eyebrow">{s.title}</h3> : null}
-                {s.paragraphs.map((p) => (
-                  <p key={p} className="small muted">
-                    {p}
-                  </p>
-                ))}
-                {s.items.length ? (
-                  <ul className="small muted flex list-disc flex-col gap-1.5 pl-5 marker:text-ink-3">
-                    {s.items.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ))}
+          <div className="flex flex-col gap-1.5 px-4 pb-4">
+            {release.blocks.map((b, i) =>
+              b.title ? (
+                <h3 key={i} className="eyebrow mt-1.5 first:mt-0">
+                  {b.title}
+                </h3>
+              ) : b.items ? (
+                <ul
+                  key={i}
+                  className="small muted flex list-disc flex-col gap-1.5 pl-5 marker:text-ink-3"
+                >
+                  {b.items.map((item, j) => (
+                    <li key={j}>{item}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p key={i} className="small muted">
+                  {b.text}
+                </p>
+              ),
+            )}
           </div>
         </div>
       </div>
