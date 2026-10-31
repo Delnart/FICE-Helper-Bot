@@ -46,10 +46,15 @@ const TYPE_LABEL: Record<string, string> = {
 const lessonsWord = (n: number) =>
   n % 10 >= 1 && n % 10 <= 4 && !(n % 100 >= 11 && n % 100 <= 14) ? 'заняття' : 'занять';
 
-/** "2 заняття на тиждень" / "1–2 заняття на тиждень" (I and II weeks differ). */
+/**
+ * "2 заняття на тиждень" / "1–2 заняття на тиждень" (I and II weeks differ).
+ * Counts slots, not rows: rows of one slot are other dates or subgroups of the same lesson.
+ */
 function perWeek(lessons: LessonPart[]): string {
-  const w1 = lessons.filter((l) => l.weekType !== 2).length;
-  const w2 = lessons.filter((l) => l.weekType !== 1).length;
+  const slots = (skip: number) =>
+    new Set(lessons.filter((l) => l.weekType !== skip).map((l) => `${l.dayOfWeek}|${l.startTime}`)).size;
+  const w1 = slots(2);
+  const w2 = slots(1);
   const lo = Math.min(w1, w2);
   const hi = Math.max(w1, w2);
   if (!hi) return '';
