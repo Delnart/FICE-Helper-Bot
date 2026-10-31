@@ -1415,6 +1415,15 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function escapeHtmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── Schedule formatting ───────────────────────────────────────────────────────
 
 interface LessonSlim {
@@ -1442,7 +1451,7 @@ function formatNow(
       `\n🟢 <b>Зараз:</b> ${escapeHtml(lesson.subjectName)}` +
       `\n    ${lesson.startTime} — ${lesson.endTime}` +
       (lesson.room ? ` · ${escapeHtml(lesson.room)}` : '') +
-      (link ? `\n    🔗 <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>` : ''),
+      (link ? `\n    🔗 <a href="${escapeHtmlAttr(link.url)}">${escapeHtml(link.label)}</a>` : ''),
   );
   lines.push(...new Set(blocks));
 

@@ -167,6 +167,15 @@ describe('BotService /now', () => {
     expect(onlyNext).not.toContain('Сьогодні пар більше немає');
   });
 
+  it.each([
+    ['"https://zoom.us/j/1"', 'https://&quot;https//zoom.us/j/1%22'],
+    ['https://zo"om.us/j/1', 'https://zo&quot;om.us/j/1'],
+    ["https://zo'om.us/j/1", 'https://zo&#39;om.us/j/1'],
+  ])('escapes the href of %s, and leaves the label to escapeHtml', async (url, href) => {
+    const text = await now('supergroup', [{ ...ZOOM, label: 'Зум "1"', url }]);
+    expect(text).toContain(`🔗 <a href="${href}">Зум "1"</a>`);
+  });
+
   it('/left names only the first lesson in progress', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     jest.setSystemTime(new Date(2026, 9, 28, 11, 0, 0));
