@@ -13,6 +13,8 @@ export interface LecturerLesson {
   endTime: string;
   room?: string;
   lessonNumber: number;
+  /** Same as CampusScheduleItem.dates. */
+  dates: string[];
 }
 
 export interface CampusScheduleItem {
@@ -25,6 +27,8 @@ export interface CampusScheduleItem {
   endTime: string;
   weekType: 1 | 2; // first or second week parity
   room?: string;
+  /** The only calendar days this row runs on, sorted; empty = every week of its parity. */
+  dates: string[];
 }
 
 export interface CampusGroupSummary {
@@ -381,7 +385,7 @@ function normalizePersonName(s: string): string {
  * Parse a lecturer schedule response (same weekly shape as group schedule, but
  * pairs contain `groups: [{id, name}]` instead of a `lecturer` field).
  */
-function parseLecturerSchedule(raw: unknown): LecturerLesson[] {
+export function parseLecturerSchedule(raw: unknown): LecturerLesson[] {
   const root = unwrapDataObject(raw);
   if (!root || typeof root !== 'object') return [];
   const obj = root as Record<string, unknown>;
@@ -422,6 +426,7 @@ function parseLecturerSchedule(raw: unknown): LecturerLesson[] {
         const groups = Array.isArray(pair.groups)
           ? (pair.groups as Array<{ id?: unknown; name?: unknown }>)
           : [];
+        const dates = parseDates(pair.dates);
         for (const g of groups) {
           if (!g?.id || !g?.name) continue;
           out.push({
@@ -435,6 +440,7 @@ function parseLecturerSchedule(raw: unknown): LecturerLesson[] {
             endTime,
             room,
             lessonNumber,
+            dates,
           });
         }
       }
@@ -473,9 +479,11 @@ function unwrapList<T>(raw: unknown): T[] | null {
  *   ],
  *   scheduleSecondWeek: [ ... ]
  * }
+ * `dates` lists the only calendar days ("YYYY-MM-DD") a pair runs on, empty = every week of
+ * its parity. A slot can hold several pairs that differ only by their dates.
  * Older shape (flat array of lessons) is also accepted for compatibility.
  */
-function normaliseSchedule(raw: unknown): CampusScheduleItem[] {
+export function normaliseSchedule(raw: unknown): CampusScheduleItem[] {
   const root = unwrapDataObject(raw);
   if (root && typeof root === 'object') {
     const obj = root as Record<string, unknown>;
@@ -516,6 +524,7 @@ function normaliseSchedule(raw: unknown): CampusScheduleItem[] {
         endTime: String(r.time_end ?? r.endTime ?? ''),
         weekType: (weekRaw === 2 ? 2 : 1) as 1 | 2,
         room: r.lesson_room ? String(r.lesson_room) : r.room ? String(r.room) : undefined,
+        dates: parseDates(r.dates),
       } satisfies CampusScheduleItem;
     })
     .filter((x) => x.subjectName && x.dayOfWeek >= 1 && x.dayOfWeek <= 6);
@@ -673,11 +682,19 @@ function parseWeeklyScheduleObject(obj: Record<string, unknown>): CampusSchedule
           endTime,
           weekType,
           room,
+          dates: parseDates(pair.dates),
         });
       }
     }
   }
   return out;
+}
+
+/** Campus `dates` → sorted unique calendar days; a longer ISO timestamp keeps its date part, the rest is dropped. */
+export function parseDates(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const days = raw.flatMap((d) => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}(T|$)/.test(d) ? [d.slice(0, 10)] : []));
+  return [...new Set(days)].sort();
 }
 
 /** Maps Ukrainian short day names ("Пн", "Вт"/"Вв", "Ср", "Чт", "Пт", "Сб") to 1..6. */

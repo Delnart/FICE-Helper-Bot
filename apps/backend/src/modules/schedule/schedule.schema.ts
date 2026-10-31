@@ -24,6 +24,10 @@ export class ScheduleLesson {
 
   @Prop({ required: true, enum: [0, 1, 2] }) weekType!: 0 | 1 | 2;
 
+  // The only calendar days ("YYYY-MM-DD", from Campus) the lesson runs on, sorted.
+  // Empty, or absent on a doc not re-synced yet = every week of its weekType.
+  @Prop({ type: [String], default: [] }) dates?: string[];
+
   @Prop() room?: string;
   @Prop() meetingUrl?: string;
 
@@ -37,3 +41,16 @@ export class ScheduleLesson {
 export type ScheduleLessonDocument = HydratedDocument<ScheduleLesson>;
 export const ScheduleLessonSchema = SchemaFactory.createForClass(ScheduleLesson);
 ScheduleLessonSchema.index({ groupId: 1, dayOfWeek: 1, weekType: 1, startTime: 1 });
+
+/** The calendar day of `d` in local time (Kyiv, TZ is set in production), as "YYYY-MM-DD". */
+export function localDateKey(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** The one rule for "does this lesson run on `day`" ("YYYY-MM-DD"); weekday and parity are the caller's filter. */
+export function runsOn(lesson: { dates?: string[] }, day: string): boolean {
+  return !lesson.dates?.length || lesson.dates.includes(day);
+}

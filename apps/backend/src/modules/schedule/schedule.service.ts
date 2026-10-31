@@ -10,7 +10,7 @@ import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { AnyBulkWriteOperation, Model, Types } from 'mongoose';
 import { Role, ROLE_LEVEL } from '@fice/shared';
-import { ScheduleLesson, ScheduleLessonDocument } from './schedule.schema';
+import { localDateKey, runsOn, ScheduleLesson, ScheduleLessonDocument } from './schedule.schema';
 import { CampusScheduleItem, CampusService } from '../campus/campus.service';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
@@ -83,6 +83,7 @@ export class ScheduleService {
           meetingUrl: l.meetingUrl,
           type: l.type,
           weekType: l.weekType,
+          dates: l.dates,
           isElective: l.isElective,
         };
       });
@@ -121,6 +122,7 @@ export class ScheduleService {
           room: l.room,
           type: l.type,
           weekType: l.weekType,
+          dates: l.dates,
           isElective: l.isElective,
         };
       });
@@ -133,9 +135,8 @@ export class ScheduleService {
     const week = await this.campus.refreshWeekParity();
     const list = await this.getForUser(groupId, userId, week);
     const now = new Date();
-    const day = ((now.getDay() + 6) % 7) + 1;
     const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = list.filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day);
+    const today = lessonsOn(list, now);
     const current =
       today.find((l) => {
         const [sH, sM] = (l as { startTime: string }).startTime.split(':').map(Number);
@@ -164,9 +165,8 @@ export class ScheduleService {
     const week = await this.campus.refreshWeekParity();
     const list = await this.getForGroup(groupId, week);
     const now = new Date();
-    const day = ((now.getDay() + 6) % 7) + 1; // Mon=1..Sat=6
     const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = list.filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day);
+    const today = lessonsOn(list, now);
 
     const current =
       today.find((l) => {
@@ -312,6 +312,7 @@ export class ScheduleService {
         room: l.room,
         type: l.type,
         weekType: l.weekType,
+        dates: l.dates,
         isElective: false,
       }));
   }
@@ -323,9 +324,8 @@ export class ScheduleService {
     const week = await this.campus.refreshWeekParity();
     const list = await this.lecturerWeek(userId, week);
     const now = new Date();
-    const day = ((now.getDay() + 6) % 7) + 1;
     const minutes = now.getHours() * 60 + now.getMinutes();
-    const today = list.filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day);
+    const today = lessonsOn(list, now);
     const current =
       today.find((l) => {
         const cast = l as { startTime: string; endTime: string };
@@ -470,31 +470,29 @@ export class ScheduleService {
       electiveMap.set(norm, set);
     }
 
-    // Campus may return several rows per slot (subgroups: other teacher/room), so
-    // match one-to-one, strongest matches first (teacher+room, teacher, room, any)
-    // so a weaker greedy pick can't take a lesson another row matches better.
+    // Campus may return several rows per slot (subgroups: other teacher/room; a slot
+    // limited to dates: other dates) in no stable order, so match one-to-one, strongest
+    // pairs first, so a weaker greedy pick can't take a lesson another row matches better.
     const buckets = new Map<string, typeof existing>();
     for (const l of existing) {
       const k = lessonKey(l);
       buckets.set(k, [...(buckets.get(k) ?? []), l]);
     }
+    const pairs = items
+      .flatMap((item) =>
+        (buckets.get(lessonKey(item)) ?? []).map((lesson) => ({ item, lesson, score: matchScore(lesson, item) })),
+      )
+      .sort((a, b) => b.score - a.score);
     const matched = new Map<CampusScheduleItem, (typeof existing)[number]>();
-    for (const minScore of [3, 2, 1, 0]) {
-      for (const item of items) {
-        if (matched.has(item)) continue;
-        const bucket = buckets.get(lessonKey(item));
-        if (!bucket?.length) continue;
-        let best = 0;
-        for (let i = 1; i < bucket.length; i++) {
-          if (matchScore(bucket[i], item) > matchScore(bucket[best], item)) best = i;
-        }
-        if (matchScore(bucket[best], item) < minScore) continue;
-        matched.set(item, bucket.splice(best, 1)[0]);
-      }
+    const taken = new Set<(typeof existing)[number]>();
+    for (const { item, lesson } of pairs) {
+      if (matched.has(item) || taken.has(lesson)) continue;
+      matched.set(item, lesson);
+      taken.add(lesson);
     }
 
     const ops: AnyBulkWriteOperation[] = [];
-    const leftover = [...buckets.values()].flat().map((l) => l._id);
+    const leftover = existing.filter((l) => !taken.has(l)).map((l) => l._id);
     if (leftover.length) ops.push({ deleteMany: { filter: { _id: { $in: leftover } } } });
     for (const item of items) {
       const prev = matched.get(item);
@@ -505,7 +503,9 @@ export class ScheduleService {
           endTime: item.endTime,
           teacherNames: item.teacherNames,
           room: item.room,
+          dates: item.dates,
         };
+        // A doc from before `dates` differs from [] here, so it gets the field on its first sync.
         const unchanged = (Object.keys(fields) as Array<keyof typeof fields>).every(
           (k) => JSON.stringify(fields[k]) === JSON.stringify(prev[k]),
         );
@@ -533,6 +533,7 @@ export class ScheduleService {
             teacherNames: item.teacherNames,
             type: item.type,
             room: item.room,
+            dates: item.dates,
             isElective: preservedStudents !== undefined,
             electiveStudentIds: preservedStudents
               ? Array.from(preservedStudents).map((id) => new Types.ObjectId(id))
@@ -706,12 +707,28 @@ function lessonKey(l: Pick<ScheduleLesson, 'dayOfWeek' | 'lessonNumber' | 'type'
   return `${l.dayOfWeek}|${l.lessonNumber}|${l.weekType}|${l.type}|${normaliseName(l.subjectName)}`;
 }
 
-/** 3 = same teachers and room, 2 = same teachers, 1 = same room, 0 = neither. */
-function matchScore(l: Pick<ScheduleLesson, 'teacherNames' | 'room'>, item: CampusScheduleItem): number {
+/**
+ * Same dates (8) beat shared dates (4 plus their share of both lists, so under 5) beat none,
+ * then same teachers (2), then same room (1). Dates come first because slot rows often differ
+ * only by them: without this, Campus's unstable order would shuffle `_id`s and with them
+ * attendance records and reminder marks. A doc from before `dates` counts as undated.
+ */
+function matchScore(l: Pick<ScheduleLesson, 'dates' | 'teacherNames' | 'room'>, item: CampusScheduleItem): number {
+  const dates = l.dates ?? [];
+  const shared = dates.filter((d) => item.dates.includes(d)).length;
+  const union = dates.length + item.dates.length - shared;
   return (
+    (shared === union ? 8 : shared ? 4 + shared / union : 0) +
     (JSON.stringify(l.teacherNames) === JSON.stringify(item.teacherNames) ? 2 : 0) +
     ((l.room ?? '') === (item.room ?? '') ? 1 : 0)
   );
+}
+
+/** The lessons of `list` that run on the calendar day of `now`. */
+function lessonsOn(list: Array<Record<string, unknown>>, now: Date): Array<Record<string, unknown>> {
+  const weekday = ((now.getDay() + 6) % 7) + 1; // Mon=1..Sat=6
+  const day = localDateKey(now);
+  return list.filter((l) => l.dayOfWeek === weekday && runsOn(l as { dates?: string[] }, day));
 }
 
 /** Normalise a subject name for fuzzy lookup: lower-case, strip whitespace/punct. */

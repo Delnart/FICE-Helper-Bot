@@ -9,6 +9,8 @@ export interface ScheduleLessonDto {
   startTime: string;
   endTime: string;
   weekType: 1 | 2 | 0;
+  /** The only calendar days ("YYYY-MM-DD") it runs on, sorted; empty/absent = every week of its weekType. */
+  dates?: string[];
   room?: string;
   meetingUrl?: string;
   isElective: boolean;
