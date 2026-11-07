@@ -25,7 +25,7 @@ const GROUPS: Array<{ title: string; items: Array<{ k: keyof Prefs; title: strin
   {
     title: 'Черги',
     items: [
-      { k: 'dmQueueOpen', title: 'Відкриття черги', hint: 'За 5 хв до відкриття — встигнете записатись' },
+      { k: 'dmQueueOpen', title: 'Відкриття черги', hint: 'Коли старостат відкриває чергу — встигнете записатись' },
       { k: 'dmNextInQueue', title: 'Ви наступний', hint: 'Коли попередній почав здавати' },
       { k: 'dmSwapRequests', title: 'Запити на обмін', hint: 'Коли хтось пропонує помінятись місцями' },
     ],

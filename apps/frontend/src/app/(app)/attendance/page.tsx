@@ -90,8 +90,8 @@ const STATUS_CYCLE: Status[] = ['unknown', 'present', 'absent', 'excused', 'late
 const STATUS_LABEL: Record<Status, string> = {
   present: 'П',
   absent: 'Н',
-  excused: 'Пв',
-  late: 'З',
+  excused: 'Пов',
+  late: 'Зап',
   unknown: '·',
 };
 const STATUS_FULL: Record<Status, string> = {
@@ -377,7 +377,7 @@ export default function AttendancePage() {
           const c = pdata?.cells[s._id]?.[sub.subjectName];
           const missed = c ? c.absent + c.excused : 0;
           const short = shortenName(s.fullName);
-          const tip = c ? `н ${c.absent} · пв ${c.excused} · з ${c.late} · п ${c.present}` : 'Немає відміток';
+          const tip = c ? `н ${c.absent} · пов ${c.excused} · зап ${c.late} · п ${c.present}` : 'Немає відміток';
           return {
             text: c ? String(missed) : '·',
             cls: !c ? '' : c.absent ? 'on-bad' : c.excused ? 'on-info' : c.late ? 'on-warn' : 'on-ok',
@@ -397,7 +397,7 @@ export default function AttendancePage() {
     late: totals.late,
   };
 
-  /** Right sticky column: week — missed this week / ever; month & semester — missed (н+пв) / attendance %. */
+  /** Right sticky column: week — missed this week / ever; month & semester — missed (н+пов) / attendance %. */
   const rowTotal = (s: Student): { big: number; second: string } => {
     if (isWeek) {
       const w = data?.perStudentWeek[s._id] ?? ZERO;
@@ -438,7 +438,7 @@ export default function AttendancePage() {
     [
       'Студент',
       ...columns.map((c) => c.title),
-      ...(isWeek ? ['Пропуски за тиждень', 'Пропуски всього'] : ['Пропуски (н+пв)', 'Присутність']),
+      ...(isWeek ? ['Пропуски за тиждень', 'Пропуски всього'] : ['Пропуски (н+пов)', 'Присутність']),
     ],
     ...students.map((s) => {
       const t = rowTotal(s);
@@ -626,13 +626,13 @@ export default function AttendancePage() {
                     <th
                       scope="col"
                       className="sticky right-0 z-10 w-14 border-l border-line bg-surface px-1.5 py-2 text-center"
-                      title={isWeek ? 'Пропуски за тиждень / всього' : 'Пропуски (н + пв) / присутність'}
+                      title={isWeek ? 'Пропуски за тиждень / всього' : 'Пропуски (н + пов) / присутність'}
                     >
                       <div className="flex flex-col items-center leading-tight">
                         <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-3">
                           {isWeek ? 'Тижд.' : 'Разом'}
                         </span>
-                        <span className="tiny faint">{isWeek ? 'всього' : 'н+пв'}</span>
+                        <span className="tiny faint">{isWeek ? 'всього' : 'н+пов'}</span>
                       </div>
                     </th>
                   </tr>
@@ -703,14 +703,14 @@ export default function AttendancePage() {
                           )}
                         >
                           {st.absent ? <div className="text-bad">{st.absent}н</div> : null}
-                          {st.excused ? <div className="text-info">{st.excused}пв</div> : null}
-                          {st.late ? <div className="text-warn">{st.late}з</div> : null}
+                          {st.excused ? <div className="text-info">{st.excused}пов</div> : null}
+                          {st.late ? <div className="text-warn">{st.late}зап</div> : null}
                           {!st.absent && !st.excused && !st.late ? <span className="text-ink-3">—</span> : null}
                         </td>
                       );
                     })}
                     <td className="sticky right-0 z-10 border-l border-line bg-surface-2 px-1.5 text-center text-[10px] leading-tight text-ink-3">
-                      н / пв / з
+                      н / пов / зап
                     </td>
                   </tr>
                 </tfoot>
@@ -754,7 +754,7 @@ export default function AttendancePage() {
             ))
           : (
             <>
-              <span className="tiny faint w-full">Число в клітинці — пропуски (н + пв) за {periodMeta.unit}</span>
+              <span className="tiny faint w-full">Число в клітинці — пропуски (н + пов) за {periodMeta.unit}</span>
               {PERIOD_LEGEND.map((it) => (
                 <span key={it.dot} className="tiny inline-flex items-center gap-[5px]">
                   <span className={cn('dot', it.dot)} />

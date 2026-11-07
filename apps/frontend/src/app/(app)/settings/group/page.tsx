@@ -166,7 +166,7 @@ export default function GroupSettingsPage() {
           <Link href="/settings/notifications" className="row-plain justify-between">
             <div className="flex min-w-0 flex-1 flex-col">
               <span className="h3">Дедлайни завдань</span>
-              <span className="tiny faint">За 24 години до дедлайну · кожному в особисті</span>
+              <span className="tiny faint">О 9:00 напередодні дедлайну · кожному в особисті</span>
             </div>
             <Icon name="chevronRight" size={20} className="chev" />
           </Link>

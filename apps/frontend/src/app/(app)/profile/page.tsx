@@ -44,7 +44,7 @@ const FULL_NAME_RE = /^[\p{Script=Latin}\p{Script=Cyrillic}\s.'’\-]+$/u;
 function validateName(name: string): string | null {
   const trimmed = name.trim();
   if (trimmed.length === 0) return 'Вкажіть ПІБ.';
-  if (trimmed.length > 200) return 'ПІБ занадто довге (макс. 200 символів).';
+  if (trimmed.length > 100) return 'ПІБ занадто довге (макс. 100 символів).';
   if (!FULL_NAME_RE.test(trimmed)) {
     return 'ПІБ має містити лише літери, пробіл, дефіс або апостроф. Емодзі та цифри не допускаються.';
   }

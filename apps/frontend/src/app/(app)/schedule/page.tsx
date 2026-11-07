@@ -97,8 +97,8 @@ interface LiveInfo {
 
 const ATT_CHIP: Partial<Record<AttStatus, { label: string; title: string; cls: string }>> = {
   present: { label: 'П', title: 'Присутність', cls: 'chip-ok' },
-  late: { label: 'Зап', title: 'Запізнення', cls: 'chip-info' },
-  excused: { label: 'Пов', title: 'Поважна причина', cls: 'chip-warn' },
+  late: { label: 'Зап', title: 'Запізнення', cls: 'chip-warn' },
+  excused: { label: 'Пов', title: 'Поважна причина', cls: 'chip-info' },
   absent: { label: 'Н', title: 'Відсутність', cls: 'chip-bad' },
 };
 

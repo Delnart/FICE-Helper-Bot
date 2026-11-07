@@ -138,8 +138,8 @@ const KIND_LABEL: Record<string, string> = {
 
 const ATT_CHIP: Partial<Record<AttStatus, { label: string; cls: string }>> = {
   present: { label: 'П', cls: 'chip-ok' },
-  late: { label: 'Зап', cls: 'chip-info' },
-  excused: { label: 'Пов', cls: 'chip-warn' },
+  late: { label: 'Зап', cls: 'chip-warn' },
+  excused: { label: 'Пов', cls: 'chip-info' },
   absent: { label: 'Н', cls: 'chip-bad' },
 };
 
