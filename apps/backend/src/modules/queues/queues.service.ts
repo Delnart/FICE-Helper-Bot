@@ -456,6 +456,8 @@ export class QueuesService {
   async remove(user: RequestUser, id: string): Promise<void> {
     const q = await this.findById(id);
     this.assertCanManage(user, String(q.groupId));
+    // Swaps first: a failure leaves the queue, so a retry still finds them.
+    await this.swaps.deleteMany({ queueId: q._id });
     await this.queues.deleteOne({ _id: q._id });
   }
 

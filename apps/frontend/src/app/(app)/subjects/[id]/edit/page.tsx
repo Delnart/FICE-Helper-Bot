@@ -149,10 +149,13 @@ export default function EditSubjectPage() {
       haptic('success');
       // Drop this subject from every cache it appears in, otherwise the
       // home page / subject lists still show it until manual refresh.
+      // Its homework and queue are deleted with it.
       qc.removeQueries({ queryKey: ['subject', id] });
       void qc.invalidateQueries({ queryKey: ['subjects'] });
       void qc.invalidateQueries({ queryKey: ['subject-hw'] });
       void qc.invalidateQueries({ queryKey: ['hw-pending-count'] });
+      void qc.invalidateQueries({ queryKey: ['hw-all'] });
+      void qc.invalidateQueries({ queryKey: ['queues-all'] });
       router.replace('/');
     },
     onError: (err: unknown) => {
@@ -270,7 +273,7 @@ export default function EditSubjectPage() {
           className="btn btn-ghost btn-block h-11 text-bad"
           disabled={remove.isPending}
           onClick={() => {
-            if (window.confirm('Видалити дисципліну? Цю дію не можна скасувати.')) {
+            if (window.confirm('Видалити дисципліну разом з її завданнями та чергою? Цю дію не можна скасувати.')) {
               remove.mutate();
             }
           }}

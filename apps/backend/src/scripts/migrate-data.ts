@@ -3,7 +3,8 @@
  * Mixed to a real ObjectId schema type and added two unique indexes.
  * Data written while the paths were Mixed can hold string ids and duplicates
  * that typed queries / the new indexes choke on. Also moves attendance records
- * the old mark page filed one day early (step 6).
+ * the old mark page filed one day early (step 6) and removes what deleted
+ * subjects left behind while SubjectsService.remove deleted only the subject (step 8).
  *
  *   node dist/scripts/migrate-data.js           dry run: read-only report
  *   node dist/scripts/migrate-data.js --apply   write the fixes, build the indexes
@@ -419,6 +420,53 @@ async function buildIndexes() {
   row('7 build indexes', 2, done, 2 - done);
 }
 
+async function orphans() {
+  console.log('\n[8] rows a deleted subject left behind');
+  // Child refs are read before their parents, so a parent created meanwhile isn't taken for
+  // missing; a missing parent never comes back, so what matched stays an orphan on a rerun.
+  const ids = async (name: string, filter: Doc) =>
+    (await coll(name).find(filter, { projection: { _id: 1 } }).toArray()).map((d) => d._id);
+  /** Filter for the rows of `name` whose `ref` names a missing `parent` row or one of `gone`. */
+  const dead = async (name: string, ref: string, parent: string, gone: unknown[] = [], filter: Doc = {}) => {
+    const refs = (await coll(name).distinct(ref, filter)).filter((v) => HEX24.test(String(v))); // the rest is step 1's
+    const alive = new Set((await ids(parent, { _id: { $in: refs.map((v) => new Types.ObjectId(String(v))) } })).map(String));
+    const dropped = new Set(gone.map(String));
+    return { ...filter, [ref]: { $in: refs.filter((v) => !alive.has(String(v)) || dropped.has(String(v))) } };
+  };
+  const homework = await dead('homework', 'subjectId', 'subjects');
+  const queues = await dead('queues', 'subjectId', 'subjects');
+  // Children of that homework / those queues count too: a dry run still sees their parents.
+  const steps: Array<[string, string, Doc]> = [
+    ['homework_completions', 'homework_completions of deleted homework -> deleted',
+      await dead('homework_completions', 'homeworkId', 'homework', await ids('homework', homework))],
+    ['homework', 'homework of a deleted subject -> deleted', homework],
+    ['queue_swap_requests', 'queue_swap_requests of a deleted queue -> deleted',
+      await dead('queue_swap_requests', 'queueId', 'queues', await ids('queues', queues))],
+    ['queues', 'queues of a deleted subject -> deleted', queues],
+    ['attendance_sessions', 'attendance_sessions (old journal) of a deleted subject -> deleted',
+      await dead('attendance_sessions', 'subjectId', 'subjects')],
+    // Decided ones stay, as in SubjectsService.remove: they record who let the teacher into the group.
+    ['teacher_applications', 'pending teacher_applications to a deleted subject -> deleted',
+      await dead('teacher_applications', 'subjectId', 'subjects', [], { status: 'pending' })],
+    ['schedule_lessons', 'schedule_lessons linked to a deleted subject -> link removed',
+      await dead('schedule_lessons', 'subjectId', 'subjects')],
+  ];
+  let found = 0, done = 0;
+  for (const [name, label, filter] of steps) {
+    const rows = await ids(name, filter);
+    show(label, rows);
+    found += rows.length;
+    if (!APPLY) done += rows.length;
+    else if (rows.length) {
+      const only = { ...filter, _id: { $in: rows } };
+      done += name === 'schedule_lessons'
+        ? (await coll(name).updateMany(only, { $unset: { subjectId: '' } })).modifiedCount // attendance hangs off lessons
+        : (await coll(name).deleteMany(only)).deletedCount;
+    }
+  }
+  row('8 orphans of deleted subjects', found, done, 0); // fewer done = removed meanwhile, also fine
+}
+
 async function main() {
   const uri = process.env.MONGO_URI;
   if (!uri) {
@@ -437,6 +485,7 @@ async function main() {
     await dupTeachers();
     await shiftedAttendance(); // after step 1: the twin lookup matches ObjectId ids
     if (APPLY) await buildIndexes();
+    await orphans();
   } finally {
     await mongoose.disconnect();
   }

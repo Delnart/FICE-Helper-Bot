@@ -7,6 +7,12 @@ import { Subject, SubjectDocument } from './subject.schema';
 import { AttendanceSession, AttendanceSessionDocument } from './attendance.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { User, UserDocument } from '../users/user.schema';
+import { Homework, HomeworkDocument } from '../homework/homework.schema';
+import { HomeworkCompletion, HomeworkCompletionDocument } from '../homework/homework-completion.schema';
+import { Queue, QueueDocument } from '../queues/queue.schema';
+import { QueueSwapRequest, QueueSwapRequestDocument } from '../queues/swap-request.schema';
+import { TeacherApplication, TeacherApplicationDocument } from '../teachers/teacher-application.schema';
+import { ScheduleLesson, ScheduleLessonDocument } from '../schedule/schedule.schema';
 import { CreateSubjectDto, SubjectLinkDto, SubjectTeacherDto, UpdateSubjectDto } from './dto/subject.dto';
 import { SheetsService } from '../sheets/sheets.service';
 import { UsersService } from '../users/users.service';
@@ -22,6 +28,12 @@ export class SubjectsService {
     @InjectModel(AttendanceSession.name) private readonly attendance: Model<AttendanceSessionDocument>,
     @InjectModel(AcademicGroup.name) private readonly groups: Model<AcademicGroupDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
+    @InjectModel(Homework.name) private readonly homework: Model<HomeworkDocument>,
+    @InjectModel(HomeworkCompletion.name) private readonly completions: Model<HomeworkCompletionDocument>,
+    @InjectModel(Queue.name) private readonly queues: Model<QueueDocument>,
+    @InjectModel(QueueSwapRequest.name) private readonly swaps: Model<QueueSwapRequestDocument>,
+    @InjectModel(TeacherApplication.name) private readonly applications: Model<TeacherApplicationDocument>,
+    @InjectModel(ScheduleLesson.name) private readonly lessons: Model<ScheduleLessonDocument>,
     private readonly sheets: SheetsService,
     private readonly usersService: UsersService,
     private readonly campus: CampusService,
@@ -145,10 +157,37 @@ export class SubjectsService {
     return subject;
   }
 
+  /**
+   * Deletes the subject with what exists only for it: its homework and their
+   * completion marks, its queue and that queue's swap requests, the legacy journal
+   * sessions and pending applications to teach it. Schedule lessons stay (attendance
+   * records hang off them) and only lose the link. Children go before their parents
+   * and the subject last, so a step that fails leaves the subject in place and a
+   * repeated DELETE finishes the job.
+   */
   async remove(user: RequestUser, id: string): Promise<void> {
     const subject = await this.findById(id);
-    this.assertCanManageGroup(user, String(subject.groupId));
-    await this.subjects.deleteOne({ _id: subject._id });
+    const groupId = String(subject.groupId);
+    this.assertCanManageGroup(user, groupId);
+    const subjectId = subject._id;
+
+    const homeworkIds = await this.homework.distinct('_id', { subjectId });
+    await this.completions.deleteMany({ homeworkId: { $in: homeworkIds } });
+    const homework = await this.homework.deleteMany({ subjectId });
+    await this.attendance.deleteMany({ subjectId });
+    // Decided ones stay: they record who let the teacher into the group, and that membership outlives the subject.
+    await this.applications.deleteMany({ subjectId, status: 'pending' });
+    await this.lessons.updateMany({ subjectId }, { $unset: { subjectId: '' } });
+    // The queue goes last: its page creates one on view while the subject exists.
+    // ponytail: a queue opened between here and deleteOne is still left behind (migrate-data
+    // step 8 removes it); delete the queue again after deleteOne if that ever shows up.
+    const queueIds = await this.queues.distinct('_id', { subjectId });
+    await this.swaps.deleteMany({ queueId: { $in: queueIds } });
+    const queues = await this.queues.deleteMany({ subjectId });
+    await this.subjects.deleteOne({ _id: subjectId });
+    this.logger.log(
+      `Subject ${id} deleted by ${user.userId} (group ${groupId}) with ${homework.deletedCount} homework and ${queues.deletedCount} queue`,
+    );
   }
 
   /**
