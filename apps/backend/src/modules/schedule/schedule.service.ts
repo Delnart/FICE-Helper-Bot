@@ -250,7 +250,7 @@ export class ScheduleService {
     weekType?: 1 | 2,
   ): Promise<Array<Record<string, unknown>>> {
     const user = await this.users.findById(userId).lean().exec();
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('Користувача не знайдено');
     if (!user.campusLecturerId) {
       throw new BadRequestException(
         'Профіль викладача не підключено до Кампус КПІ — не вдалося отримати розклад.',
@@ -338,7 +338,7 @@ export class ScheduleService {
 
   async chooseElective(user: RequestUser, lessonId: string, add: boolean): Promise<void> {
     const lesson = await this.lessons.findById(lessonId, { groupId: 1, subjectName: 1 }).lean().exec();
-    if (!lesson) throw new NotFoundException('Lesson not found');
+    if (!lesson) throw new NotFoundException('Заняття не знайдено');
     // Members only — subject teachers pass GroupAccessService but don't enroll.
     if (!user.memberships.some((m) => m.groupId === String(lesson.groupId))) {
       throw new ForbiddenException('Тільки учасники групи можуть обирати вибіркові');
@@ -559,8 +559,8 @@ export class ScheduleService {
   async syncFromCampus(user: RequestUser, groupId: string): Promise<number> {
     this.assertCanManage(user, groupId);
     const group = await this.groups.findById(groupId, { campusGroupId: 1 }).lean().exec();
-    if (!group) throw new NotFoundException('Group not found');
-    if (!group.campusGroupId) throw new NotFoundException('Group has no campusGroupId');
+    if (!group) throw new NotFoundException('Групу не знайдено');
+    if (!group.campusGroupId) throw new NotFoundException('Група не привʼязана до Кампусу КПІ');
     return this.syncGroupSchedule(group);
   }
 
@@ -597,7 +597,7 @@ export class ScheduleService {
    */
   async setElective(user: RequestUser, lessonId: string, isElective: boolean): Promise<void> {
     const lesson = await this.lessons.findById(lessonId, { groupId: 1, subjectName: 1 }).lean().exec();
-    if (!lesson) throw new NotFoundException('Lesson not found');
+    if (!lesson) throw new NotFoundException('Заняття не знайдено');
     this.assertCanManage(user, String(lesson.groupId));
 
     const targetNorm = normaliseName(lesson.subjectName);
@@ -705,7 +705,7 @@ export class ScheduleService {
     const m = user.memberships.find((x) => x.groupId === groupId);
     const level = m ? ROLE_LEVEL[m.role] : 0;
     if (level < ROLE_LEVEL[Role.DeputyHead]) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('Недостатньо прав у цій групі');
     }
   }
 }

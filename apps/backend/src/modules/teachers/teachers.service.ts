@@ -217,13 +217,13 @@ export class TeachersService implements OnModuleInit {
 
   async apply(user: RequestUser, dto: ApplyTeacherDto): Promise<TeacherApplicationDocument> {
     const subject = await this.subjects.findById(dto.subjectId).exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
     const existing = await this.apps.findOne({
       teacherUserId: new Types.ObjectId(user.userId),
       subjectId: subject._id,
       status: 'pending',
     });
-    if (existing) throw new BadRequestException('Application already pending');
+    if (existing) throw new BadRequestException('Заявку вже надіслано — очікуйте відповіді');
     return this.apps.create({
       teacherUserId: new Types.ObjectId(user.userId),
       subjectId: subject._id,
@@ -233,10 +233,10 @@ export class TeachersService implements OnModuleInit {
 
   async invite(user: RequestUser, dto: InviteTeacherDto): Promise<TeacherApplicationDocument> {
     const subject = await this.subjects.findById(dto.subjectId).exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
     this.assertCanManage(user, String(subject.groupId));
     const target = await this.users.findById(dto.teacherUserId).exec();
-    if (!target) throw new NotFoundException('User not found');
+    if (!target) throw new NotFoundException('Користувача не знайдено');
     return this.apps.create({
       teacherUserId: target._id,
       subjectId: subject._id,
@@ -247,7 +247,7 @@ export class TeachersService implements OnModuleInit {
 
   async decide(user: RequestUser, appId: string, action: 'approve' | 'reject'): Promise<void> {
     const app = await this.apps.findById(appId).exec();
-    if (!app) throw new NotFoundException('Application not found');
+    if (!app) throw new NotFoundException('Заявку не знайдено');
 
     // Determine which group this application is for
     let targetGroupId: Types.ObjectId;
@@ -257,14 +257,14 @@ export class TeachersService implements OnModuleInit {
     } else if (app.subjectId) {
       // Subject-level application
       const subject = await this.subjects.findById(app.subjectId).exec();
-      if (!subject) throw new NotFoundException('Subject not found');
+      if (!subject) throw new NotFoundException('Дисципліну не знайдено');
       targetGroupId = subject.groupId as Types.ObjectId;
     } else {
-      throw new BadRequestException('Application has no group or subject');
+      throw new BadRequestException('У заявці не вказано групу чи предмет');
     }
 
     this.assertCanManage(user, String(targetGroupId));
-    if (app.status !== 'pending') throw new BadRequestException('Already decided');
+    if (app.status !== 'pending') throw new BadRequestException('Цю заявку вже розглянуто');
 
     app.status = action === 'approve' ? 'approved' : 'rejected';
     app.decidedBy = new Types.ObjectId(user.userId);
@@ -368,7 +368,7 @@ export class TeachersService implements OnModuleInit {
     candidates?: Array<{ id: string; name: string }>;
   }> {
     const user = await this.users.findById(userId).lean().exec();
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('Користувача не знайдено');
 
     // Access control: the user's @username must be in the "Викладачі" sheet, and
     // the Campus lecturer they link must carry that row's name (below) — else any
@@ -660,7 +660,7 @@ export class TeachersService implements OnModuleInit {
     const m = user.memberships.find((x) => x.groupId === groupId);
     const level = m ? ROLE_LEVEL[m.role] : 0;
     if (level < ROLE_LEVEL[Role.DeputyHead]) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('Це може робити лише староста або заступник');
     }
   }
 }

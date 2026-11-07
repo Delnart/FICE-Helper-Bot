@@ -27,7 +27,7 @@ export class HomeworkController {
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.hw.listForUserMainScreen(activeGroupId, user.userId);
   }
 
@@ -40,7 +40,7 @@ export class HomeworkController {
     if (subjectId) {
       return this.hw.listBySubject(user, subjectId);
     }
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.hw.listAllForUser(activeGroupId, user.userId);
   }
 

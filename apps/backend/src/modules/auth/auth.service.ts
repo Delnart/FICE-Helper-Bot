@@ -39,11 +39,11 @@ export class AuthService {
       parsed = verifyAndParseInitData(initData, botToken);
     } catch (err) {
       this.logger.warn(`Telegram verify failed: ${(err as Error).message}`);
-      throw new UnauthorizedException('Invalid Telegram init data');
+      throw new UnauthorizedException('Не вдалося підтвердити вхід через Telegram — перезапустіть застосунок');
     }
 
     const tgUser = parsed.user;
-    if (!tgUser) throw new UnauthorizedException('No user in init data');
+    if (!tgUser) throw new UnauthorizedException('Telegram не передав дані користувача — перезапустіть застосунок');
 
     const user = await this.users.findOneAndUpdate(
       { telegramId: tgUser.id },
@@ -60,7 +60,7 @@ export class AuthService {
       { upsert: true, new: true },
     );
 
-    if (user.isBanned) throw new UnauthorizedException('User is banned');
+    if (user.isBanned) throw new UnauthorizedException('Ваш акаунт заблоковано');
 
     // If the user has no fullName yet but their @username is in the sheets,
     // pre-fill from there so journals/profile show their canonical ПІБ instead

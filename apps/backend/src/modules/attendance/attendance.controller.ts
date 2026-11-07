@@ -41,7 +41,7 @@ export class AttendanceController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('weekStart') weekStart?: string,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.attendance.getUserWeek(activeGroupId, user.userId, weekStart ? new Date(weekStart) : undefined);
   }
 
@@ -83,7 +83,7 @@ export class AttendanceController {
     const end = new Date(to);
     const span = end.getTime() - start.getTime();
     if (!from || !to || !(span > 0) || span > 400 * 86400000) {
-      throw new BadRequestException('from/to must be dates, from < to, at most 400 days apart');
+      throw new BadRequestException('Некоректний період: вкажіть дати «від» і «до» (не більше 400 днів)');
     }
     const groupId = await this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
     return this.attendance.periodGrid(groupId, start, end);
@@ -121,7 +121,7 @@ export class AttendanceController {
   ) {
     // Validate before starting the lookup: throwing with it in flight left its
     // rejection unhandled, which kills the Node process.
-    if (!lessonId || !date) throw new BadRequestException('lessonId and date are required');
+    if (!lessonId || !date) throw new BadRequestException('Оберіть пару й дату');
     const groupId = await this.resolveJournalGroup(user, activeGroupId, groupIdQuery, subjectIdsQuery);
     return this.attendance.getLessonRecord(groupId, lessonId, new Date(date));
   }
@@ -132,7 +132,7 @@ export class AttendanceController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Body() dto: UpsertAttendanceDto,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.attendance.upsert(user, activeGroupId, dto);
   }
 
@@ -160,7 +160,7 @@ export class AttendanceController {
       : [];
     if (subjectIds.length > 0) {
       const subject = await this.subjects.findById(subjectIds[0]);
-      if (!subject) throw new BadRequestException('Subject not found');
+      if (!subject) throw new BadRequestException('Дисципліну не знайдено');
       if (!this.canAccessSubjectJournal(user, subject)) {
         throw new ForbiddenException('Журнал доступний лише старості, заступнику чи викладачам.');
       }

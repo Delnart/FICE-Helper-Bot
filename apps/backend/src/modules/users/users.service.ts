@@ -164,13 +164,13 @@ export class UsersService {
 
   async findById(id: string): Promise<UserDocument> {
     const user = await this.users.findById(id).lean().exec();
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('Користувача не знайдено');
     return user as UserDocument;
   }
 
   async profileFor(id: string): Promise<Record<string, unknown>> {
     const user = await this.users.findById(id).lean().exec();
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('Користувача не знайдено');
 
     // Cross-check memberships against Telegram if the cached check is stale.
     // Fire-and-forget so the current request stays fast — the next /me call
@@ -262,7 +262,7 @@ export class UsersService {
     if (dto.birthday !== undefined) update.birthday = dto.birthday ? new Date(dto.birthday) : null;
 
     const user = await this.users.findByIdAndUpdate(id, { $set: update }, { new: true }).exec();
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('Користувача не знайдено');
     return this.profileFor(id);
   }
 
@@ -290,9 +290,14 @@ export class UsersService {
     );
   }
 
+  /**
+   * Everyone in the group but its teachers: they get a membership once their application is
+   * approved, yet the journal, attendance marking, export and the deputy and queue pickers list
+   * exactly what this returns. `$elemMatch`, so teaching in another group doesn't hide a student.
+   */
   async listGroupStudents(groupId: string): Promise<UserDocument[]> {
     return this.users
-      .find({ 'memberships.groupId': new Types.ObjectId(groupId) })
+      .find({ memberships: { $elemMatch: { groupId: new Types.ObjectId(groupId), role: { $ne: Role.Teacher } } } })
       .sort({ fullName: 1, firstName: 1 })
       .exec();
   }

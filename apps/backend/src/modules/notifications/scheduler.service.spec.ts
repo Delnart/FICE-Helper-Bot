@@ -326,3 +326,70 @@ describe('SchedulerService.tickMorningDigest', () => {
     expect(a).not.toContain('Минула');
   });
 });
+
+describe('SchedulerService.tickDeadlineReminders', () => {
+  beforeAll(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date(2026, 9, 29, 9, 0, 0)); // Thursday 09:00, when the cron fires
+  });
+  afterAll(() => jest.useRealTimers());
+
+  const G = new Types.ObjectId();
+  const hw = (title: string, deadline: Date) => ({ _id: new Types.ObjectId(), groupId: G, title, deadline, teamSize: 1 });
+
+  /** Runs the tick; returns "<telegramId>: <title>" for every DM. Stubs honor the filters the service sends. */
+  async function remind(homework: ReturnType<typeof hw>[], members: StubUser[]) {
+    const sent: string[] = [];
+    const svc = new SchedulerService(
+      {
+        sendDm: async (userId: string, _g: string, _k: string, text: string) => {
+          const u = members.find((m) => String(m._id) === userId)!;
+          sent.push(`${u.telegramId}: ${text.replace(/^⏳ Завтра дедлайн: <b>(.*)<\/b>$/, '$1')}`);
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        find: (f: { deadline: { $gte: Date; $lt: Date } }) =>
+          query(homework.filter((h) => h.deadline >= f.deadline.$gte && h.deadline < f.deadline.$lt)),
+      } as never,
+      { find: () => query([]) } as never,
+      {} as never,
+      {
+        find: (f: { memberships: { $elemMatch: { groupId: Types.ObjectId; role: { $ne: Role } } } }) => {
+          const { groupId, role } = f.memberships.$elemMatch;
+          return query(members.filter((u) => u.memberships.some((m) => m.groupId.equals(groupId) && m.role !== role.$ne)));
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    await svc.tickDeadlineReminders();
+    return sent;
+  }
+
+  it("reminds about the next calendar day's deadlines, not the next 24 hours", async () => {
+    const day = (d: number, h: number, m: number) => new Date(2026, 9, d, h, m);
+    const sent = await remind(
+      [
+        hw('Сьогодні о 23:59', day(29, 23, 59)),
+        hw('Завтра о 00:00', day(30, 0, 0)),
+        hw('Завтра о 23:59', day(30, 23, 59)),
+        hw('Післязавтра о 00:00', day(31, 0, 0)),
+      ],
+      [user(1, [G])],
+    );
+    expect(sent).toEqual(['1: Завтра о 00:00', '1: Завтра о 23:59']);
+  });
+
+  it("doesn't remind the group's teachers, but does a student who teaches in another group", async () => {
+    const other = new Types.ObjectId();
+    const sent = await remind(
+      [hw('Лабораторна', new Date(2026, 9, 30, 18, 0))],
+      [user(1, [G]), user(2, [G, Role.Teacher]), user(3, [G, Role.DeputyHead], [other, Role.Teacher])],
+    );
+    expect(sent).toEqual(['1: Лабораторна', '3: Лабораторна']);
+  });
+});

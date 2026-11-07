@@ -23,9 +23,9 @@ export class UsersController {
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     if (!user.memberships.some((m) => m.groupId === activeGroupId)) {
-      throw new BadRequestException('Not a member of the active group');
+      throw new BadRequestException('Ви не учасник активної групи');
     }
     return this.users.listGroupMembersForUi(activeGroupId);
   }

@@ -33,7 +33,7 @@ export class JwtAuthGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<Request>();
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing bearer token');
+      throw new UnauthorizedException('Потрібна авторизація — перезапустіть застосунок');
     }
     const token = authHeader.slice(7);
 
@@ -43,7 +43,7 @@ export class JwtAuthGuard implements CanActivate {
         secret: this.config.getOrThrow<string>('JWT_SECRET'),
       });
     } catch {
-      throw new UnauthorizedException('Invalid token');
+      throw new UnauthorizedException('Сесія недійсна — перезапустіть застосунок');
     }
 
     // Re-read memberships fresh from DB every request.
@@ -55,7 +55,7 @@ export class JwtAuthGuard implements CanActivate {
       .findById(payload.userId, { memberships: 1, isBanned: 1 })
       .lean()
       .exec();
-    if (dbUser?.isBanned) throw new UnauthorizedException('User is banned');
+    if (dbUser?.isBanned) throw new UnauthorizedException('Ваш акаунт заблоковано');
     const memberships: RequestUser['memberships'] = (dbUser?.memberships ?? []).map((m) => ({
       groupId: String(m.groupId),
       role: m.role,

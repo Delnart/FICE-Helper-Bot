@@ -294,14 +294,21 @@ export class SchedulerService {
 
   @Cron('0 9 * * *')
   async tickDeadlineReminders(): Promise<void> {
+    // Tomorrow is the next calendar day, local time as for the morning digest (TZ=Europe/Kyiv).
+    // The next 24 hours took tonight's deadlines, which the digest already calls today's,
+    // and left tomorrow evening's for the day itself.
     const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60_000);
+    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const to = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
     const hw = await this.homework
-      .find({ deadline: { $gte: now, $lte: tomorrow }, teamSize: { $ne: 0 } })
+      .find({ deadline: { $gte: from, $lt: to }, teamSize: { $ne: 0 } })
       .exec();
     for (const h of hw) {
+      // Students only: teachers join a group too, but homework isn't theirs to do.
       const members = await this.users
-        .find({ 'memberships.groupId': new Types.ObjectId(String(h.groupId)) })
+        .find({
+          memberships: { $elemMatch: { groupId: new Types.ObjectId(String(h.groupId)), role: { $ne: Role.Teacher } } },
+        })
         .lean()
         .exec();
       const doneRows = await this.completions

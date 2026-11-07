@@ -45,7 +45,7 @@ export class QueuesController {
 
   @Get('open')
   listOpen(@ActiveGroupId() activeGroupId: string | undefined) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.queues.listOpen(activeGroupId);
   }
 

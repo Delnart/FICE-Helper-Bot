@@ -17,7 +17,7 @@ export class RolesGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest<Request>();
     const user = req.user;
-    if (!user) throw new ForbiddenException('No user context');
+    if (!user) throw new ForbiddenException('Потрібна авторизація');
 
     // Raw header, not req.activeGroupId: JwtAuthGuard drops a header naming a
     // foreign group, and falling back to ALL memberships here would let that
@@ -31,7 +31,7 @@ export class RolesGuard implements CanActivate {
     const required_max = required.reduce((acc, r) => Math.max(acc, ROLE_LEVEL[r] ?? 0), 0);
 
     if (maxLevel < required_max) {
-      throw new ForbiddenException('Insufficient role for this group');
+      throw new ForbiddenException('Недостатньо прав у цій групі');
     }
     return true;
   }

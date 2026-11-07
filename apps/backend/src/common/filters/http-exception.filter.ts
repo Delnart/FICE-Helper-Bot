@@ -32,7 +32,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? exception.getResponse()
         : {
             statusCode: status,
-            message: badId ? 'Invalid id' : duplicate ? 'Already exists' : 'Internal server error',
+            message: badId ? 'Некоректний ідентифікатор' : duplicate ? 'Такий запис уже існує' : 'Сталася помилка на сервері — спробуйте пізніше',
           };
 
     if (status >= 500) {

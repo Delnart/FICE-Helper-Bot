@@ -83,9 +83,9 @@ export class QueuesService {
   }
 
   async findById(id: string): Promise<QueueDocument> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Queue not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Чергу не знайдено');
     const q = await this.queues.findById(id).exec();
-    if (!q) throw new NotFoundException('Queue not found');
+    if (!q) throw new NotFoundException('Чергу не знайдено');
     return q;
   }
 
@@ -101,19 +101,19 @@ export class QueuesService {
         (t) => t.teacherUserId && String(t.teacherUserId) === user.userId,
       );
       if (!isSubjectTeacher) {
-        throw new ForbiddenException('You are not a member of this group');
+        throw new ForbiddenException('Ви не учасник цієї групи');
       }
     }
     return this.serializeForUser(q, user, isSubjectTeacher);
   }
 
   async findOrCreateForSubject(user: RequestUser, subjectId: string): Promise<unknown> {
-    if (!Types.ObjectId.isValid(subjectId)) throw new NotFoundException('Subject not found');
+    if (!Types.ObjectId.isValid(subjectId)) throw new NotFoundException('Дисципліну не знайдено');
     const subject = await this.subjects
       .findById(subjectId, { groupId: 1, name: 1, shortName: 1, 'teachers.teacherUserId': 1 })
       .lean()
       .exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
 
     // Group members get full access; teachers listed on this specific subject
     // get read-only viewing rights even if they aren't group members yet.
@@ -124,7 +124,7 @@ export class QueuesService {
       (t) => t.teacherUserId && String(t.teacherUserId) === user.userId,
     );
     if (!isMember && !isSubjectTeacher) {
-      throw new ForbiddenException('You are not a member of this group');
+      throw new ForbiddenException('Ви не учасник цієї групи');
     }
 
     const findQueue = () =>
@@ -352,7 +352,7 @@ export class QueuesService {
 
   async create(user: RequestUser, dto: CreateQueueDto): Promise<QueueDocument> {
     const subject = await this.subjects.findById(dto.subjectId).exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
 
     this.assertCanManage(user, String(subject.groupId));
 
@@ -376,7 +376,7 @@ export class QueuesService {
       if (dto.title !== undefined) q.title = dto.title;
       if (dto.slotsCount !== undefined) {
         if (q.entries.some((e) => e.slotIndex > dto.slotsCount!)) {
-          throw new BadRequestException('Cannot shrink below occupied slots');
+          throw new BadRequestException('Не можна зменшити кількість місць: деякі з них уже зайняті');
         }
         q.slotsCount = dto.slotsCount;
       }
@@ -500,12 +500,12 @@ export class QueuesService {
       this.assertSlotAvailable(q, dto.slotIndex);
       if (!q.rules.allowMultipleEntriesPerUser) {
         if (q.entries.some((e) => String(e.userId) === user.userId)) {
-          throw new BadRequestException('You are already enrolled');
+          throw new BadRequestException('Ви вже записані в цю чергу');
         }
       }
 
       if (!profileComplete) {
-        throw new BadRequestException('Fill full name in profile before enrolling');
+        throw new BadRequestException('Заповніть ПІБ у профілі, щоб записатися');
       }
     });
   }
@@ -521,7 +521,7 @@ export class QueuesService {
           'memberships.groupId': new Types.ObjectId(String(q.groupId)),
         })
         .exec();
-      if (!member) throw new BadRequestException('User is not a member of this group');
+      if (!member) throw new BadRequestException('Цей користувач не учасник групи');
     });
   }
 
@@ -603,7 +603,7 @@ export class QueuesService {
       const canManage = this.hasManage(user, String(q.groupId));
 
       if (dto.status !== undefined && !canManage) {
-        throw new ForbiddenException('Only head/deputy/teacher can change status');
+        throw new ForbiddenException('Змінювати статус може лише староста, заступник або викладач');
       }
       this.assertOwnerOrManager(user, String(q.groupId), String(entry.userId));
 
@@ -647,7 +647,7 @@ export class QueuesService {
       return entry;
     }
     const entry = inSlot.find((e) => String(e.userId) === user.userId) ?? inSlot[0];
-    if (!entry) throw new NotFoundException('Entry not found');
+    if (!entry) throw new NotFoundException('Запис не знайдено');
     return entry;
   }
 
@@ -867,12 +867,12 @@ export class QueuesService {
   ): Promise<QueueSwapRequestDocument> {
     const q = await this.findById(queueId);
     const own = q.entries.find((e) => e.slotIndex === slotIndex && String(e.userId) === user.userId);
-    if (!own) throw new ForbiddenException('You are not at this slot');
+    if (!own) throw new ForbiddenException('Ви не займаєте це місце');
     // A stale entry of someone who left the group can't start swaps.
     this.assertMember(user, String(q.groupId));
     const target = q.entries.find((e) => e.slotIndex === dto.targetSlotIndex);
-    if (!target) throw new NotFoundException('Target slot is empty');
-    if (String(target.userId) === user.userId) throw new BadRequestException('Cannot swap with yourself');
+    if (!target) throw new NotFoundException('Це місце вільне — обмінюватися нема з ким');
+    if (String(target.userId) === user.userId) throw new BadRequestException('Не можна помінятися місцем із собою');
 
     // Anti-flood: at most one pending swap per (queue, fromUser). Forces the
     // user to either wait for a response, or cancel/replace their previous
@@ -944,7 +944,7 @@ export class QueuesService {
   }
 
   async respondSwap(user: RequestUser, swapId: string, accept: boolean): Promise<void> {
-    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Swap not found');
+    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Запит на обмін не знайдено');
     // Claim the decision atomically so an accept can't race a cancel/decline.
     const swap = await this.swaps
       .findOneAndUpdate(
@@ -955,14 +955,14 @@ export class QueuesService {
       .exec();
     if (!swap) {
       const s = await this.swaps.findById(swapId, { toUserId: 1 }).lean().exec();
-      if (!s) throw new NotFoundException('Swap not found');
-      if (String(s.toUserId) !== user.userId) throw new ForbiddenException();
-      throw new BadRequestException('Already decided');
+      if (!s) throw new NotFoundException('Запит на обмін не знайдено');
+      if (String(s.toUserId) !== user.userId) throw new ForbiddenException('Цей запит на обмін адресовано не вам');
+      throw new BadRequestException('Цей запит уже оброблено');
     }
 
     if (!accept) {
       const q = await this.queues.findById(swap.queueId, { title: 1, groupId: 1 }).lean().exec();
-      if (!q) throw new NotFoundException('Queue gone');
+      if (!q) throw new NotFoundException('Цієї черги вже не існує');
       void this.notifySwapResolved(swap, q, false).catch((err) =>
         this.logger.warn(`swap decline DM failed: ${(err as Error).message}`),
       );
@@ -981,7 +981,7 @@ export class QueuesService {
         const b = q.entries.find(
           (e) => e.slotIndex === swap.toSlotIndex && String(e.userId) === String(swap.toUserId),
         );
-        if (!a || !b) throw new BadRequestException('Swap no longer valid');
+        if (!a || !b) throw new BadRequestException('Обмін уже неактуальний — черга змінилась');
         [a.slotIndex, b.slotIndex] = [b.slotIndex, a.slotIndex];
       });
     } catch (err) {
@@ -1002,7 +1002,7 @@ export class QueuesService {
         if (!isDuplicateKey(e)) throw e;
         return settle('expired');
       });
-      throw err instanceof NotFoundException ? new NotFoundException('Queue gone') : err;
+      throw err instanceof NotFoundException ? new NotFoundException('Цієї черги вже не існує') : err;
     }
     void this.notifySwapResolved(swap, q, true).catch((err) =>
       this.logger.warn(`swap accept DM failed: ${(err as Error).message}`),
@@ -1017,9 +1017,9 @@ export class QueuesService {
     user: RequestUser,
     queueId: string,
   ): Promise<{ declined: number }> {
-    if (!Types.ObjectId.isValid(queueId)) throw new NotFoundException('Queue not found');
+    if (!Types.ObjectId.isValid(queueId)) throw new NotFoundException('Чергу не знайдено');
     const q = await this.queues.findById(queueId).lean().exec();
-    if (!q) throw new NotFoundException('Queue not found');
+    if (!q) throw new NotFoundException('Чергу не знайдено');
 
     const pending = await this.swaps
       .find({
@@ -1057,7 +1057,7 @@ export class QueuesService {
    * it with a new one (since `requestSwap` enforces "at most one pending").
    */
   async cancelMySwap(user: RequestUser, swapId: string): Promise<void> {
-    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Swap not found');
+    if (!Types.ObjectId.isValid(swapId)) throw new NotFoundException('Запит на обмін не знайдено');
     // Atomic so a cancel can't clobber a concurrent accept/decline.
     const res = await this.swaps.updateOne(
       { _id: swapId, fromUserId: new Types.ObjectId(user.userId), status: 'pending' },
@@ -1066,9 +1066,9 @@ export class QueuesService {
     if (res.matchedCount > 0) return;
     // Nothing matched — work out which error the caller gets.
     const swap = await this.swaps.findById(swapId, { fromUserId: 1, status: 1 }).lean().exec();
-    if (!swap) throw new NotFoundException('Swap not found');
-    if (String(swap.fromUserId) !== user.userId) throw new ForbiddenException();
-    throw new BadRequestException('Already decided');
+    if (!swap) throw new NotFoundException('Запит на обмін не знайдено');
+    if (String(swap.fromUserId) !== user.userId) throw new ForbiddenException('Скасувати можна лише власний запит на обмін');
+    throw new BadRequestException('Цей запит уже оброблено');
   }
 
   /**
@@ -1136,11 +1136,11 @@ export class QueuesService {
 
   private assertSlotAvailable(q: QueueDocument, slotIndex: number): void {
     if (slotIndex < 1 || slotIndex > q.slotsCount) {
-      throw new BadRequestException('Slot out of range');
+      throw new BadRequestException('Такого місця в черзі немає');
     }
     const occupied = q.entries.filter((e) => e.slotIndex === slotIndex);
     if (occupied.length > 0 && !q.rules.allowGroupSubmission) {
-      throw new BadRequestException('Slot is already taken');
+      throw new BadRequestException('Це місце вже зайняте');
     }
   }
 
@@ -1149,12 +1149,12 @@ export class QueuesService {
     let isOpen = q.rules.isOpen;
     if (q.rules.autoOpenAt && q.rules.autoOpenAt <= now) isOpen = true;
     if (q.rules.autoCloseAt && q.rules.autoCloseAt <= now) isOpen = false;
-    if (!isOpen) throw new BadRequestException('Queue is closed');
+    if (!isOpen) throw new BadRequestException('Черга закрита');
   }
 
   private assertCanManage(user: RequestUser, groupId: string): void {
     if (!this.hasManage(user, groupId)) {
-      throw new ForbiddenException('Only head/deputy can manage queues');
+      throw new ForbiddenException('Керувати чергами може лише староста або заступник');
     }
   }
 
@@ -1167,12 +1167,12 @@ export class QueuesService {
   private assertOwnerOrManager(user: RequestUser, groupId: string, entryUserId: string): void {
     if (this.hasManage(user, groupId)) return;
     this.assertMember(user, groupId);
-    if (entryUserId !== user.userId) throw new ForbiddenException();
+    if (entryUserId !== user.userId) throw new ForbiddenException('Змінювати можна лише власний запис у черзі');
   }
 
   private assertMember(user: RequestUser, groupId: string): void {
     if (!user.memberships.some((m) => m.groupId === groupId)) {
-      throw new ForbiddenException('You are not a member of this group');
+      throw new ForbiddenException('Ви не учасник цієї групи');
     }
   }
 

@@ -33,9 +33,9 @@ export class GroupsService {
   ) {}
 
   async findById(id: string): Promise<AcademicGroupDocument> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Group not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Групу не знайдено');
     const group = await this.groups.findById(id).exec();
-    if (!group) throw new NotFoundException('Group not found');
+    if (!group) throw new NotFoundException('Групу не знайдено');
     return group;
   }
 
@@ -78,10 +78,10 @@ export class GroupsService {
     const membership = user.memberships.find((m) => m.groupId === groupId);
     const level = membership ? ROLE_LEVEL[membership.role] : 0;
     if (level < ROLE_LEVEL[Role.DeputyHead]) {
-      throw new ForbiddenException('Only head/deputy can bind campus group');
+      throw new ForbiddenException('Привʼязати групу Кампусу може лише староста або заступник');
     }
     const trimmed = (campusGroupId ?? '').trim();
-    if (!trimmed) throw new BadRequestException('campusGroupId is required');
+    if (!trimmed) throw new BadRequestException('Не вказано групу Кампусу');
     const group = await this.findById(groupId);
     group.campusGroupId = trimmed;
     await group.save();
@@ -96,7 +96,7 @@ export class GroupsService {
     const membership = user.memberships.find((m) => m.groupId === groupId);
     const level = membership ? ROLE_LEVEL[membership.role] : 0;
     if (level < ROLE_LEVEL[Role.DeputyHead]) {
-      throw new ForbiddenException('Only head/deputy can update group settings');
+      throw new ForbiddenException('Змінювати налаштування групи може лише староста або заступник');
     }
     await this.updateReminderSettings(groupId, dto);
     return this.getSettingsForUser(user, groupId);
@@ -136,7 +136,7 @@ export class GroupsService {
       params.academicName,
     );
     if (!group) {
-      throw new NotFoundException('Group not found for this head');
+      throw new NotFoundException('Групу цього старости не знайдено');
     }
     // If the chat is changing, free the old chat-id (it stays unique).
     if (group.telegramChatId !== params.newTelegramChatId) {
@@ -259,15 +259,15 @@ export class GroupsService {
   async assignDeputy(groupId: string, requestingUserId: string, targetUserId: string): Promise<void> {
     const group = await this.findById(groupId);
     if (String(group.headUserId) !== requestingUserId) {
-      throw new ForbiddenException('Only group head can assign deputies');
+      throw new ForbiddenException('Призначати заступників може лише староста');
     }
     if (String(group.headUserId) === targetUserId) {
-      throw new BadRequestException('Head cannot be their own deputy');
+      throw new BadRequestException('Староста не може бути власним заступником');
     }
     const role = await this.memberRole(targetUserId, String(group._id));
     // ensureMembership sets the role exactly — don't let it demote a co-head/admin.
     if (ROLE_LEVEL[role] > ROLE_LEVEL[Role.DeputyHead]) {
-      throw new BadRequestException('User already has a higher role in this group');
+      throw new BadRequestException('Цей користувач уже має вищу роль у групі');
     }
     await this.groups.updateOne(
       { _id: group._id },
@@ -283,7 +283,7 @@ export class GroupsService {
   async removeDeputy(groupId: string, requestingUserId: string, targetUserId: string): Promise<void> {
     const group = await this.findById(groupId);
     if (String(group.headUserId) !== requestingUserId) {
-      throw new ForbiddenException('Only group head can remove deputies');
+      throw new ForbiddenException('Знімати заступників може лише староста');
     }
     const role = await this.memberRole(targetUserId, String(group._id));
     await this.groups.updateOne(
@@ -307,7 +307,7 @@ export class GroupsService {
     const roles = (user?.memberships ?? [])
       .filter((m) => String(m.groupId) === groupId)
       .map((m) => m.role);
-    if (!roles.length) throw new NotFoundException('User is not a member of this group');
+    if (!roles.length) throw new NotFoundException('Користувач не є учасником цієї групи');
     return roles.reduce((a, b) => (ROLE_LEVEL[b] > ROLE_LEVEL[a] ? b : a));
   }
 
@@ -318,7 +318,7 @@ export class GroupsService {
     const update: Record<string, unknown> = {};
     if (dto.lessonReminderMinutes !== undefined) {
       if (dto.lessonReminderMinutes < 0 || dto.lessonReminderMinutes > 60) {
-        throw new BadRequestException('lessonReminderMinutes must be 0..60');
+        throw new BadRequestException('Нагадування можна налаштувати від 0 до 60 хвилин');
       }
       update.lessonReminderMinutes = dto.lessonReminderMinutes;
     }
@@ -327,7 +327,7 @@ export class GroupsService {
       update.birthdayAnnouncementsEnabled = dto.birthdayAnnouncementsEnabled;
 
     const group = await this.groups.findByIdAndUpdate(groupId, { $set: update }, { new: true });
-    if (!group) throw new NotFoundException('Group not found');
+    if (!group) throw new NotFoundException('Групу не знайдено');
     return group;
   }
 

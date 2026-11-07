@@ -26,7 +26,7 @@ export class ScheduleController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('week') weekType?: string,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     const week = weekType === '1' || weekType === '2' ? Number(weekType) : undefined;
     return this.schedule.getForUser(activeGroupId, user.userId, week as 1 | 2 | undefined);
   }
@@ -36,7 +36,7 @@ export class ScheduleController {
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.schedule.nowFor(activeGroupId, user.userId);
   }
 
@@ -45,7 +45,7 @@ export class ScheduleController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Query('week') weekType?: string,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     const week = weekType === '1' || weekType === '2' ? Number(weekType) : undefined;
     return this.schedule.getForGroup(activeGroupId, week as 1 | 2 | undefined);
   }
@@ -73,7 +73,7 @@ export class ScheduleController {
    */
   @Get('sessions')
   sessions(@ActiveGroupId() activeGroupId: string | undefined) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.schedule.sessionsForGroup(activeGroupId);
   }
 
@@ -96,7 +96,7 @@ export class ScheduleController {
   /** All elective lessons for the active group — used by the student electives picker. */
   @Get('electives')
   electives(@ActiveGroupId() activeGroupId: string | undefined) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.schedule.getElectivesForGroup(activeGroupId);
   }
 

@@ -461,8 +461,8 @@ export class AttendanceService {
 
   async statsForUser(groupId: string, userId: string, subjectId?: string): Promise<UserAttendanceStats> {
     // :userId comes from the URL; a malformed one made new ObjectId() throw a 500.
-    if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid userId');
-    if (subjectId && !Types.ObjectId.isValid(subjectId)) throw new BadRequestException('Invalid subjectId');
+    if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Некоректний ідентифікатор студента');
+    if (subjectId && !Types.ObjectId.isValid(subjectId)) throw new BadRequestException('Некоректний ідентифікатор дисципліни');
     const gid = new Types.ObjectId(groupId);
     const match: Record<string, unknown> = { groupId: gid };
     if (subjectId) match.scheduleLessonId = { $in: await this.subjectLessonIds(gid, subjectId) };
@@ -529,18 +529,19 @@ export class AttendanceService {
   }
 
   /**
-   * 403 unless the user has a journal role in the group. Returns true when
-   * they pass only as a subject teacher (controller-verified ?subjectIds).
+   * 403 unless the user has a journal role in the group. Returns true when the
+   * writes must stay within the user's own subjects: a teacher, whether a group
+   * member or only a subject teacher (controller-verified ?subjectIds).
    */
   private assertCanManage(user: RequestUser, groupId: string, allowSubjectTeacherAccess = false): boolean {
     const m = user.memberships.find((x) => x.groupId === groupId);
     const level = m ? ROLE_LEVEL[m.role] : 0;
-    // Teachers (level 2) can mark attendance for their lessons;
+    // Teachers (level 2) mark only their own lessons, member or not;
     // deputy/head (level 3+) can do everything including student list management.
     if (level < ROLE_LEVEL[Role.Teacher] && !allowSubjectTeacherAccess) {
-      throw new ForbiddenException('Only teacher/head/deputy can mark attendance');
+      throw new ForbiddenException('Відмічати присутність можуть лише викладач, староста або заступник');
     }
-    return level < ROLE_LEVEL[Role.Teacher];
+    return level < ROLE_LEVEL[Role.DeputyHead];
   }
 
   /**
@@ -558,14 +559,14 @@ export class AttendanceService {
     subjectTeacherOnly: boolean,
   ): Promise<void> {
     if (!Types.ObjectId.isValid(lessonId) || !userIds.every((id) => Types.ObjectId.isValid(id))) {
-      throw new BadRequestException('Invalid id');
+      throw new BadRequestException('Некоректні дані пари або студента');
     }
     const gid = new Types.ObjectId(groupId);
     const lesson = await this.lessons
       .findOne({ _id: new Types.ObjectId(lessonId), groupId: gid }, { subjectId: 1, subjectName: 1, dates: 1 })
       .lean()
       .exec();
-    if (!lesson) throw new BadRequestException('Lesson is not in this group');
+    if (!lesson) throw new BadRequestException('Цієї пари немає в розкладі вашої групи');
     // A page opened before a sync can still hold the row its marks moved off: a write there would
     // count the day twice. A mark no sync could move keeps its record, so it stays editable.
     if (
@@ -615,7 +616,7 @@ export class AttendanceService {
       .exec();
     const onRecord = new Set((record?.entries ?? []).map((e) => String(e.userId)));
     missing = missing.filter((id) => !onRecord.has(id));
-    if (missing.length > 0) throw new BadRequestException('Student is not in this group');
+    if (missing.length > 0) throw new BadRequestException('Студент не належить до цієї групи');
   }
 }
 

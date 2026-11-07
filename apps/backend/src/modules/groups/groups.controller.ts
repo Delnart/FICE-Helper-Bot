@@ -44,7 +44,7 @@ export class GroupsController {
     @CurrentUser() user: RequestUser,
     @ActiveGroupId() activeGroupId: string | undefined,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.groups.getSettingsForUser(user, activeGroupId);
   }
 
@@ -54,7 +54,7 @@ export class GroupsController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Body() dto: UpdateReminderDto,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.groups.updateSettingsForUser(user, activeGroupId, dto);
   }
 
@@ -64,7 +64,7 @@ export class GroupsController {
     @ActiveGroupId() activeGroupId: string | undefined,
     @Body() dto: UpdateCampusBindingDto,
   ) {
-    if (!activeGroupId) throw new BadRequestException('No active group');
+    if (!activeGroupId) throw new BadRequestException('Спершу оберіть групу');
     return this.groups.setCampusGroupId(user, activeGroupId, dto.campusGroupId);
   }
 

@@ -65,7 +65,7 @@ export class GroupAccessService {
     groupId: string | undefined,
     minRole: Role = Role.Student,
   ): Promise<string> {
-    if (!groupId) throw new BadRequestException('No active group');
+    if (!groupId) throw new BadRequestException('Спершу оберіть групу');
     const role = await this.roleIn(user, groupId);
     if (!role) throw new ForbiddenException('Немає доступу до цієї групи');
     if (ROLE_LEVEL[role] < ROLE_LEVEL[minRole]) {

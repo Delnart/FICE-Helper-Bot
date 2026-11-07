@@ -20,7 +20,7 @@ export class ManualStudentsService {
   async create(user: RequestUser, groupId: string, fullName: string): Promise<ManualStudentDocument> {
     this.assertCanManage(user, groupId);
     const trimmed = fullName.trim();
-    if (!trimmed) throw new NotFoundException('fullName required');
+    if (!trimmed) throw new NotFoundException('Вкажіть ПІБ студента');
     return this.model.create({
       groupId: new Types.ObjectId(groupId),
       fullName: trimmed,
@@ -35,10 +35,10 @@ export class ManualStudentsService {
     fullName: string,
   ): Promise<ManualStudentDocument> {
     this.assertCanManage(user, groupId);
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Студента не знайдено');
     const doc = await this.model.findById(id).exec();
     if (!doc || String(doc.groupId) !== groupId) {
-      throw new NotFoundException('Not found');
+      throw new NotFoundException('Студента не знайдено');
     }
     doc.fullName = fullName.trim();
     await doc.save();
@@ -47,11 +47,11 @@ export class ManualStudentsService {
 
   async remove(user: RequestUser, groupId: string, id: string): Promise<void> {
     this.assertCanManage(user, groupId);
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Студента не знайдено');
     const res = await this.model
       .deleteOne({ _id: new Types.ObjectId(id), groupId: new Types.ObjectId(groupId) })
       .exec();
-    if (!res.deletedCount) throw new NotFoundException('Not found');
+    if (!res.deletedCount) throw new NotFoundException('Студента не знайдено');
   }
 
   private assertCanManage(user: RequestUser, groupId: string): void {

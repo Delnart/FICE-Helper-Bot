@@ -34,9 +34,9 @@ export class HomeworkService {
   ) {}
 
   async create(user: RequestUser, dto: CreateHomeworkDto): Promise<HomeworkDocument> {
-    if (!Types.ObjectId.isValid(dto.subjectId)) throw new NotFoundException('Subject not found');
+    if (!Types.ObjectId.isValid(dto.subjectId)) throw new NotFoundException('Дисципліну не знайдено');
     const subject = await this.subjects.findById(dto.subjectId).exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
     this.assertCanManage(user, String(subject.groupId));
 
     return this.homework.create({
@@ -52,9 +52,9 @@ export class HomeworkService {
   }
 
   async update(user: RequestUser, id: string, dto: UpdateHomeworkDto): Promise<HomeworkDocument> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Homework not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Домашнє завдання не знайдено');
     const hw = await this.homework.findById(id).exec();
-    if (!hw) throw new NotFoundException('Homework not found');
+    if (!hw) throw new NotFoundException('Домашнє завдання не знайдено');
     this.assertCanManage(user, String(hw.groupId));
 
     if (dto.title !== undefined) hw.title = dto.title;
@@ -67,9 +67,9 @@ export class HomeworkService {
   }
 
   async remove(user: RequestUser, id: string): Promise<void> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Homework not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Домашнє завдання не знайдено');
     const hw = await this.homework.findById(id).exec();
-    if (!hw) throw new NotFoundException('Homework not found');
+    if (!hw) throw new NotFoundException('Домашнє завдання не знайдено');
     this.assertCanManage(user, String(hw.groupId));
     await this.homework.deleteOne({ _id: hw._id });
     await this.completions.deleteMany({ homeworkId: hw._id });
@@ -153,9 +153,9 @@ export class HomeworkService {
   }
 
   async findOneForUser(id: string, user: RequestUser): Promise<Record<string, unknown>> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Homework not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Домашнє завдання не знайдено');
     const hw = await this.homework.findById(id).exec();
-    if (!hw) throw new NotFoundException('Homework not found');
+    if (!hw) throw new NotFoundException('Домашнє завдання не знайдено');
     await this.access.assertAccess(user, String(hw.groupId));
     const subject = await this.subjects.findById(hw.subjectId).lean().exec();
     const completion = await this.completions
@@ -191,9 +191,9 @@ export class HomeworkService {
   }
 
   async markCompletion(user: RequestUser, homeworkId: string, done: boolean): Promise<void> {
-    if (!Types.ObjectId.isValid(homeworkId)) throw new NotFoundException('Homework not found');
+    if (!Types.ObjectId.isValid(homeworkId)) throw new NotFoundException('Домашнє завдання не знайдено');
     const hw = await this.homework.findById(homeworkId, { groupId: 1 }).lean().exec();
-    if (!hw) throw new NotFoundException('Homework not found');
+    if (!hw) throw new NotFoundException('Домашнє завдання не знайдено');
     this.assertCanManage(user, String(hw.groupId));
     await this.completions.updateOne(
       { homeworkId: hw._id, userId: new Types.ObjectId(user.userId) },

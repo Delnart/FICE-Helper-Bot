@@ -1,5 +1,6 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Types } from 'mongoose';
+import { Role } from '@fice/shared';
 import { AttendanceService } from './attendance.service';
 
 /** Mongoose query stand-in: supports .lean().exec() and .exec(). */
@@ -135,5 +136,25 @@ describe('AttendanceService.weekGrid', () => {
     expect(names).toEqual(['Щотижнева']);
     expect(res.marks.map((m) => m.lessonId)).toEqual([String(gone._id)]);
     expect(Object.values(res.perStudentWeek)).toEqual([{ absent: 1, excused: 0, late: 0 }]);
+  });
+});
+
+describe('AttendanceService journal roles', () => {
+  const svc = new AttendanceService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+  const as = (role?: Role) => ({ userId: 'u', memberships: role ? [{ groupId: G, role }] : [] }) as never;
+  const ownOnly = (role?: Role, subjectTeacher = false) => svc['assertCanManage'](as(role), G, subjectTeacher);
+
+  it('keeps a teacher to their own subjects, group member or not', () => {
+    expect(ownOnly(Role.Teacher)).toBe(true);
+    expect(ownOnly(undefined, true)).toBe(true);
+  });
+
+  it('lets the head and the deputy mark any lesson', () => {
+    expect(ownOnly(Role.GroupHead)).toBe(false);
+    expect(ownOnly(Role.DeputyHead)).toBe(false);
+  });
+
+  it('refuses a student', () => {
+    expect(() => ownOnly(Role.Student)).toThrow(ForbiddenException);
   });
 });

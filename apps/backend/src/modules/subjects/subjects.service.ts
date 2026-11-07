@@ -68,9 +68,9 @@ export class SubjectsService {
   }
 
   async findById(id: string): Promise<SubjectDocument> {
-    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Subject not found');
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Дисципліну не знайдено');
     const subject = await this.subjects.findById(id).exec();
-    if (!subject) throw new NotFoundException('Subject not found');
+    if (!subject) throw new NotFoundException('Дисципліну не знайдено');
     return subject;
   }
 
@@ -394,7 +394,7 @@ export class SubjectsService {
 
     const session = await this.attendance.findById(sessionId).lean().exec();
     if (!session || String(session.subjectId) !== subjectId) {
-      throw new NotFoundException('Session not found');
+      throw new NotFoundException('Запис у журналі не знайдено');
     }
 
     const allStudents = await this.usersService.listGroupStudents(groupIdStr);
@@ -494,7 +494,7 @@ export class SubjectsService {
   private assertCanManageGroup(user: RequestUser, groupId: string): void {
     const m = user.memberships.find((x) => x.groupId === groupId);
     if (!m || (ROLE_LEVEL[m.role] ?? 0) < ROLE_LEVEL[Role.DeputyHead]) {
-      throw new ForbiddenException('Only head or deputy can manage subjects');
+      throw new ForbiddenException('Керувати дисциплінами можуть лише староста або заступник');
     }
   }
 }
