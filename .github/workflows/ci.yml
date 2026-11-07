@@ -29,6 +29,8 @@ jobs:
       - run: npm run build --workspace @fice/shared
       - name: Typecheck backend
         run: npx --workspace @fice/backend tsc --noEmit
+      - name: Test backend
+        run: npm test --workspace @fice/backend -- --ci
       - name: Typecheck frontend
         run: npx --workspace @fice/frontend tsc --noEmit
       - name: Build frontend
