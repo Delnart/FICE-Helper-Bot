@@ -1,6 +1,6 @@
 {
   "name": "fice-helper-bot",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "private": true,
   "description": "Telegram Mini App + Bot for academic groups (KPI FICE). Nest + Next + MongoDB.",
   "license": "MIT",
