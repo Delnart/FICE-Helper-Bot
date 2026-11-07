@@ -1,6 +1,6 @@
 {
   "name": "@fice/backend",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "private": true,
   "description": "Nest.js backend for FICE Helper Bot",
   "scripts": {
