@@ -43,7 +43,7 @@ TELEGRAM_BOT_TOKEN=123456:AA...
 TELEGRAM_BOT_USERNAME=fice_helper_bot
 GOOGLE_SHEETS_ID=1AbC...
 GOOGLE_SERVICE_ACCOUNT_EMAIL=...@...iam.gserviceaccount.com
-GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 CORS_ORIGIN=*                              # на час dev-режиму
 NEXT_PUBLIC_API_BASE=/api                  # фронт викликає бекенд через rewrite або через тунель
 ```

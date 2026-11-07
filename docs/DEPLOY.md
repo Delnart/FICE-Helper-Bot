@@ -4,7 +4,7 @@
 
 | Подія | Що відбувається |
 |---|---|
-| Pull request | `checks`: `npm ci`, typecheck бекенду й фронтенду, `next build` |
+| Pull request | `checks`: `npm ci`, typecheck бекенду й фронтенду, модульні тести бекенду (Jest), `next build` |
 | Push у `main` (або ручний запуск) | `checks` → `images`: збирає `fice-backend` і `fice-frontend`, пушить у GHCR з тегами `latest`, `sha-<commit>` і `v<версія>` → `deploy`: по SSH оновлює compose-файл на сервері, `pull` + `up -d`, чистить старі образи й перевіряє, що контейнери піднялися |
 
 Образи збираються на раннерах GitHub, сервер нічого не збирає.
