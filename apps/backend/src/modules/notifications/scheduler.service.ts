@@ -16,6 +16,7 @@ import { HomeworkCompletion, HomeworkCompletionDocument } from '../homework/home
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { CampusService } from '../campus/campus.service';
+import { Card, deadlineCard, digestCard, lessonReminderCard } from '../bot/cards/templates';
 import { pickLessonLink, Subject, SubjectDocument } from '../subjects/subject.schema';
 import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminder-mark.schema';
 import {
@@ -60,11 +61,12 @@ export class SchedulerService {
       const week = await this.campus.refreshWeekParity();
       const groups = await this.groups
         // Inactive = bot was removed from the chat; sends there only fail.
-        .find({ status: { $ne: 'inactive' } }, { notificationsEnabled: 1, lessonReminderMinutes: 1 })
+        .find({ status: { $ne: 'inactive' } }, { notificationsEnabled: 1, lessonReminderMinutes: 1, academicName: 1 })
         .lean()
         .exec();
       if (groups.length === 0) return;
       const minutesByGroup = new Map(groups.map((g) => [String(g._id), g.lessonReminderMinutes]));
+      const nameByGroup = new Map(groups.map((g) => [String(g._id), g.academicName]));
       // The chat switch only gates the chat message; personal DMs are each user's own opt-in.
       const chatGroups = new Set(groups.filter((g) => g.notificationsEnabled === true).map((g) => String(g._id)));
 
@@ -129,6 +131,7 @@ export class SchedulerService {
               endTime: l.endTime,
               room: l.room,
               link: pickLessonLink(subject, l),
+              lessonNumber: l.lessonNumber,
             },
           },
         ]);
@@ -149,7 +152,13 @@ export class SchedulerService {
         const minutes = minutesByGroup.get(groupId) ?? 0;
         for (const u of dmRecipients.get(groupId) ?? []) {
           const mine = list.filter((x) => attendsLesson(x.lesson, u.id)).map((x) => x.reminder);
-          if (mine.length) await this.safeDm(u.telegramId, buildLessonRemindersText(minutes, mine));
+          if (mine.length) {
+            await this.safeDm(
+              u.telegramId,
+              buildLessonRemindersText(minutes, mine),
+              lessonReminderCard(nameByGroup.get(groupId), minutes, mine),
+            );
+          }
         }
       }
     } catch (err) {
@@ -239,28 +248,30 @@ export class SchedulerService {
       for (const u of users) {
         const mine = new Set(u.groupIds);
         const label = (groupId: unknown) => (u.groupIds.length > 1 ? groupName.get(String(groupId)) : undefined);
-        const text = buildMorningDigestText(
-          now,
-          lessons
-            .filter((l) => mine.has(String(l.groupId)) && runsOn(l, today) && attendsLesson(l, u.id))
-            .map((l) => ({
-              groupName: label(l.groupId),
-              subjectName: l.subjectName,
-              lessonType: l.type,
-              startTime: l.startTime,
-              endTime: l.endTime,
-              room: l.room,
-            })),
-          homework
-            .filter((h) => mine.has(String(h.groupId)) && !doneKeys.has(`${h._id}:${u.id}`))
-            .map((h) => ({
-              groupName: label(h.groupId),
-              title: h.title,
-              subjectName: subjectName.get(String(h.subjectId)),
-              deadline: h.deadline!,
-            })),
-        );
-        if (text) await this.safeDm(u.telegramId, text);
+        const myLessons = lessons
+          .filter((l) => mine.has(String(l.groupId)) && runsOn(l, today) && attendsLesson(l, u.id))
+          .map((l) => ({
+            groupName: label(l.groupId),
+            subjectName: l.subjectName,
+            lessonType: l.type,
+            startTime: l.startTime,
+            endTime: l.endTime,
+            room: l.room,
+          }));
+        const myDeadlines = homework
+          .filter((h) => mine.has(String(h.groupId)) && !doneKeys.has(`${h._id}:${u.id}`))
+          .map((h) => ({
+            groupName: label(h.groupId),
+            title: h.title,
+            subjectName: subjectName.get(String(h.subjectId)),
+            deadline: h.deadline!,
+          }));
+        const text = buildMorningDigestText(now, myLessons, myDeadlines);
+        if (text) {
+          // One group → its name is the card's header; several → every line names its own.
+          const group = u.groupIds.length === 1 ? groupName.get(u.groupIds[0]) : undefined;
+          await this.safeDm(u.telegramId, text, digestCard(now, myLessons, myDeadlines, group));
+        }
       }
     } catch (err) {
       this.logger.error(`tickMorningDigest: ${(err as Error).message}`);
@@ -277,7 +288,7 @@ export class SchedulerService {
     // so the map doesn't grow for the lifetime of the process.
     for (const [key, at] of this.sentMarks) if (now.getTime() - at > 15 * 60_000) this.sentMarks.delete(key);
     const queues = await this.queues
-      .find({ 'rules.autoOpenAt': { $gte: now, $lte: inFive } }, { groupId: 1, title: 1 })
+      .find({ 'rules.autoOpenAt': { $gte: now, $lte: inFive } }, { groupId: 1, title: 1, 'rules.autoOpenAt': 1 })
       .lean()
       .exec();
     for (const q of queues) {
@@ -288,6 +299,7 @@ export class SchedulerService {
         groupId: String(q.groupId),
         subjectName: q.title,
         queueTitle: q.title,
+        opensAt: q.rules.autoOpenAt!,
       });
     }
   }
@@ -303,6 +315,13 @@ export class SchedulerService {
     const hw = await this.homework
       .find({ deadline: { $gte: from, $lt: to }, teamSize: { $ne: 0 } })
       .exec();
+    // What the card shows next to the title.
+    const [groups, subjects] = await Promise.all([
+      this.groups.find({ _id: { $in: hw.map((h) => h.groupId) } }, { academicName: 1 }).lean().exec(),
+      this.subjects.find({ _id: { $in: hw.map((h) => h.subjectId) } }, { name: 1 }).lean().exec(),
+    ]);
+    const groupName = new Map(groups.map((g) => [String(g._id), g.academicName]));
+    const subjectName = new Map(subjects.map((x) => [String(x._id), x.name]));
     for (const h of hw) {
       // Students only: teachers join a group too, but homework isn't theirs to do.
       const members = await this.users
@@ -316,6 +335,7 @@ export class SchedulerService {
         .lean()
         .exec();
       const doneIds = new Set(doneRows.map((r) => String(r.userId)));
+      const card = deadlineCard(groupName.get(String(h.groupId)), h.title, h.deadline!, subjectName.get(String(h.subjectId)));
       for (const u of members) {
         if (doneIds.has(String(u._id))) continue;
         await this.notifications.sendDm(
@@ -323,6 +343,7 @@ export class SchedulerService {
           String(h.groupId),
           'deadlineTomorrow',
           `⏳ Завтра дедлайн: <b>${escapeHtml(h.title)}</b>`,
+          card,
         );
       }
     }
@@ -344,7 +365,7 @@ export class SchedulerService {
       .exec();
     for (const u of users) {
       for (const m of u.memberships) {
-        await this.notifications.announceBirthday(String(m.groupId), u.fullName ?? u.firstName);
+        await this.notifications.announceBirthday(String(m.groupId), u.fullName ?? u.firstName, u.telegramId);
       }
     }
   }
@@ -387,9 +408,9 @@ export class SchedulerService {
   }
 
   /** One failed DM (user blocked the bot, …) must not stop the rest of the batch. */
-  private async safeDm(telegramId: number, text: string): Promise<void> {
+  private async safeDm(telegramId: number, text: string, card?: Card): Promise<void> {
     try {
-      await this.notifications.sendDirect(telegramId, text);
+      await this.notifications.sendDirect(telegramId, text, card);
     } catch (err) {
       this.logger.warn(`DM to ${telegramId} failed: ${(err as Error).message}`);
     }

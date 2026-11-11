@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Bot, Context, GrammyError, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, Context, GrammyError, InputFile, InlineKeyboard, Keyboard } from 'grammy';
 import { GroupsService } from '../groups/groups.service';
 import { UsersService } from '../users/users.service';
 import { CampusService } from '../campus/campus.service';
@@ -13,6 +14,8 @@ import { localDateKey, runsOn } from '../schedule/schedule.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { SupportTicket, SupportTicketDocument } from './support-ticket.schema';
+import { renderCard } from './cards/render';
+import { Card, CardLesson, dayCard, leftCard, nowCard } from './cards/templates';
 import { Role, ROLE_LEVEL } from '@fice/shared';
 
 /** How long a group member's auto-onboarding result is trusted (see recentMembers). */
@@ -29,6 +32,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    */
   // ponytail: wholesale clear at 5k entries instead of an LRU — plenty for a few hundred groups.
   private readonly recentMembers = new Map<string, number>();
+  /** Content hash of a card → the Telegram file_id of its upload: a fan-out draws and uploads it once. */
+  // ponytail: wholesale clear at 200 entries, same as recentMembers.
+  private readonly cardFiles = new Map<string, string>();
 
   constructor(
     private readonly config: ConfigService,
@@ -111,6 +117,64 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`sendMessage failed: ${(err as Error).message}`);
       }
     }
+  }
+
+  /**
+   * Sends a picture card in place of `text`: the picture alone, a lesson's link as a button under it.
+   * Cards are best effort: if building, drawing or delivering one fails, the text goes out the way it
+   * did before cards.
+   */
+  async sendCard(chatId: number, card: Card | undefined, text: string, extra: Record<string, unknown> = {}): Promise<void> {
+    if (!this.bot) return;
+    if (!card) return this.sendMessage(chatId, text, extra);
+    const key = createHash('sha1').update(JSON.stringify(card.tree)).digest('hex');
+    // A photo has no link preview to switch off.
+    const { link_preview_options: _preview, ...photoExtra } = extra;
+    // Link buttons take the place of the caller's own keyboard: a message holds one, and the link is this message's point.
+    const buttons = card.links?.length ? { reply_markup: { inline_keyboard: card.links.map((l) => [{ text: l.label, url: l.url }]) } } : {};
+    try {
+      const photo = this.cardFiles.get(key) ?? new InputFile(await renderCard(card.tree), 'card.png');
+      const sent = await this.bot.api.sendPhoto(chatId, photo, { ...photoExtra, ...buttons });
+      if (this.cardFiles.size >= 200) this.cardFiles.clear();
+      this.cardFiles.set(key, sent.photo[sent.photo.length - 1].file_id);
+    } catch (err) {
+      this.cardFiles.delete(key);
+      // Also when Telegram refused the photo: a chat may allow text but not media.
+      this.logger.warn(`Card for ${chatId} failed, sending the text: ${(err as Error).message}`);
+      await this.sendMessage(chatId, text, extra);
+    }
+  }
+
+  /** A user's Telegram profile photo as a data URI, for a card. Nothing when there is none, it is hidden or it fails to load. */
+  async avatar(telegramId: number): Promise<string | undefined> {
+    if (!this.bot) return undefined;
+    try {
+      const { photos } = await this.bot.api.getUserProfilePhotos(telegramId, { limit: 1 });
+      // Sizes come smallest first (160, 320, 640px): 320 is enough for the circle on a card.
+      const size = photos[0]?.find((p) => p.width >= 320) ?? photos[0]?.at(-1);
+      if (!size) return undefined;
+      const { file_path } = await this.bot.api.getFile(size.file_id);
+      const res = await fetch(`https://api.telegram.org/file/bot${this.bot.token}/${file_path}`, { signal: AbortSignal.timeout(10_000) });
+      const photo = Buffer.from(await res.arrayBuffer());
+      // JPEG is what Telegram stores profile photos in; anything else (an error page) would break the card.
+      if (res.ok && photo[0] === 0xff && photo[1] === 0xd8) return `data:image/jpeg;base64,${photo.toString('base64')}`;
+      this.logger.warn(`No avatar for ${telegramId}: HTTP ${res.status}${res.ok ? ', not a JPEG' : ''}`);
+    } catch (err) {
+      // Not the message of an unknown error: the file URL carries the bot token.
+      this.logger.warn(`No avatar for ${telegramId}: ${err instanceof GrammyError ? err.description : (err as Error).name}`);
+    }
+    return undefined;
+  }
+
+  /** Answers a command with a card; without one (no schedule yet) the plain text goes out. */
+  private async replyCard(ctx: Context, card: Card | undefined, text: string, extra: Record<string, unknown> = {}): Promise<void> {
+    if (!card || !ctx.chat) {
+      await ctx.reply(text, { parse_mode: 'HTML', ...extra });
+      return;
+    }
+    // ctx.reply() answers in the forum topic by itself; sendCard() has to be told.
+    const topic = ctx.msg?.is_topic_message ? { message_thread_id: ctx.msg.message_thread_id } : {};
+    await this.sendCard(ctx.chat.id, card, text, { ...topic, ...extra });
   }
 
   private async cleanupLegacySupportTicketIndexes(): Promise<void> {
@@ -670,18 +734,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       let text: string;
+      let card: Card | undefined;
       try {
-        const result = await this.schedule.nowForGroup(String(group._id));
-        const current = result.current as LessonSlim | null;
-        const next = result.next as LessonSlim | null;
-        text =
-          kind === 'now'
-            ? formatNow(group.academicName, await this.withLinks(result.running as LessonSlim[]), next, result.weekType)
-            : formatLeft(group.academicName, current, next);
+        ({ text, card } = await this.nowOrLeft(kind, group.academicName, await this.schedule.nowForGroup(String(group._id))));
       } catch {
         text = 'Розклад ще не імпортовано для цієї групи.';
       }
-      await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+      await this.replyCard(ctx, card, text, { link_preview_options: { is_disabled: true } });
       return;
     }
 
@@ -705,22 +764,35 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const groupName = group?.academicName ?? '—';
 
     let text: string;
+    let card: Card | undefined;
     try {
-      const result = await this.schedule.nowFor(groupId, userId);
-      const current = result.current as LessonSlim | null;
-      const next = result.next as LessonSlim | null;
-      text =
-        kind === 'now'
-          ? formatNow(groupName, await this.withLinks(result.running as LessonSlim[]), next, result.weekType)
-          : formatLeft(groupName, current, next);
+      ({ text, card } = await this.nowOrLeft(kind, groupName, await this.schedule.nowFor(groupId, userId)));
     } catch {
       text = 'Розклад ще не імпортовано для вашої групи.';
     }
-    await ctx.reply(text, {
-      parse_mode: 'HTML',
+    await this.replyCard(ctx, card, text, {
       link_preview_options: { is_disabled: true },
       reply_markup: this.supportKeyboard,
     });
+  }
+
+  /** The /now or /left answer for one schedule snapshot: the card, and the text it falls back to. */
+  private async nowOrLeft(
+    kind: 'now' | 'left',
+    groupName: string,
+    result: { running: unknown[]; current: unknown; next: unknown; weekType: 1 | 2 },
+  ): Promise<{ text: string; card?: Card }> {
+    const current = result.current as LessonSlim | null;
+    const next = result.next as LessonSlim | null;
+    const now = new Date();
+    if (kind === 'left') {
+      return { text: formatLeft(groupName, current, next), card: leftCard(groupName, current, next, now) };
+    }
+    const running = await this.withLinks(result.running as LessonSlim[]);
+    return {
+      text: formatNow(groupName, running, next, result.weekType),
+      card: nowCard(groupName, result.weekType, running, next, now),
+    };
   }
 
   /** Each lesson with the link its reminder carries; a failed lookup costs only that link. */
@@ -750,8 +822,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       let text: string;
+      let card: Card | undefined;
       try {
-        const { day, date, weekType, label } = await this.resolveDayAndWeek(kind);
+        const { day, date, when, weekType, label } = await this.resolveDayAndWeek(kind);
         const lessons = await this.schedule.getForGroup(String(group._id), weekType);
         const dayLessons = lessons
           .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day && runsOn(l as { dates?: string[] }, date))
@@ -761,10 +834,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
               (b as { lessonNumber: number }).lessonNumber,
           );
         text = formatDaySchedule(group.academicName, label, weekType, dayLessons);
+        card = dayCard(group.academicName, kind, label, when, weekType, dayLessons as unknown as CardLesson[], kind === 'today' ? new Date() : undefined);
       } catch {
         text = 'Розклад ще не імпортовано для цієї групи.';
       }
-      await ctx.reply(text, { parse_mode: 'HTML' });
+      await this.replyCard(ctx, card, text);
       return;
     }
 
@@ -788,8 +862,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const groupName = group?.academicName ?? '—';
 
     let text: string;
+    let card: Card | undefined;
     try {
-      const { day, date, weekType, label } = await this.resolveDayAndWeek(kind);
+      const { day, date, when, weekType, label } = await this.resolveDayAndWeek(kind);
       const lessons = await this.schedule.getForUser(groupId, userId, weekType);
       const dayLessons = lessons
         .filter((l) => (l as { dayOfWeek: number }).dayOfWeek === day && runsOn(l as { dates?: string[] }, date))
@@ -799,10 +874,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             (b as { lessonNumber: number }).lessonNumber,
         );
       text = formatDaySchedule(groupName, label, weekType, dayLessons);
+      card = dayCard(groupName, kind, label, when, weekType, dayLessons as unknown as CardLesson[], kind === 'today' ? new Date() : undefined);
     } catch {
       text = 'Розклад ще не імпортовано для вашої групи.';
     }
-    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: this.supportKeyboard });
+    await this.replyCard(ctx, card, text, { reply_markup: this.supportKeyboard });
   }
 
   /**
@@ -813,7 +889,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    */
   private async resolveDayAndWeek(
     kind: 'today' | 'tomorrow',
-  ): Promise<{ day: number; date: string; weekType: 1 | 2; label: string }> {
+  ): Promise<{ day: number; date: string; when: Date; weekType: 1 | 2; label: string }> {
     const now = new Date();
     // JS: 0=Sun..6=Sat  →  internal: Mon=1..Sun=7
     const todayDow = ((now.getDay() + 6) % 7) + 1;
@@ -840,7 +916,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const label = DAY_NAMES[targetDow] ?? '';
     const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (kind === 'tomorrow' ? 1 : 0));
 
-    return { day: targetDow, date: localDateKey(target), weekType, label };
+    return { day: targetDow, date: localDateKey(target), when: target, weekType, label };
   }
 
   // ---------- /verify ----------

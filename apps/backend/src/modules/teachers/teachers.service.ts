@@ -20,6 +20,7 @@ import { ManualStudent, ManualStudentDocument } from '../manual-students/manual-
 import { RequestUser } from '../../common/types/request-user';
 import { ApplyTeacherDto, GroupJoinRequestDto, IdentifyTeacherDto, InviteTeacherDto } from './dto/teacher.dto';
 import { BotService } from '../bot/bot.service';
+import { teacherDecisionCard, teacherRequestCard } from '../bot/cards/templates';
 import { CampusService } from '../campus/campus.service';
 import { SheetsService } from '../sheets/sheets.service';
 import { UsersService } from '../users/users.service';
@@ -77,11 +78,14 @@ export class TeachersService implements OnModuleInit {
 
         // Append outcome text to the original message
         try {
-          const original = ctx.callbackQuery.message?.text ?? '';
-          await ctx.editMessageText(
-            `${original}\n\n<b>${label}</b> — ${escapeHtml(from.first_name)}`,
-            { parse_mode: 'HTML' },
-          );
+          const message = ctx.callbackQuery.message;
+          const outcome = `\n\n<b>${label}</b> — ${escapeHtml(from.first_name)}`;
+          // The request is a card now and the outcome becomes its caption; one sent before cards is a plain message.
+          if (message?.photo) {
+            await ctx.editMessageCaption({ caption: (escapeHtml(message.caption ?? '') + outcome).trim(), parse_mode: 'HTML' });
+          } else {
+            await ctx.editMessageText(`${message?.text ?? ''}${outcome}`, { parse_mode: 'HTML' });
+          }
         } catch {
           /* message might be too old to edit — ignore */
         }
@@ -284,8 +288,9 @@ export class TeachersService implements OnModuleInit {
       const group = await this.groups.findById(targetGroupId).lean().exec();
       if (teacher?.telegramId && group) {
         void this.bot
-          .sendMessage(
+          .sendCard(
             teacher.telegramId,
+            teacherDecisionCard(group.academicName, true),
             `✅ Ваш запит на доступ до групи <b>${escapeHtml(group.academicName)}</b> схвалено!\n\nВідкрийте FICE Helper, щоб переглядати чергу та журнал.`,
           )
           .catch(() => undefined);
@@ -296,8 +301,9 @@ export class TeachersService implements OnModuleInit {
       const group = await this.groups.findById(targetGroupId).lean().exec();
       if (teacher?.telegramId && group) {
         void this.bot
-          .sendMessage(
+          .sendCard(
             teacher.telegramId,
+            teacherDecisionCard(group.academicName, false),
             `❌ Ваш запит на доступ до групи <b>${escapeHtml(group.academicName)}</b> відхилено.`,
           )
           .catch(() => undefined);
@@ -629,6 +635,7 @@ export class TeachersService implements OnModuleInit {
       (note ? `\n💬 <i>${escapeHtml(note)}</i>\n` : '') +
       `\nНатисніть кнопку нижче, щоб підтвердити або відхилити.`;
 
+    const card = teacherRequestCard(group.academicName, name, dbUser?.username, note);
     const keyboard = {
       inline_keyboard: [
         [
@@ -642,14 +649,14 @@ export class TeachersService implements OnModuleInit {
     if (group.headUserId) {
       const head = await this.users.findById(group.headUserId).lean().exec();
       if (head?.telegramId) {
-        await this.bot.sendMessage(head.telegramId, msg, { reply_markup: keyboard });
+        await this.bot.sendCard(head.telegramId, card, msg, { reply_markup: keyboard });
         return;
       }
     }
 
     // Fallback: post to the bound group chat if we couldn't reach the head directly.
     if (group.telegramChatId) {
-      await this.bot.sendMessage(group.telegramChatId, msg, {
+      await this.bot.sendCard(group.telegramChatId, card, msg, {
         message_thread_id: group.messageThreadId,
         reply_markup: keyboard,
       });

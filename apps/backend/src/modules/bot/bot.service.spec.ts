@@ -1,5 +1,10 @@
+import { GrammyError } from 'grammy';
 import { BotService } from './bot.service';
+import { renderCard } from './cards/render';
 import { pickLessonLink, Subject } from '../subjects/subject.schema';
+
+// Drawing a card starts a node process; cards.spec.ts covers the drawing itself.
+jest.mock('./cards/render', () => ({ renderCard: jest.fn(async () => Buffer.from('png')) }));
 
 const lesson = (subjectName: string, dayOfWeek: number, dates?: string[]) => ({
   subjectName,
@@ -31,6 +36,8 @@ function ask(chatType: 'private' | 'supergroup', kind: 'today' | 'tomorrow', les
     {} as never,
     {} as never,
   );
+  // No bot in these tests: what a card would fall back to is the text under test.
+  svc.sendCard = async (_chatId, _card, text) => void (await reply(text));
   return svc['handleDaySchedule']({ chat: { id: 1, type: chatType }, from: { id: 2 }, reply } as never, kind).then(
     () => reply.mock.calls[0][0],
   );
@@ -96,6 +103,8 @@ function now(
     {} as never,
     {} as never,
   );
+  // No bot in these tests: what a card would fall back to is the text under test.
+  svc.sendCard = async (_chatId, _card, text) => void (await reply(text));
   return svc['handleNowOrLeft']({ chat: { id: 1, type: chatType }, from: { id: 2 }, reply } as never, kind).then(
     () => reply.mock.calls[0][0],
   );
@@ -189,5 +198,85 @@ describe('BotService /now', () => {
     const text = await now('supergroup', [ZOOM], 'left', [ONS, LAB]);
     jest.useRealTimers();
     expect(text).toBe('<b>ІП-55</b>\n🟢 <b>ОНС</b>\nДо кінця: <b>60 хв</b> (до 12:00)');
+  });
+});
+
+describe('BotService.avatar', () => {
+  it('gives the 320px profile photo as a data URI, and nothing when there is no photo', async () => {
+    const svc = new BotService(...(Array(9).fill({}) as ConstructorParameters<typeof BotService>));
+    const sizes = [160, 320, 640].map((width) => ({ file_id: `photo-${width}`, width }));
+    const getUserProfilePhotos = jest.fn(async () => ({ photos: [sizes] }));
+    const getFile = jest.fn(async () => ({ file_path: 'profile_photos/file_1.jpg' }));
+    svc['bot'] = { token: 'TOKEN', api: { getUserProfilePhotos, getFile } } as never;
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    const download = jest.spyOn(global, 'fetch').mockImplementation(async () => new Response(jpeg));
+
+    await expect(svc.avatar(5)).resolves.toBe(`data:image/jpeg;base64,${jpeg.toString('base64')}`);
+    expect(getFile).toHaveBeenCalledWith('photo-320');
+    expect(download.mock.calls[0][0]).toBe('https://api.telegram.org/file/botTOKEN/profile_photos/file_1.jpg');
+
+    // Not a picture (an error page) → the card keeps the initials.
+    download.mockImplementation(async () => new Response('<html>'));
+    await expect(svc.avatar(5)).resolves.toBeUndefined();
+    getUserProfilePhotos.mockResolvedValueOnce({ photos: [] });
+    await expect(svc.avatar(5)).resolves.toBeUndefined();
+    download.mockRestore();
+  });
+});
+
+describe('BotService.sendCard', () => {
+  const card = { tree: { type: 'div', props: {} } };
+  const setup = (sendPhoto: jest.Mock) => {
+    const svc = new BotService(...(Array(9).fill({}) as ConstructorParameters<typeof BotService>));
+    const sendMessage = jest.fn(async () => undefined);
+    svc['bot'] = { api: { sendPhoto, sendMessage } } as never;
+    return { svc, sendMessage };
+  };
+  beforeEach(() => (renderCard as jest.Mock).mockClear());
+
+  it('draws and uploads a card once, then reuses its file_id', async () => {
+    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'small' }, { file_id: 'big' }] }));
+    const { svc, sendMessage } = setup(sendPhoto);
+    await svc.sendCard(1, card, 'текст', { message_thread_id: 7, link_preview_options: { is_disabled: true } });
+    await svc.sendCard(2, card, 'текст');
+    expect(renderCard).toHaveBeenCalledTimes(1);
+    // The picture alone: no caption.
+    expect(sendPhoto.mock.calls[0]).toEqual([1, expect.anything(), { message_thread_id: 7 }]);
+    expect(sendPhoto.mock.calls[1].slice(0, 2)).toEqual([2, 'big']);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('puts lesson links under the card as buttons, in place of the keyboard the caller passed', async () => {
+    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'big' }] }));
+    const { svc } = setup(sendPhoto);
+    const links = [{ label: 'Meet', url: 'https://meet.google.com/x' }];
+    await svc.sendCard(1, { ...card, links }, 'текст', { reply_markup: { keyboard: [] } });
+    expect(sendPhoto).toHaveBeenCalledWith(1, expect.anything(), {
+      reply_markup: { inline_keyboard: [[{ text: 'Meet', url: 'https://meet.google.com/x' }]] },
+    });
+  });
+
+  it('sends the text when the card cannot be drawn', async () => {
+    (renderCard as jest.Mock).mockRejectedValueOnce(new Error('out of memory'));
+    const { svc, sendMessage } = setup(jest.fn());
+    await svc.sendCard(1, card, 'текст', { message_thread_id: 7 });
+    expect(sendMessage).toHaveBeenCalledWith(1, 'текст', { parse_mode: 'HTML', message_thread_id: 7 });
+  });
+
+  it('sends the text when a builder gave no card', async () => {
+    const sendPhoto = jest.fn();
+    const { svc, sendMessage } = setup(sendPhoto);
+    await svc.sendCard(1, undefined, 'текст');
+    expect(sendMessage).toHaveBeenCalledWith(1, 'текст', { parse_mode: 'HTML' });
+    expect(sendPhoto).not.toHaveBeenCalled();
+  });
+
+  it('sends the text when Telegram refuses the photo, and draws the card again next time', async () => {
+    const noMedia = new GrammyError('sendPhoto failed', { ok: false, error_code: 400, description: 'Bad Request: not enough rights to send photos to the chat' }, 'sendPhoto', {});
+    const { svc, sendMessage } = setup(jest.fn(async () => Promise.reject(noMedia)));
+    await svc.sendCard(1, card, 'текст');
+    await svc.sendCard(1, card, 'текст');
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(renderCard).toHaveBeenCalledTimes(2);
   });
 });

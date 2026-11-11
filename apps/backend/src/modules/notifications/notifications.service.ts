@@ -11,6 +11,7 @@ import {
 } from './notification-prefs.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
+import { announcementCard, birthdayCard, Card, lessonReminderCard, queueSoonCard } from '../bot/cards/templates';
 import { CreateAnnouncementDto, UpdatePrefsDto } from './dto/announcement.dto';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 
@@ -31,6 +32,8 @@ export interface LessonReminder {
   endTime: string;
   room?: string;
   link?: ReminderLink;
+  /** 1..8, for «2-га пара» on the card. */
+  lessonNumber?: number;
 }
 
 /** Telegram rejects messages over 4096 chars; leave room for the "…і ще N" tail. */
@@ -121,11 +124,18 @@ export class NotificationsService {
       const group = await this.groups.findById(dto.groupId).exec();
       if (group && group.telegramChatId) {
         const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-        await this.bot.sendMessage(
-          group.telegramChatId,
-          `<b>${escapeHtml(dto.title)}</b>\n\n${escapeHtml(dto.body)}`,
-          opts,
-        );
+        const text = `<b>${escapeHtml(dto.title)}</b>\n\n${escapeHtml(dto.body)}`;
+        const author = await this.users.findById(userId, { fullName: 1, firstName: 1, lastName: 1 }).lean().exec();
+        const name = author?.fullName?.trim() || [author?.firstName, author?.lastName].filter(Boolean).join(' ');
+        const role =
+          String(group.headUserId) === userId
+            ? 'староста'
+            : group.deputyUserIds.some((id) => String(id) === userId)
+              ? 'заступник'
+              : undefined;
+        const card = announcementCard(group.academicName, dto.title, dto.body, new Date(), name ? { name, role } : undefined);
+        // No card for a long announcement or one with links (see announcementCard): that one goes out as this text.
+        await this.bot.sendCard(group.telegramChatId, card, text, opts);
         ann.broadcastedToChat = true;
         await ann.save();
       }
@@ -141,8 +151,8 @@ export class NotificationsService {
       .exec();
   }
 
-  /** `groupId`: the group the DM is about (homework, queue, …) — prefs are per group. */
-  async sendDm(userId: string, groupId: string, kind: DmKind, text: string): Promise<void> {
+  /** `groupId`: the group the DM is about (homework, queue, …) — prefs are per group. `card` replaces the text. */
+  async sendDm(userId: string, groupId: string, kind: DmKind, text: string, card?: Card): Promise<void> {
     // Read-only lookup: a missing row / field means the default, so there's no
     // need to create a prefs document per recipient here.
     const key = PREF_KEY[kind];
@@ -153,12 +163,13 @@ export class NotificationsService {
     if (!effectivePref(prefs, groupId, key)) return;
     const user = await this.users.findById(userId, { telegramId: 1 }).lean().exec();
     if (!user) return;
-    await this.bot.sendMessage(user.telegramId, text);
+    await this.sendDirect(user.telegramId, text, card);
   }
 
   /** For opt-in DMs whose recipients the caller already selected by prefs; send failures are logged by BotService. */
-  async sendDirect(telegramId: number, text: string): Promise<void> {
-    await this.bot.sendMessage(telegramId, text);
+  async sendDirect(telegramId: number, text: string, card?: Card): Promise<void> {
+    if (card) await this.bot.sendCard(telegramId, card, text);
+    else await this.bot.sendMessage(telegramId, text);
   }
 
   /**
@@ -171,26 +182,33 @@ export class NotificationsService {
     if (!group || !group.notificationsEnabled || !group.telegramChatId) return;
 
     const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-    await this.bot.sendMessage(group.telegramChatId, buildLessonRemindersText(minutesLeft, lessons), opts);
+    await this.bot.sendCard(
+      group.telegramChatId,
+      lessonReminderCard(group.academicName, minutesLeft, lessons),
+      buildLessonRemindersText(minutesLeft, lessons),
+      opts,
+    );
   }
 
-  async broadcastQueueOpen(params: { groupId: string; subjectName: string; queueTitle: string }): Promise<void> {
+  async broadcastQueueOpen(params: { groupId: string; subjectName: string; queueTitle: string; opensAt: Date }): Promise<void> {
     const group = await this.groups.findById(params.groupId).exec();
     if (!group || !group.notificationsEnabled || !group.telegramChatId) return;
     const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-    await this.bot.sendMessage(
+    await this.bot.sendCard(
       group.telegramChatId,
+      queueSoonCard(group.academicName, params.queueTitle, params.opensAt, new Date()),
       `<b>За 5 хв відкриється черга:</b> ${escapeHtml(params.queueTitle)} (${escapeHtml(params.subjectName)})`,
       opts,
     );
   }
 
-  async announceBirthday(groupId: string, fullName: string): Promise<void> {
+  async announceBirthday(groupId: string, fullName: string, telegramId: number): Promise<void> {
     const group = await this.groups.findById(groupId).exec();
     if (!group || !group.birthdayAnnouncementsEnabled || !group.telegramChatId) return;
     const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-    await this.bot.sendMessage(
+    await this.bot.sendCard(
       group.telegramChatId,
+      birthdayCard(group.academicName, fullName, await this.bot.avatar(telegramId)),
       `Сьогодні день народження у <b>${escapeHtml(fullName)}</b>. Вітаємо!`,
       opts,
     );

@@ -354,14 +354,14 @@ describe('SchedulerService.tickDeadlineReminders', () => {
           query(homework.filter((h) => h.deadline >= f.deadline.$gte && h.deadline < f.deadline.$lt)),
       } as never,
       { find: () => query([]) } as never,
-      {} as never,
+      { find: () => query([]) } as never,
       {
         find: (f: { memberships: { $elemMatch: { groupId: Types.ObjectId; role: { $ne: Role } } } }) => {
           const { groupId, role } = f.memberships.$elemMatch;
           return query(members.filter((u) => u.memberships.some((m) => m.groupId.equals(groupId) && m.role !== role.$ne)));
         },
       } as never,
-      {} as never,
+      { find: () => query([]) } as never,
       {} as never,
       {} as never,
       {} as never,

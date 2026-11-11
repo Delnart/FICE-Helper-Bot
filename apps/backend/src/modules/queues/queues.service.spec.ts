@@ -82,13 +82,13 @@ describe('QueuesService queue-open DMs', () => {
           ? { findOne: async () => ({ _id: new Types.ObjectId(G) }) } // no chat → DMs only
           : { find: () => ({ toArray: async () => rows }) },
     };
-    const sendMessage = jest.fn(async (_id: number, _text: string) => undefined);
+    const sendCard = jest.fn(async (_id: number, _card: unknown, _text: string) => undefined);
     const users = { find: () => ({ lean: () => ({ exec: async () => members }) }) };
-    const svc = new QueuesService({} as never, { db } as never, {} as never, users as never, { sendMessage } as never);
+    const svc = new QueuesService({} as never, { db } as never, {} as never, users as never, { sendCard } as never);
     await (svc as never as { dispatchQueueOpenNotifications: (q: object) => Promise<void> }).dispatchQueueOpenNotifications({
       groupId: new Types.ObjectId(G),
       title: 'ОС',
     });
-    expect(sendMessage.mock.calls.map(([id]) => id)).toEqual([11, 13]);
+    expect(sendCard.mock.calls.map(([id]) => id)).toEqual([11, 13]);
   });
 });

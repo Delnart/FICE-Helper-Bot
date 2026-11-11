@@ -14,6 +14,7 @@ import { QueueSwapRequest, QueueSwapRequestDocument } from './swap-request.schem
 import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
+import { queueNextCard, queueOpenCard, swapRequestCard, swapResultCard } from '../bot/cards/templates';
 import { effectivePref, PrefKey, PrefsLike } from '../notifications/notification-prefs.schema';
 import { RequestUser } from '../../common/types/request-user';
 import {
@@ -406,14 +407,17 @@ export class QueuesService {
       .collection('academic_groups')
       .findOne({ _id: groupId });
     if (!group) return;
+    // One card for the chat and every DM: it is drawn and uploaded once (BotService.sendCard).
+    const card = queueOpenCard(group.academicName as string | undefined, q.title, q.slotsCount);
 
     // 1. Group chat announcement.
     if (group.notificationsEnabled !== false && group.telegramChatId) {
       const opts: Record<string, unknown> = {};
       if (group.messageThreadId) opts.message_thread_id = group.messageThreadId;
       await this.bot
-        .sendMessage(
+        .sendCard(
           group.telegramChatId as number,
+          card,
           `<b>🔔 Черга «${escapeHtml(q.title)}» відкрита</b>\n` +
             `Заходьте в FICE Helper і записуйтесь.`,
           opts,
@@ -446,7 +450,7 @@ export class QueuesService {
       // No prefs row (never opened settings) → the default, i.e. send.
       if (!effectivePref(prefsMap.get(String(m._id)), groupId, 'dmQueueOpen')) continue;
       await this.bot
-        .sendMessage(m.telegramId, dmText)
+        .sendCard(m.telegramId, card, dmText)
         .catch((err) =>
           this.logger.warn(`queue-open DM to ${m.telegramId} failed: ${(err as Error).message}`),
         );
@@ -856,7 +860,12 @@ export class QueuesService {
       `<b>Готуйтесь — ви наступний</b>\n\n` +
       `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
       `Попередній починає здавати — підготуйте свої файли.`;
-    await this.bot.sendMessage(u.telegramId, text);
+    // The reader's place with two neighbours on each side.
+    const around = [-2, -1, 0, 1, 2]
+      .map((d) => p.slotIndex + d)
+      .filter((slot) => slot >= 1 && slot <= q.slotsCount)
+      .map((slot) => ({ slot, status: q.entries.find((e) => e.slotIndex === slot)?.status }));
+    await this.bot.sendCard(u.telegramId, queueNextCard(q.title, p.slotIndex, around), text);
   }
 
   async requestSwap(
@@ -935,7 +944,11 @@ export class QueuesService {
         `${escapeHtml(fromName)} пропонує помінятися місцями у черзі «${escapeHtml(q.title)}».\n` +
         `Місце ${own.slotIndex} ↔ Місце ${target.slotIndex}.\n\n` +
         `Відкрийте FICE Helper, щоб прийняти або відхилити.`;
-      await this.bot.sendMessage(them.telegramId, text);
+      await this.bot.sendCard(
+        them.telegramId,
+        swapRequestCard(fromName, q.title, own.slotIndex, target.slotIndex),
+        text,
+      );
     } else if (!them?.telegramId) {
       this.logger.warn(`Swap target user ${target.userId} has no telegramId`);
     }
@@ -1094,11 +1107,15 @@ export class QueuesService {
     const text = accepted
       ? `<b>Обмін підтверджено</b>\n\n` +
         `${escapeHtml(targetName)} погодився на обмін у черзі «${escapeHtml(q.title)}». ` +
-        `Ваше нове місце: <b>№${swap.fromSlotIndex}</b> ↔ було <b>№${swap.toSlotIndex}</b>.`
+        `Ваше нове місце: <b>№${swap.toSlotIndex}</b> ↔ було <b>№${swap.fromSlotIndex}</b>.`
       : `<b>Обмін відхилено</b>\n\n` +
         `${escapeHtml(targetName)} відхилив запит на обмін у черзі «${escapeHtml(q.title)}» ` +
         `(місце ${swap.fromSlotIndex} ↔ ${swap.toSlotIndex}).`;
-    await this.bot.sendMessage(fromUser.telegramId, text);
+    await this.bot.sendCard(
+      fromUser.telegramId,
+      swapResultCard(accepted, targetName, q.title, swap.fromSlotIndex, swap.toSlotIndex),
+      text,
+    );
   }
 
   /**
