@@ -1,11 +1,12 @@
 import { Logger } from '@nestjs/common';
-import { execFile } from 'child_process';
+import { fork } from 'child_process';
+import { EventEmitter } from 'events';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { renderCard, renderTree } from './render';
 import * as cards from './templates';
 
-jest.mock('child_process', () => ({ execFile: jest.fn() }));
+jest.mock('child_process', () => ({ fork: jest.fn() }));
 
 /**
  * Every card renders to a PNG. `CARDS_OUT=some/dir npx jest cards` also saves them there, to look at
@@ -185,24 +186,68 @@ describe('cards', () => {
     expect((await png('Лаба → 3')).equals(plain)).toBe(false);
   });
 
-  it('refuses to draw for the rest of a minute that spent 20 s on cards', async () => {
-    jest.useFakeTimers();
-    // A child that takes 21 s over its card.
-    (execFile as unknown as jest.Mock).mockImplementation((_node, _args, _options, done) => {
-      setTimeout(() => done(null, Buffer.from('png'), Buffer.alloc(0)), 21_000);
-      const stdin = { on: () => stdin, end: () => undefined };
-      return { stdin };
-    });
+  describe('renderCard', () => {
     const tree = { type: 'div', props: {} };
-    const slow = renderCard(tree);
-    await jest.advanceTimersByTimeAsync(21_000);
-    await expect(slow).resolves.toEqual(Buffer.from('png'));
-    await expect(renderCard(tree)).rejects.toThrow('drawing budget');
-    await jest.advanceTimersByTimeAsync(39_000);
-    const nextMinute = renderCard(tree);
-    await jest.advanceTimersByTimeAsync(21_000);
-    await expect(nextMinute).resolves.toEqual(Buffer.from('png'));
-    jest.useRealTimers();
+    /** How long the fake renderer takes over a card. */
+    let drawMs = 100;
+    const forked = (fork as unknown as jest.Mock).mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+        send: () => setTimeout(() => child.emit('message', { png: new Uint8Array([1, 2]) }), drawMs),
+      });
+      return child;
+    });
+    const renderer = (n: number) => forked.mock.results[n].value as EventEmitter & { kill: jest.Mock };
+    /** A card drawn to the end. */
+    const card = async () => {
+      const png = renderCard(tree);
+      await jest.advanceTimersByTimeAsync(drawMs);
+      return png;
+    };
+    // Every test in an hour of its own (a fresh drawing budget), and over with the renderer idled out.
+    let now = Date.now();
+    beforeEach(() => {
+      drawMs = 100;
+      forked.mockClear();
+      jest.useFakeTimers({ now: (now += 3_600_000) });
+    });
+    afterEach(async () => {
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      jest.useRealTimers();
+    });
+
+    it('draws on one warm renderer and starts another once it idled out, died or hung', async () => {
+      await expect(card()).resolves.toEqual(Buffer.from([1, 2]));
+      await card();
+      expect(forked).toHaveBeenCalledTimes(1);
+      // Five minutes without cards: it goes, and the next card starts a new one.
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(renderer(0).kill).toHaveBeenCalled();
+      await card();
+      expect(forked).toHaveBeenCalledTimes(2);
+      // Killed mid-card (out of memory): that card fails, the next one gets a new renderer.
+      const killed = renderCard(tree);
+      await jest.advanceTimersByTimeAsync(drawMs / 2);
+      renderer(1).emit('exit', null, 'SIGKILL');
+      await expect(killed).rejects.toThrow('SIGKILL');
+      await card();
+      expect(forked).toHaveBeenCalledTimes(3);
+      // Stuck on a card: killed after 20 s.
+      drawMs = 60_000;
+      const stuck = renderCard(tree);
+      await jest.advanceTimersByTimeAsync(20_000);
+      await expect(stuck).rejects.toThrow('over 20 s');
+      expect(renderer(2).kill).toHaveBeenCalled();
+    });
+
+    it('refuses to draw for the rest of a minute that spent 20 s on cards', async () => {
+      drawMs = 11_000;
+      await card();
+      await card();
+      await expect(renderCard(tree)).rejects.toThrow('drawing budget');
+      await jest.advanceTimersByTimeAsync(60_000 - 22_000);
+      await expect(card()).resolves.toEqual(Buffer.from([1, 2]));
+    });
   });
 
   it('gives no card when a builder trips, so the sender falls back to the text', () => {

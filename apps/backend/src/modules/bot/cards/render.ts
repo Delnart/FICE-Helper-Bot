@@ -1,7 +1,6 @@
-import { execFile } from 'child_process';
+import { type ChildProcess, fork } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 import { setPriority } from 'os';
-import { text } from 'stream/consumers';
 
 /** A satori element. Plain JSON, so a card crosses the process boundary as is. */
 export interface CardNode {
@@ -79,47 +78,85 @@ export async function renderTree(tree: CardNode): Promise<Buffer> {
   return new Resvg(svg, { fitTo: { mode: 'width', value: WIDTH * 2 }, font: { loadSystemFonts: false } }).render().asPng();
 }
 
-// Small heap, no optimizing compilers: the child lives for one card, so warm-up speed is all that matters.
-const CHILD_FLAGS = ['--max-old-space-size=64', '--max-semi-space-size=1', '--liftoff-only', '--no-opt'];
+// Small heap, no optimizing compilers: less memory, and no slower on cards (measured). `gc` is for the child below.
+const CHILD_FLAGS = ['--expose-gc', '--max-old-space-size=64', '--max-semi-space-size=1', '--liftoff-only', '--no-opt'];
 /** Drawing may take this much of any minute. Past it cards are refused, and the bot's texts still go out on time. */
 const BUDGET_MS = 20_000;
+/** A card that takes longer fails, and the renderer that hangs on it is killed. */
+const CARD_TIMEOUT_MS = 20_000;
+/** The renderer exits after this long without a card and gives its memory back. */
+const IDLE_MS = 5 * 60_000;
 let queue: Promise<unknown> = Promise.resolve();
 let minuteStart = 0;
 let spent = 0;
+let renderer: ChildProcess | undefined;
+let idle: NodeJS.Timeout | undefined;
 
 /**
  * Card → PNG in a child process, one card at a time.
  */
-// ponytail: a fresh node process per card (~0.5 s of CPU, ~100 MB while it runs), because the backend
-// container has 384 MB and a renderer that stays loaded would take ~150 MB of it. That is a few dozen new
-// cards a minute, and a busier minute gets texts. A warm worker with an idle exit when that is not enough.
+// ponytail: one renderer kept warm between cards (~0.1 s a card) and gone after IDLE_MS, because the backend
+// container has 384 MB and a warm one holds ~100 MB. The first card after a quiet spell starts it again
+// (~0.3 s more here, a few times that on the VPS). Drop the idle exit once the container has the memory.
 export function renderCard(tree: CardNode): Promise<Buffer> {
   const run = queue.then(() => {
     const started = Date.now();
     if (started - minuteStart >= 60_000) [minuteStart, spent] = [started, 0];
     if (spent >= BUDGET_MS) throw new Error('this minute is over its drawing budget');
-    return new Promise<Buffer>((resolve, reject) => {
-      const child = execFile(
-        process.execPath,
-        [...CHILD_FLAGS, __filename],
-        { encoding: 'buffer', maxBuffer: 16 << 20, timeout: 20_000 },
-        (err, stdout, stderr) => (err ? reject(new Error(stderr.toString().trim().split('\n').pop() || err.message)) : resolve(stdout)),
-      );
-      try {
-        // Rendering must not starve the API on a one-core VPS.
-        if (child.pid) setPriority(child.pid, 10);
-      } catch {
-        /* best effort */
-      }
-      // A child that died before reading its card: execFile reports it above, and an unheard EPIPE here would take the bot down.
-      child.stdin?.on('error', () => undefined).end(JSON.stringify(tree));
-    }).finally(() => (spent += Date.now() - started));
+    clearTimeout(idle);
+    return draw(tree).finally(() => {
+      spent += Date.now() - started;
+      idle = setTimeout(() => {
+        renderer?.kill();
+        renderer = undefined;
+      }, IDLE_MS);
+    });
   });
   queue = run.catch(() => undefined);
   return run;
 }
 
-// Child: the card on stdin, the PNG on stdout.
+function draw(tree: CardNode): Promise<Buffer> {
+  const child = (renderer ??= startRenderer());
+  return new Promise<Buffer>((resolve, reject) => {
+    const settle = (result: { png?: Uint8Array; error?: string }, broken = false) => {
+      clearTimeout(timer);
+      child.off('message', onMessage).off('exit', onExit).off('error', onError);
+      if (broken) {
+        child.kill();
+        if (renderer === child) renderer = undefined;
+      }
+      if (result.png) resolve(Buffer.from(result.png));
+      else reject(new Error(result.error));
+    };
+    const onMessage = (result: { png?: Uint8Array; error?: string }) => settle(result);
+    const onExit = (code: number | null, signal: string | null) => settle({ error: `the renderer exited (${signal ?? code})` }, true);
+    const onError = (err: Error) => settle({ error: err.message }, true);
+    const timer = setTimeout(() => settle({ error: `the card took over ${CARD_TIMEOUT_MS / 1000} s` }, true), CARD_TIMEOUT_MS);
+    child.on('message', onMessage).on('exit', onExit).on('error', onError);
+    child.send(JSON.stringify(tree));
+  });
+}
+
+function startRenderer(): ChildProcess {
+  // `advanced`: the PNG comes back as bytes, not as a JSON array of numbers.
+  const child = fork(__filename, [], { execArgv: CHILD_FLAGS, serialization: 'advanced' });
+  // Gone between cards (killed for memory, say): the next card starts another. An unheard 'error' would take the bot down.
+  child
+    .on('exit', () => {
+      if (renderer === child) renderer = undefined;
+    })
+    .on('error', () => undefined);
+  try {
+    // Rendering must not starve the API on a one-core VPS.
+    if (child.pid) setPriority(child.pid, 10);
+  } catch {
+    /* best effort */
+  }
+  return child;
+}
+
+// Child: cards in, PNGs out over the IPC channel. It exits by itself once the bot is gone and the channel with it.
 if (require.main === module) {
   try {
     // Out of memory in the container → the kernel takes this process, not the bot.
@@ -127,13 +164,14 @@ if (require.main === module) {
   } catch {
     /* not Linux */
   }
-  text(process.stdin)
-    .then((json) => renderTree(JSON.parse(json)))
-    .then(
-      (png) => process.stdout.write(png),
-      (err) => {
-        console.error(String((err as Error)?.message ?? err));
-        process.exitCode = 1;
-      },
-    );
+  process.on('message', (json: string) => {
+    renderTree(JSON.parse(json))
+      .then(
+        (png) => process.send!({ png }),
+        (err) => process.send!({ error: String((err as Error)?.message ?? err) }),
+      )
+      // resvg's pixmaps (~8 MB a card) live outside the JS heap, which is too small to notice them:
+      // left to the GC, the renderer grows past 300 MB in 30 cards.
+      .finally(() => globalThis.gc?.());
+  });
 }
