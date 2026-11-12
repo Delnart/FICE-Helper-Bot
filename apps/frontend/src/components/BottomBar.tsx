@@ -20,7 +20,7 @@ interface NavItem {
 }
 
 const STUDENT_ITEMS: NavItem[] = [
-  { href: '/' as Route, label: 'Сьогодні', icon: 'home', also: ['/attendance'] },
+  { href: '/' as Route, label: 'Сьогодні', icon: 'home', also: ['/attendance', '/notifications'] },
   { href: '/schedule' as Route, label: 'Розклад', icon: 'calendar' },
   { href: '/subjects' as Route, label: 'Дисципліни', icon: 'book', also: ['/queues'] },
   { href: '/homework' as Route, label: 'Завдання', icon: 'task', badge: 'homework' },
@@ -28,7 +28,7 @@ const STUDENT_ITEMS: NavItem[] = [
 ];
 
 const TEACHER_ITEMS: NavItem[] = [
-  { href: '/' as Route, label: 'Дисципліни', icon: 'book', also: ['/subjects', '/queues'] },
+  { href: '/' as Route, label: 'Дисципліни', icon: 'book', also: ['/subjects', '/queues', '/notifications'] },
   { href: '/schedule' as Route, label: 'Розклад', icon: 'calendar' },
   { href: '/profile' as Route, label: 'Профіль', icon: 'user', also: ['/settings', '/about', '/updates'] },
 ];

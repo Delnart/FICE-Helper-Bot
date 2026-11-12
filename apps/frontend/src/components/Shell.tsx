@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { BottomBar, isTabBarHidden } from './BottomBar';
 import { Icon, Logo } from './icons';
+import { NoticePopup } from './NoticePopup';
 import { useAuth } from '../hooks/useAuth';
 import { useActiveGroup, useIsTeacherOnly, useMe } from '../hooks/useMe';
 import { setActiveGroup } from '../lib/api';
@@ -96,6 +97,8 @@ export function Shell({ children }: { children: ReactNode }) {
         )}
       </main>
       {showTabBar ? <BottomBar /> : null}
+      {/* Only where the tab bar is: a form or a first-run flow is not interrupted. */}
+      {showTabBar ? <NoticePopup /> : null}
     </div>
   );
 }

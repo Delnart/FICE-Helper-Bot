@@ -24,6 +24,12 @@ export class NotificationsController {
     return this.svc.updatePrefs(user.userId, dto);
   }
 
+  /** For everyone signed in: these are the developer's messages to all users. */
+  @Get('notices')
+  notices() {
+    return this.svc.listNotices();
+  }
+
   @Get('announcements')
   async listAnnouncements(@CurrentUser() user: RequestUser, @Query('groupId') groupId: string) {
     return this.svc.listAnnouncements(await this.access.assertAccess(user, groupId));

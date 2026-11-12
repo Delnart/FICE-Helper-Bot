@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { BotService } from './bot.service';
 import { CardsController } from './cards/cards.controller';
 import { SupportTicket, SupportTicketSchema } from './support-ticket.schema';
+import { Notice, NoticeSchema } from '../notifications/notice.schema';
 import { GroupsModule } from '../groups/groups.module';
 import { UsersModule } from '../users/users.module';
 import { CampusModule } from '../campus/campus.module';
@@ -11,7 +12,10 @@ import { ScheduleApiModule } from '../schedule/schedule.module';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([{ name: SupportTicket.name, schema: SupportTicketSchema }]),
+    MongooseModule.forFeature([
+      { name: SupportTicket.name, schema: SupportTicketSchema },
+      { name: Notice.name, schema: NoticeSchema },
+    ]),
     GroupsModule,
     forwardRef(() => UsersModule),
     CampusModule,

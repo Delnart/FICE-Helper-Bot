@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { Announcement, AnnouncementSchema } from './announcement.schema';
 import { NotificationPrefs, NotificationPrefsSchema } from './notification-prefs.schema';
 import { LessonReminderMark, LessonReminderMarkSchema } from './lesson-reminder-mark.schema';
+import { Notice, NoticeSchema } from './notice.schema';
 import { NotificationsService } from './notifications.service';
 import { SchedulerService } from './scheduler.service';
 import { NotificationsController } from './notifications.controller';
@@ -20,6 +21,7 @@ import { CampusModule } from '../campus/campus.module';
       { name: Announcement.name, schema: AnnouncementSchema },
       { name: NotificationPrefs.name, schema: NotificationPrefsSchema },
       { name: LessonReminderMark.name, schema: LessonReminderMarkSchema },
+      { name: Notice.name, schema: NoticeSchema },
     ]),
     BotModule,
     GroupsModule,

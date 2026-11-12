@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { GrammyError } from 'grammy';
+import { Bot, GrammyError } from 'grammy';
 import { BotService } from './bot.service';
 import { renderCard } from './cards/render';
 import { pickLessonLink, Subject } from '../subjects/subject.schema';
@@ -33,6 +33,7 @@ function ask(chatType: 'private' | 'supergroup', kind: 'today' | 'tomorrow', les
     { refreshWeekParity: async () => 1 } as never,
     {} as never,
     { getForGroup: async () => lessons, getForUser: async () => lessons } as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -119,6 +120,7 @@ function now(
         return pickLessonLink({ links } as Pick<Subject, 'links'>, l);
       },
     } as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -375,6 +377,66 @@ describe('BotService.sendCard', () => {
     expect(sendMessage.mock.calls).toEqual([
       [1, 'текст', { parse_mode: 'HTML', link_preview_options: preview() }],
       [1, 'текст', { parse_mode: 'HTML' }],
+    ]);
+  });
+});
+
+describe('BotService /notice', () => {
+  const ADMINS = -100500;
+  const ID = 'a'.repeat(24);
+  const setup = () => {
+    const notices = {
+      create: jest.fn(async (doc: { title: string; body: string }) => ({ ...doc, id: ID })),
+      deleteOne: jest.fn(() => ({ exec: async () => undefined })),
+    };
+    const config = { get: (name: string) => (name === 'ADMIN_CHAT_ID' ? String(ADMINS) : undefined) };
+    const svc = new BotService(...([config, ...Array(8).fill({}), notices] as unknown as ConstructorParameters<typeof BotService>));
+    // A real grammY bot with the handlers on it; what it would send to Telegram lands in `sent`.
+    const bot = new Bot('1:test', { botInfo: { id: 1, is_bot: true, first_name: 'Bot', username: 'fice_bot' } as never });
+    const sent: Array<{ method: string; payload: Record<string, any> }> = [];
+    bot.api.config.use(async (_prev, method, payload) => {
+      sent.push({ method, payload: payload as Record<string, any> });
+      return { ok: true, result: true } as never;
+    });
+    svc['registerHandlers'](bot);
+    const chat = (id: number) => ({ id, type: 'supergroup', title: 'chat' });
+    const from = { id: 5, is_bot: false, first_name: 'Dev' };
+    const say = (chatId: number, text: string) =>
+      bot.handleUpdate({
+        update_id: 1,
+        message: { message_id: 1, date: 0, chat: chat(chatId), from, text, entities: [{ type: 'bot_command', offset: 0, length: '/notice'.length }] },
+      } as never);
+    const press = (chatId: number, data: string) =>
+      bot.handleUpdate({
+        update_id: 2,
+        callback_query: { id: '1', from, chat_instance: 'x', data, message: { message_id: 7, date: 0, chat: chat(chatId) } },
+      } as never);
+    return { notices, sent, say, press };
+  };
+
+  it('publishes what the admins wrote, the first line as the title, and takes it back at a tap', async () => {
+    const { notices, sent, say, press } = setup();
+    await say(ADMINS, '/notice Версія 2.5.0 \nТемні картки.\n\nІ сповіщення. ');
+    expect(notices.create.mock.calls).toEqual([[{ title: 'Версія 2.5.0', body: 'Темні картки.\n\nІ сповіщення.' }]]);
+    expect(sent[0].method).toBe('sendMessage');
+    expect(sent[0].payload.reply_markup.inline_keyboard[0][0].callback_data).toBe(`notice:del:${ID}`);
+
+    await press(ADMINS, `notice:del:${ID}`);
+    expect(notices.deleteOne).toHaveBeenCalledWith({ _id: ID });
+    expect(sent.map((s) => s.method).slice(1)).toEqual(['editMessageText', 'answerCallbackQuery']);
+  });
+
+  it('is for the admins chat only, and wants a title', async () => {
+    const { notices, sent, say, press } = setup();
+    await say(-1, '/notice Спам');
+    await say(ADMINS, '/notice');
+    await press(-1, `notice:del:${ID}`);
+    expect(notices.create).not.toHaveBeenCalled();
+    expect(notices.deleteOne).not.toHaveBeenCalled();
+    expect(sent.map((s) => s.payload.text)).toEqual([
+      'Команда /notice доступна лише в групі адмінів.',
+      'Після /notice напишіть заголовок, а з нового рядка — текст повідомлення.',
+      undefined,
     ]);
   });
 });

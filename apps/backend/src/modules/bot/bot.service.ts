@@ -14,6 +14,7 @@ import { localDateKey, runsOn } from '../schedule/schedule.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { SupportTicket, SupportTicketDocument } from './support-ticket.schema';
+import { Notice, NoticeDocument } from '../notifications/notice.schema';
 import { renderCard } from './cards/render';
 import { Card, CardLesson, dayCard, leftCard, nowCard, span } from './cards/templates';
 import { quote } from '../../common/telegram-html';
@@ -51,6 +52,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(AcademicGroup.name) private readonly groupModel: Model<AcademicGroupDocument>,
     @InjectModel(SupportTicket.name) private readonly tickets: Model<SupportTicketDocument>,
+    @InjectModel(Notice.name) private readonly notices: Model<NoticeDocument>,
   ) {}
 
   /** Telegram chat ID of the admin group (from ADMIN_CHAT_ID env var). */
@@ -318,6 +320,31 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
     bot.command('tomorrow', async (ctx) => {
       await this.handleDaySchedule(ctx, 'tomorrow');
+    });
+
+    // The developer's message to everyone in the Mini App: the first line is its title, the rest its text.
+    bot.command('notice', async (ctx) => {
+      if (!this.isAdminChat(ctx)) {
+        await ctx.reply('Команда /notice доступна лише в групі адмінів.');
+        return;
+      }
+      const [title, ...rest] = ctx.match.trim().split('\n');
+      if (!title.trim()) {
+        await ctx.reply('Після /notice напишіть заголовок, а з нового рядка — текст повідомлення.');
+        return;
+      }
+      const notice = await this.notices.create({ title: title.trim(), body: rest.join('\n').trim() });
+      await ctx.reply(
+        `Опубліковано в Mini App: <b>${escapeHtml(notice.title)}</b>\nСпливе при вході й лишиться у «Сповіщеннях».`,
+        { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🗑 Видалити', `notice:del:${notice.id}`) },
+      );
+    });
+    bot.callbackQuery(/^notice:del:([0-9a-f]{24})$/, async (ctx) => {
+      if (this.isAdminChat(ctx)) {
+        await this.notices.deleteOne({ _id: ctx.match[1] }).exec();
+        await ctx.editMessageText('Повідомлення прибрано з Mini App.');
+      }
+      await ctx.answerCallbackQuery();
     });
 
     bot.command('refresh_heads', async (ctx) => {

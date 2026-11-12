@@ -26,6 +26,7 @@ import { cn } from '../../lib/cn';
 import { shortenName, subjectAcronym, vocative } from '../../lib/name';
 import { runsOn } from '../../lib/lessons';
 import { useActiveMembership, useCanManage, useIsTeacherOnly, useMe } from '../../hooks/useMe';
+import { useNotices } from '../../hooks/useNotices';
 import { getWebApp, haptic } from '../../lib/telegram';
 import { timeAgo } from '../../lib/time';
 
@@ -1209,23 +1210,39 @@ function HomeHeader({
   const name =
     me.data?.fullName || [me.data?.firstName, me.data?.lastName].filter(Boolean).join(' ');
   const date = dayjs().locale('uk').format('dd, D MMMM');
+  const unread = useNotices().unread.length;
   return (
     <PageHeader
       title={title}
       subtitle={`${date.charAt(0).toUpperCase()}${date.slice(1)}${weekType ? ` · ${weekType === 1 ? 'I' : 'II'} тиждень` : ''}`}
       action={
-        <Link
-          href="/profile"
-          aria-label="Профіль"
-          className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-3 pr-1"
-        >
-          {label ? (
-            <span className={cn('small font-semibold', accentLabel ? 'text-accent-text' : 'text-ink-2')}>
-              {label}
-            </span>
-          ) : null}
-          <UserAvatar name={name} src={myAvatarUrl(me.data)} className="tile-accent h-9 w-9 text-[12px]" />
-        </Link>
+        <>
+          <Link
+            href={'/notifications' as Route}
+            aria-label={unread ? `Сповіщення, нових: ${unread}` : 'Сповіщення'}
+            className="icon-btn relative"
+            onClick={() => haptic('selection')}
+          >
+            <Icon name="bell" size={20} />
+            {unread > 0 ? (
+              <span className="count absolute -right-1 -top-1 h-[18px] min-w-[18px] px-1 text-[11px]">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            ) : null}
+          </Link>
+          <Link
+            href="/profile"
+            aria-label="Профіль"
+            className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-3 pr-1"
+          >
+            {label ? (
+              <span className={cn('small font-semibold', accentLabel ? 'text-accent-text' : 'text-ink-2')}>
+                {label}
+              </span>
+            ) : null}
+            <UserAvatar name={name} src={myAvatarUrl(me.data)} className="tile-accent h-9 w-9 text-[12px]" />
+          </Link>
+        </>
       }
     />
   );

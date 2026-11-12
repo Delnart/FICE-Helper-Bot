@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Announcement, AnnouncementDocument } from './announcement.schema';
+import { Notice, NoticeDocument } from './notice.schema';
 import {
   effectivePref,
   effectivePrefs,
@@ -64,8 +65,14 @@ export class NotificationsService {
     @InjectModel(NotificationPrefs.name) private readonly prefs: Model<NotificationPrefsDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     @InjectModel(AcademicGroup.name) private readonly groups: Model<AcademicGroupDocument>,
+    @InjectModel(Notice.name) private readonly notices: Model<NoticeDocument>,
     private readonly bot: BotService,
   ) {}
+
+  /** The developer's messages for the Mini App's «Сповіщення», the newest first. */
+  listNotices() {
+    return this.notices.find({}, { title: 1, body: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(30).lean().exec();
+  }
 
   async getPrefs(userId: string, groupId?: string): Promise<Record<PrefKey, boolean>> {
     // Read-only: a missing row means the defaults, nothing to create.
