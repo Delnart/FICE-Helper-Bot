@@ -5,7 +5,6 @@ import type { Route } from 'next';
 import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { BottomBar, isTabBarHidden } from './BottomBar';
-import { Loading } from './Empty';
 import { Icon, Logo } from './icons';
 import { useAuth } from '../hooks/useAuth';
 import { useActiveGroup, useIsTeacherOnly, useMe } from '../hooks/useMe';
@@ -62,7 +61,7 @@ export function Shell({ children }: { children: ReactNode }) {
         )}
       >
         {!auth.ready ? (
-          <Loading label="Авторизація…" />
+          <Splash label="Авторизація…" />
         ) : auth.error ? (
           <div className="card-flat flex flex-col items-start gap-3 border-bad">
             <div className="flex flex-col gap-1">
@@ -91,12 +90,26 @@ export function Shell({ children }: { children: ReactNode }) {
             retrying={me.isFetching}
           />
         ) : !ready ? (
-          <Loading />
+          <Splash />
         ) : (
           children
         )}
       </main>
       {showTabBar ? <BottomBar /> : null}
+    </div>
+  );
+}
+
+/** App start (authorising, then the profile): the logo inside the loading ring, mid-screen. */
+function Splash({ label }: { label?: string }) {
+  return (
+    <div className="anim-fade flex min-h-[72dvh] flex-col items-center justify-center gap-5" role="status">
+      <div className="relative flex h-[84px] w-[84px] items-center justify-center">
+        <div className="spinner absolute inset-0 h-auto w-auto" />
+        <Logo size={52} />
+      </div>
+      {/* The line keeps its height without a label, so the logo doesn't jump between the two waits. */}
+      <div className="small h-5 text-ink-3">{label ?? <span className="sr-only">Завантаження…</span>}</div>
     </div>
   );
 }

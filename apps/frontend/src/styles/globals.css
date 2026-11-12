@@ -51,6 +51,12 @@
   --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   --dur-fast: 150ms;
   --dur: 240ms;
+  /* one-off fills (progress bars); --stagger is the step between list items entering in a cascade */
+  --dur-slow: 480ms;
+  --stagger: 30ms;
+  /* light sweeps: over skeleton blocks, over the live lesson's progress fill */
+  --sk-shine: rgba(255, 255, 255, 0.8);
+  --now-shine: rgba(255, 255, 255, 0.65);
   color-scheme: light;
 }
 
@@ -84,6 +90,8 @@
   --info-soft: #1c2a48;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-bar: 0 -6px 24px rgba(0, 0, 0, 0.45);
+  --sk-shine: rgba(255, 255, 255, 0.06);
+  --now-shine: rgba(255, 255, 255, 0.2);
   color-scheme: dark;
 }
 
@@ -171,8 +179,8 @@ body {
   .divider { height: 1px; background: var(--line); }
 
   /* ── Buttons (hit targets ≥ 44px) ─────────────────────────────────── */
-  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 48px; padding: 0 18px; border-radius: 14px; border: 0; font-weight: 600; font-size: 15px; line-height: 1; white-space: nowrap; color: var(--ink); text-decoration: none; transition: transform 0.1s, opacity 0.15s; }
-  .btn:active:not(:disabled) { transform: scale(0.985); }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 48px; padding: 0 18px; border-radius: 14px; border: 0; font-weight: 600; font-size: 15px; line-height: 1; white-space: nowrap; color: var(--ink); text-decoration: none; transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+  .btn:active:not(:disabled) { transform: scale(0.97); }
   .btn-primary { background: var(--accent); color: var(--accent-ink); }
   .btn-secondary { background: var(--surface-2); color: var(--ink); }
   .btn-outline { background: transparent; color: var(--ink); border: 1px solid var(--line-2); }
@@ -183,6 +191,9 @@ body {
   .btn-block { width: 100%; }
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 14px; border: 0; background: var(--surface-2); color: var(--ink); flex-shrink: 0; }
   .icon-btn-plain { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 14px; border: 0; background: transparent; color: var(--ink-2); flex-shrink: 0; }
+  /* Icon buttons dip under the finger and spring back. */
+  .icon-btn, .icon-btn-plain { transition: transform var(--dur) var(--ease-spring), background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+  .icon-btn:active:not(:disabled), .icon-btn-plain:active:not(:disabled) { transform: scale(0.88); transition-duration: 80ms; }
   /* Mouse hover feedback (desktop Telegram); touch screens never see it. */
   @media (hover: hover) and (pointer: fine) {
     .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
@@ -222,18 +233,25 @@ body {
   /* ── Forms ────────────────────────────────────────────────────────── */
   .label { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 6px 2px; }
   .input { width: 100%; height: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); font-size: 15px; outline: none; }
+  .input, .textarea { transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
   .input::placeholder, .textarea::placeholder { color: var(--ink-3); }
   .input:focus, .textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
   select.input { appearance: none; padding-right: 40px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%236B7290' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
   .textarea { width: 100%; min-height: 96px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); font-size: 15px; outline: none; resize: none; line-height: 1.45; }
   .hint { font-size: 12px; color: var(--ink-3); margin: 6px 2px 0; }
-  .switch { position: relative; width: 50px; height: 30px; border-radius: 999px; border: 0; background: var(--surface-3); flex-shrink: 0; padding: 0; transition: background 0.15s; }
-  .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 999px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: left 0.15s; }
+  .switch { position: relative; width: 50px; height: 30px; border-radius: 999px; border: 0; background: var(--surface-3); flex-shrink: 0; padding: 0; transition: background-color var(--dur) var(--ease-out); }
+  .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 999px; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform var(--dur) var(--ease-out); }
   .switch[aria-checked='true'] { background: var(--accent); }
-  .switch[aria-checked='true']::after { left: 23px; }
-  .check { width: 24px; height: 24px; border-radius: 8px; border: 2px solid var(--line-2); background: var(--surface); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--accent-ink); padding: 0; }
+  .switch[aria-checked='true']::after { transform: translateX(20px); }
+  /* Held down, the thumb leans towards the other side. */
+  .switch:active:not(:disabled)::after { transform: translateX(3px); }
+  .switch[aria-checked='true']:active:not(:disabled)::after { transform: translateX(17px); }
+  .check { width: 24px; height: 24px; border-radius: 8px; border: 2px solid var(--line-2); background: var(--surface); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--accent-ink); padding: 0; transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur) var(--ease-spring); }
   .check.on { background: var(--accent); border-color: var(--accent); }
-  .radio { width: 24px; height: 24px; border-radius: 999px; border: 2px solid var(--line-2); background: var(--surface); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  /* The tick is mounted with .on, so it pops as the box fills. */
+  .check > svg { animation: pop-in var(--dur) var(--ease-spring) backwards; }
+  :active > .check, .check:active { transform: scale(0.86); }
+  .radio { width: 24px; height: 24px; border-radius: 999px; border: 2px solid var(--line-2); background: var(--surface); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-width var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
   .radio.on { border: 7px solid var(--accent); }
   /* ≥ 44px hit area around the small controls; the visual stays 24 / 30px. */
   .check, .radio { position: relative; }
@@ -258,8 +276,19 @@ body {
   .days { position: relative; isolation: isolate; display: flex; gap: 6px; }
   .days::before { content: ''; position: absolute; top: 0; left: 0; height: 100%; width: calc((100% - 36px) / 7); border-radius: 16px; background: var(--accent); transform: translateX(calc(var(--i, 0) * (100% + 6px))); transition: transform var(--dur) var(--ease-out); }
   .day { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 46px; height: 60px; border-radius: 16px; border: 0; background: transparent; color: var(--ink); flex-shrink: 0; transition: color var(--dur-fast) var(--ease-out); }
-  .day::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--surface); transition: transform var(--dur-fast) var(--ease-out); }
+  .day::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--surface); transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur) var(--ease-out); }
   .day > span { transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+  /* A new strip (page entry, the other week) deals its labels in left to right. */
+  .day > span { animation: rise-in var(--dur) var(--ease-out) backwards; animation-delay: calc(var(--d) * 22ms); }
+  .day { --d: 0; }
+  .day:nth-child(2) { --d: 1; }
+  .day:nth-child(3) { --d: 2; }
+  .day:nth-child(4) { --d: 3; }
+  .day:nth-child(5) { --d: 4; }
+  .day:nth-child(6) { --d: 5; }
+  .day:nth-child(7) { --d: 6; }
+  /* The chosen date pops as the pill lands under it (rise-in stays first in the list: it must not restart). */
+  .day.on > .dnum { animation: rise-in var(--dur) var(--ease-out) backwards, day-pop 360ms var(--ease-out); animation-delay: calc(var(--d) * 22ms), 90ms; }
   .day .dow { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
   .day .dnum { font-family: var(--font-display); font-size: 16px; font-weight: 600; }
   .day.on { color: var(--accent-ink); }
@@ -274,7 +303,8 @@ body {
   .day.on > span, .chips-slide > .chip-ink { transition-delay: 0ms, 70ms, 0ms; }
 
   /* ── Status pills for attendance / queue ──────────────────────────── */
-  .st { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-width: 44px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-weight: 700; font-size: 13px; color: var(--ink-2); }
+  .st { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-width: 44px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-weight: 700; font-size: 13px; color: var(--ink-2); transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur) var(--ease-spring); }
+  button.st:active:not(:disabled) { transform: scale(0.9); transition-duration: 80ms; }
   .st.on-ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
   .st.on-warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
   .st.on-bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
@@ -284,6 +314,12 @@ body {
   .row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 10px 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
   .row-plain { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 4px; color: var(--ink); }
   .row + .row { margin-top: 8px; }
+  /* Tappable rows and cards give a little under the finger. .tap-row: a row whose tap target is an
+     overlay link (schedule lessons) — only that link presses it, not the buttons above the overlay. */
+  a.row, button.row, a.card, button.card, a.card-flat, button.card-flat, a.card-soft, button.card-soft, .tap-row { transition: transform var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+  a.row:active, button.row:active:not(:disabled), a.card:active, button.card:active:not(:disabled), a.card-flat:active, button.card-flat:active:not(:disabled), a.card-soft:active, button.card-soft:active:not(:disabled) { transform: scale(0.98); }
+  /* Its own rule: a WebView without :has() drops just this one. */
+  .tap-row:has(> a:active) { transform: scale(0.98); }
   .avatar { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 13px; font-weight: 600; flex-shrink: 0; background: var(--surface-2); color: var(--ink-2); overflow: hidden; }
   .tile { width: 44px; height: 44px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 13px; font-weight: 600; flex-shrink: 0; }
   .tile-accent { background: var(--accent); color: var(--accent-ink); }
@@ -295,7 +331,8 @@ body {
   /* Accordion: grid rows animate to the content's real height, opening and closing alike. */
   .fold { display: grid; grid-template-rows: 0fr; visibility: hidden; transition: grid-template-rows var(--dur) var(--ease-out), visibility var(--dur); }
   .fold.open { grid-template-rows: 1fr; visibility: visible; }
-  .fold > * { min-height: 0; overflow: hidden; }
+  .fold > * { min-height: 0; overflow: hidden; opacity: 0; transition: opacity var(--dur) var(--ease-out); }
+  .fold.open > * { opacity: 1; }
   .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 
   /* ── Subject tiles: an icon per discipline, never initials ────────── */
@@ -311,7 +348,8 @@ body {
   /* ── Bottom tab bar ───────────────────────────────────────────────── */
   .tabbar { display: flex; align-items: stretch; justify-content: space-between; padding: 8px 8px max(22px, calc(var(--safe-bottom) + 8px)); background: var(--surface); border-top: 1px solid var(--line); box-shadow: var(--shadow-bar); }
   .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 52px; border-radius: 14px; color: var(--ink-3); font-size: 11px; font-weight: 600; text-decoration: none; transition: color var(--dur-fast) var(--ease-out); }
-  .tab .tab-ic { position: relative; width: 44px; height: 30px; display: inline-flex; align-items: center; justify-content: center; }
+  .tab .tab-ic { position: relative; width: 44px; height: 30px; display: inline-flex; align-items: center; justify-content: center; transition: transform var(--dur) var(--ease-spring); }
+  .tab:active .tab-ic { transform: scale(0.86); transition-duration: 80ms; }
   .tab.on { color: var(--accent-text); }
   /* Active tab: the outline icon (.ic-line) hands over to the filled one (.ic-fill) with a small
      pop; leaving the tab reverses it. Transitions only, so nothing replays when the bar remounts
@@ -324,9 +362,17 @@ body {
   .tab .count { box-shadow: 0 0 0 2px var(--surface); }
 
   /* ── Progress ─────────────────────────────────────────────────────── */
-  .bar { height: 6px; border-radius: 999px; background: rgba(128, 128, 128, 0.25); overflow: hidden; }
-  .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--now-accent); }
+  /* The fill slides in from the left on entry (a transform: the track clips it) and eases to a new
+     width after. pointer-events: the track must not cover a row's overlay link. */
+  .bar { height: 6px; border-radius: 999px; background: rgba(128, 128, 128, 0.25); overflow: hidden; pointer-events: none; }
+  .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--now-accent); transition: width var(--dur-slow) var(--ease-out); animation: bar-in var(--dur-slow) var(--ease-out) 120ms backwards; }
   .bar-accent > span { background: var(--accent); }
+  /* The lesson in progress: a light runs along the fill every few seconds. */
+  .now .bar > span { position: relative; overflow: hidden; }
+  .now .bar > span::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--now-shine), transparent); transform: translateX(-100%); animation: sweep 2.8s ease-in-out 900ms infinite; }
+  /* "Live" dot: a ring pulses out of it. Rests invisible, so reduced motion leaves a plain dot. */
+  .dot-live { position: relative; pointer-events: none; }
+  .dot-live::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; opacity: 0; animation: ping 1.8s var(--ease-out) infinite; }
 
   /* Wide content scrolls only inside its own block, without a visible bar. */
   .scroll-x { overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -ms-overflow-style: none; }
@@ -365,15 +411,67 @@ body {
     .sheet-close:hover { background: var(--surface-3); color: var(--ink); }
   }
 
-  .spinner { width: 28px; height: 28px; border-radius: 999px; border: 2.5px solid var(--line-2); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+  /* ── Loading ──────────────────────────────────────────────────────── */
+  /* Comet ring: a conic tail cut to a ring by the mask; only the rotation animates. */
+  .spinner { width: 28px; height: 28px; border-radius: 999px; background: conic-gradient(from 0deg, transparent 12%, var(--accent)); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px)); mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px)); animation: spin 0.8s linear infinite; }
+  /* Skeleton (components/Empty.tsx → Loading): .sk is a card-shaped frame, .sk-b the grey blocks in
+     it. One light sweep per frame — a transform on ::after, so the compositor runs it — each frame
+     a beat after the one above (--d, set inline). */
+  .sk { position: relative; overflow: hidden; pointer-events: none; }
+  .sk::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, var(--sk-shine) 50%, transparent 70%); transform: translateX(-100%); animation: sweep 1.6s ease-in-out infinite; animation-delay: calc(var(--d, 0) * 110ms); }
+  .sk-b { display: block; flex-shrink: 0; border-radius: 8px; background: var(--surface-2); }
+  :root.dark .sk-b { background: var(--surface-3); }
 
-  /* Entrance: fade + short rise. `backwards` holds the start frame through a stagger delay and
-     leaves no transform behind once it ends. */
+  /* ── Entrances ────────────────────────────────────────────────────── */
+  /* All play once, when the element mounts. `backwards` holds the start frame through a delay and
+     leaves no transform behind once it ends. The keyframes have no `to`, so they land on the
+     element's own opacity (dimmed past lessons stay dimmed).
+     .anim-rise — fade + short rise: a page, a block that replaced another.
+     .anim-fade — fade only: loaders (delayed, so a fast answer never flashes one).
+     .anim-pop  — small spring pop: icons, badges, a chip whose value just changed.
+     .stagger   — the direct children rise in one after another: lists. */
   .anim-rise { animation: rise-in var(--dur) var(--ease-out) backwards; }
+  .anim-fade { animation: fade-from var(--dur) var(--ease-out) backwards; }
+  .anim-pop { animation: pop-in var(--dur) var(--ease-spring) backwards; }
+  /* --d: the item's place in the cascade, reset on every item (it would inherit from an outer
+     list). 8 steps, then the tail of a long list lands together, early: it is mostly below the
+     fold, and a row added later (show more) must not wait out the whole cascade.
+     A bottom sheet rendered among the items keeps its own entrance. */
+  .stagger > * { --d: 0; }
+  .stagger > :not(.sheet):not(.sheet-scrim) { animation: rise-in var(--dur) var(--ease-out) backwards; animation-delay: calc(var(--d) * var(--stagger)); }
+  .stagger > :nth-child(2) { --d: 1; }
+  .stagger > :nth-child(3) { --d: 2; }
+  .stagger > :nth-child(4) { --d: 3; }
+  .stagger > :nth-child(5) { --d: 4; }
+  .stagger > :nth-child(6) { --d: 5; }
+  .stagger > :nth-child(7) { --d: 6; }
+  .stagger > :nth-child(8) { --d: 7; }
+  .stagger > :nth-child(n + 9) { --d: 4; }
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+@keyframes fade-from {
+  from { opacity: 0; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.6); }
+}
+/* Light sweep (skeletons, the live progress fill): crosses, then rests until the next pass. */
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  60%, to { transform: translateX(100%); }
+}
+@keyframes ping {
+  from { transform: scale(1); opacity: 0.55; }
+  to { transform: scale(2.6); opacity: 0; }
+}
+@keyframes bar-in {
+  from { transform: translateX(-101%); }
+}
+@keyframes day-pop {
+  40% { transform: scale(1.22); }
 }
 /* fade-in / sheet-up: explicit ends, so a running entrance ignores the `.closing` values (Sheet.tsx). */
 @keyframes fade-in {
@@ -388,8 +486,8 @@ body {
   to { transform: none; }
 }
 
-/* Reduced motion: transitions and entrances finish instantly, loops run once (the pulse dot stays
-   solid); only the loading spinners keep turning. */
+/* Reduced motion: transitions and entrances finish instantly, loops run once (the live dot stays
+   solid, skeletons and the progress light rest); only the loading spinners keep turning. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 1ms !important;
