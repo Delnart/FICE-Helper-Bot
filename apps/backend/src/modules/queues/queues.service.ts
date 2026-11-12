@@ -15,6 +15,7 @@ import { Subject, SubjectDocument } from '../subjects/subject.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
 import { queueNextCard, queueOpenCard, swapRequestCard, swapResultCard } from '../bot/cards/templates';
+import { quote } from '../../common/telegram-html';
 import { effectivePref, PrefKey, PrefsLike } from '../notifications/notification-prefs.schema';
 import { RequestUser } from '../../common/types/request-user';
 import {
@@ -407,21 +408,16 @@ export class QueuesService {
       .collection('academic_groups')
       .findOne({ _id: groupId });
     if (!group) return;
-    // One card for the chat and every DM: it is drawn and uploaded once (BotService.sendCard).
+    // One card and one text for the chat and every DM: the card is drawn once (BotService.sendCard).
     const card = queueOpenCard(group.academicName as string | undefined, q.title, q.slotsCount);
+    const text = `🟢 <b>Черга відкрита</b>\n\n${quote(`<b>${escapeHtml(q.title)}</b>`, 'Обирайте своє місце у FICE Helper')}`;
 
     // 1. Group chat announcement.
     if (group.notificationsEnabled !== false && group.telegramChatId) {
       const opts: Record<string, unknown> = {};
       if (group.messageThreadId) opts.message_thread_id = group.messageThreadId;
       await this.bot
-        .sendCard(
-          group.telegramChatId as number,
-          card,
-          `<b>🔔 Черга «${escapeHtml(q.title)}» відкрита</b>\n` +
-            `Заходьте в FICE Helper і записуйтесь.`,
-          opts,
-        )
+        .sendCard(group.telegramChatId as number, card, text, opts)
         .catch((err) =>
           this.logger.warn(`group chat queue-open failed: ${(err as Error).message}`),
         );
@@ -440,17 +436,13 @@ export class QueuesService {
       .toArray();
     const prefsMap = new Map(prefsByUser.map((p) => [String(p.userId), p]));
 
-    const dmText =
-      `<b>🔔 Черга відкрилась</b>\n\n` +
-      `«${escapeHtml(q.title)}» — можна записуватись.\n` +
-      `Відкрийте FICE Helper, щоб обрати місце.`;
 
     for (const m of members) {
       if (!m.telegramId) continue;
       // No prefs row (never opened settings) → the default, i.e. send.
       if (!effectivePref(prefsMap.get(String(m._id)), groupId, 'dmQueueOpen')) continue;
       await this.bot
-        .sendCard(m.telegramId, card, dmText)
+        .sendCard(m.telegramId, card, text)
         .catch((err) =>
           this.logger.warn(`queue-open DM to ${m.telegramId} failed: ${(err as Error).message}`),
         );
@@ -857,9 +849,9 @@ export class QueuesService {
     // Currently only `preparing` ever gets promoted (status chain simplified
     // after a chaotic queue run — passed/missed/failed no longer cascade).
     const text =
-      `<b>Готуйтесь — ви наступний</b>\n\n` +
-      `Черга «${escapeHtml(q.title)}», місце ${p.slotIndex}. ` +
-      `Попередній починає здавати — підготуйте свої файли.`;
+      `🚀 <b>Готуйтесь — ваша черга наступна</b>\n\n` +
+      quote(`<b>${escapeHtml(q.title)}</b>`, `Ваше місце: <b>${p.slotIndex}</b>`) +
+      `\nПопередній починає здавати — підготуйте свої файли.`;
     // The reader's place with two neighbours on each side.
     const around = [-2, -1, 0, 1, 2]
       .map((d) => p.slotIndex + d)
@@ -940,10 +932,13 @@ export class QueuesService {
         me?.username ||
         'Студент';
       const text =
-        `<b>Запит на обмін у черзі</b>\n\n` +
-        `${escapeHtml(fromName)} пропонує помінятися місцями у черзі «${escapeHtml(q.title)}».\n` +
-        `Місце ${own.slotIndex} ↔ Місце ${target.slotIndex}.\n\n` +
-        `Відкрийте FICE Helper, щоб прийняти або відхилити.`;
+        `🔄 <b>Запит на обмін місцями</b>\n\n` +
+        quote(
+          `<b>${escapeHtml(fromName)}</b> пропонує помінятися`,
+          `Ваше місце <b>${target.slotIndex}</b> ⇄ <b>${own.slotIndex}</b>`,
+          `📋 ${escapeHtml(q.title)}`,
+        ) +
+        `\nПрийняти або відхилити можна у FICE Helper.`;
       await this.bot.sendCard(
         them.telegramId,
         swapRequestCard(fromName, q.title, own.slotIndex, target.slotIndex),
@@ -1104,13 +1099,15 @@ export class QueuesService {
       [target?.firstName, target?.lastName].filter(Boolean).join(' ').trim() ||
       target?.username ||
       'студент';
-    const text = accepted
-      ? `<b>Обмін підтверджено</b>\n\n` +
-        `${escapeHtml(targetName)} погодився на обмін у черзі «${escapeHtml(q.title)}». ` +
-        `Ваше нове місце: <b>№${swap.toSlotIndex}</b> ↔ було <b>№${swap.fromSlotIndex}</b>.`
-      : `<b>Обмін відхилено</b>\n\n` +
-        `${escapeHtml(targetName)} відхилив запит на обмін у черзі «${escapeHtml(q.title)}» ` +
-        `(місце ${swap.fromSlotIndex} ↔ ${swap.toSlotIndex}).`;
+    const text =
+      `${accepted ? '✅ <b>Обмін підтверджено</b>' : '❌ <b>Обмін відхилено</b>'}\n\n` +
+      quote(
+        accepted
+          ? `Ваше місце тепер <b>${swap.toSlotIndex}</b>, було ${swap.fromSlotIndex}`
+          : `Ваше місце <b>${swap.fromSlotIndex}</b> лишається, просили ${swap.toSlotIndex}`,
+        `👤 ${escapeHtml(targetName)}`,
+        `📋 ${escapeHtml(q.title)}`,
+      );
     await this.bot.sendCard(
       fromUser.telegramId,
       swapResultCard(accepted, targetName, q.title, swap.fromSlotIndex, swap.toSlotIndex),

@@ -11,46 +11,45 @@ const lesson = (over: Partial<LessonReminder> = {}): LessonReminder => ({
 });
 
 describe('buildLessonRemindersText', () => {
-  it('keeps the original single-lesson format', () => {
+  it('lays a lesson out as a headline and a quote block, a line for each thing it has', () => {
     expect(buildLessonRemindersText(10, [lesson({ link: { label: 'Meet', url: 'https://meet.google.com/x' } })])).toBe(
       [
-        '🔔 Нагадування про пару через 10 хвилин!',
+        '🔔 <b>Пара через 10 хв</b>',
         '',
-        '📚 Дисципліна: <b>Операційні системи</b>',
-        '📝 Тип: <b>Лабораторна</b>',
-        '👨‍🏫 Викладач: Петренко О. В.',
-        '⏰ Час: <b>10:25</b> — <b>12:00</b>',
-        '📍 Місце: <b>18-511</b>',
-        '🔗 Приєднатися до зустрічі: <a href="https://meet.google.com/x">Meet</a>',
+        '<blockquote><b>Операційні системи</b>',
+        '🕒 10:25 – 12:00 · Лабораторна',
+        '📍 18-511',
+        '👤 Петренко О. В.',
+        '🔗 <a href="https://meet.google.com/x">Meet</a></blockquote>',
       ].join('\n'),
     );
   });
 
-  it('puts several lessons into one message with a shared time line', () => {
+  it('puts several lessons into one message, a block each, with no line for what a lesson lacks', () => {
     const text = buildLessonRemindersText(10, [
       lesson({ subjectName: 'Бази даних', teacherNames: ['Коваль І. С.'], room: '18-205' }),
       lesson(),
-      lesson({ subjectName: 'Бази даних', teacherNames: [], room: undefined }),
+      lesson({ subjectName: 'Бази даних', teacherNames: [], room: ' ' }),
     ]);
-    expect(text.match(/🔔/g)).toHaveLength(1);
-    expect(text).toContain('🔔 Через 10 хвилин пари (3):');
-    expect(text.split('\n')[1]).toBe('⏰ <b>10:25</b> — <b>12:00</b>');
-    expect(text.indexOf('1. Бази даних')).toBeLessThan(text.indexOf('3. Операційні системи'));
-    expect(text).toContain('👨‍🏫 — · 📍 —');
+    expect(text.split('\n').slice(0, 2)).toEqual(['🔔 <b>3 пари через 10 хв</b>', '']);
+    expect(text.match(/<blockquote>/g)).toHaveLength(3);
+    expect(text.indexOf('Бази даних')).toBeLessThan(text.indexOf('Операційні системи'));
+    expect(text).toContain('<blockquote><b>Бази даних</b>\n🕒 10:25 – 12:00 · Лабораторна</blockquote>');
   });
 
-  it('shows the time per lesson when end times differ', () => {
+  it('gives every lesson its own time', () => {
     const text = buildLessonRemindersText(5, [lesson(), lesson({ subjectName: 'Фізика', endTime: '11:15' })]);
-    expect(text.split('\n')[1]).toBe('');
-    expect(text).toContain('⏰ <b>10:25</b> — <b>11:15</b>');
-    expect(text).toContain('⏰ <b>10:25</b> — <b>12:00</b>');
+    expect(text).toContain('<b>Фізика</b>\n🕒 10:25 – 11:15');
+    expect(text).toContain('<b>Операційні системи</b>\n🕒 10:25 – 12:00');
   });
 
-  it('stays under the Telegram limit and says how many were cut', () => {
+  it('stays under the Telegram limit, closes every block and says how many were cut', () => {
     const many = Array.from({ length: 60 }, (_, i) => lesson({ subjectName: `Дисципліна ${String(i).padStart(2, '0')}`, teacherNames: ['Дуже Довге Прізвище Викладача І. І.'] }));
     const text = buildLessonRemindersText(10, many);
     expect(text.length).toBeLessThan(4096);
-    expect(text).toMatch(/…і ще \d+$/);
+    const shown = text.match(/<blockquote>/g)!.length;
+    expect(text.match(/<\/blockquote>/g)).toHaveLength(shown);
+    expect(text).toMatch(new RegExp(`</blockquote>\n…і ще ${60 - shown}$`));
   });
 
   it('escapes HTML in subject names', () => {

@@ -21,6 +21,7 @@ import { RequestUser } from '../../common/types/request-user';
 import { ApplyTeacherDto, GroupJoinRequestDto, IdentifyTeacherDto, InviteTeacherDto } from './dto/teacher.dto';
 import { BotService } from '../bot/bot.service';
 import { teacherDecisionCard, teacherRequestCard } from '../bot/cards/templates';
+import { quote } from '../../common/telegram-html';
 import { CampusService } from '../campus/campus.service';
 import { SheetsService } from '../sheets/sheets.service';
 import { UsersService } from '../users/users.service';
@@ -295,7 +296,7 @@ export class TeachersService implements OnModuleInit {
           .sendCard(
             teacher.telegramId,
             teacherDecisionCard(group.academicName, true),
-            `✅ Ваш запит на доступ до групи <b>${escapeHtml(group.academicName)}</b> схвалено!\n\nВідкрийте FICE Helper, щоб переглядати чергу та журнал.`,
+            `✅ <b>Доступ до групи ${escapeHtml(group.academicName)} відкрито</b>\n\nЧерги та журнал групи — у FICE Helper.`,
           )
           .catch(() => undefined);
       }
@@ -308,7 +309,7 @@ export class TeachersService implements OnModuleInit {
           .sendCard(
             teacher.telegramId,
             teacherDecisionCard(group.academicName, false),
-            `❌ Ваш запит на доступ до групи <b>${escapeHtml(group.academicName)}</b> відхилено.`,
+            `❌ <b>Запит на доступ до групи ${escapeHtml(group.academicName)} відхилено</b>`,
           )
           .catch(() => undefined);
       }
@@ -633,11 +634,13 @@ export class TeachersService implements OnModuleInit {
       (dbUser?.username ? `@${dbUser.username}` : 'Викладач');
 
     const msg =
-      `👨‍🏫 <b>Запит на доступ до групи</b>\n\n` +
-      `<b>${escapeHtml(name)}</b>${dbUser?.username ? ` (@${dbUser.username})` : ''}` +
-      ` хоче приєднатись до групи <b>${escapeHtml(group.academicName)}</b> як викладач.\n` +
-      (note ? `\n💬 <i>${escapeHtml(note)}</i>\n` : '') +
-      `\nНатисніть кнопку нижче, щоб підтвердити або відхилити.`;
+      `🎓 <b>Запит на доступ до групи</b>\n\n` +
+      quote(
+        `<b>${escapeHtml(name)}</b>${dbUser?.username ? ` · @${dbUser.username}` : ''}`,
+        `Хоче приєднатися до <b>${escapeHtml(group.academicName)}</b> як викладач`,
+        note && `💬 <i>${escapeHtml(note)}</i>`,
+      ) +
+      `\nПідтвердіть або відхиліть кнопками нижче.`;
 
     const card = teacherRequestCard(group.academicName, name, dbUser?.username, note);
     const keyboard = {

@@ -11,7 +11,8 @@ import {
 } from './notification-prefs.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { BotService } from '../bot/bot.service';
-import { announcementCard, birthdayCard, Card, lessonReminderCard, queueSoonCard } from '../bot/cards/templates';
+import { announcementCard, birthdayCard, Card, lessonReminderCard, pairs, queueSoonCard, span } from '../bot/cards/templates';
+import { quote } from '../../common/telegram-html';
 import { CreateAnnouncementDto, UpdatePrefsDto } from './dto/announcement.dto';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 
@@ -124,7 +125,6 @@ export class NotificationsService {
       const group = await this.groups.findById(dto.groupId).exec();
       if (group && group.telegramChatId) {
         const opts = group.messageThreadId ? { message_thread_id: group.messageThreadId } : undefined;
-        const text = `<b>${escapeHtml(dto.title)}</b>\n\n${escapeHtml(dto.body)}`;
         const author = await this.users.findById(userId, { fullName: 1, firstName: 1, lastName: 1 }).lean().exec();
         const name = author?.fullName?.trim() || [author?.firstName, author?.lastName].filter(Boolean).join(' ');
         const role =
@@ -133,6 +133,9 @@ export class NotificationsService {
             : group.deputyUserIds.some((id) => String(id) === userId)
               ? 'заступник'
               : undefined;
+        const text =
+          `📣 <b>${escapeHtml(dto.title)}</b>\n\n${escapeHtml(dto.body)}` +
+          (name ? `\n\n<i>${escapeHtml([name, role].filter(Boolean).join(', '))}</i>` : '');
         const card = announcementCard(group.academicName, dto.title, dto.body, new Date(), name ? { name, role } : undefined);
         // No card for a long announcement or one with links (see announcementCard): that one goes out as this text.
         await this.bot.sendCard(group.telegramChatId, card, text, opts);
@@ -197,7 +200,7 @@ export class NotificationsService {
     await this.bot.sendCard(
       group.telegramChatId,
       queueSoonCard(group.academicName, params.queueTitle, params.opensAt, new Date()),
-      `<b>За 5 хв відкриється черга:</b> ${escapeHtml(params.queueTitle)} (${escapeHtml(params.subjectName)})`,
+      `⏱️ <b>Черга відкриється за 5 хв</b>\n\n${quote(`<b>${escapeHtml(params.queueTitle)}</b>`, escapeHtml(params.subjectName))}`,
       opts,
     );
   }
@@ -209,7 +212,7 @@ export class NotificationsService {
     await this.bot.sendCard(
       group.telegramChatId,
       birthdayCard(group.academicName, fullName, await this.bot.avatar(telegramId)),
-      `Сьогодні день народження у <b>${escapeHtml(fullName)}</b>. Вітаємо!`,
+      `🎂 <b>${escapeHtml(fullName)}</b> святкує день народження!\nВітаємо 🎉`,
       opts,
     );
   }
@@ -228,46 +231,24 @@ function escapeHtmlAttr(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** Reminder text for one or several lessons starting at the same minute. */
+/**
+ * Reminder text for one or several lessons starting at the same minute: a headline, then a quote block
+ * for each lesson with a line for what it has.
+ */
 export function buildLessonRemindersText(minutesLeft: number, lessons: LessonReminder[]): string {
-  const teachers = (l: LessonReminder) => (l.teacherNames.length ? escapeHtml(l.teacherNames.join(', ')) : '—');
-  const room = (l: LessonReminder) => escapeHtml((l.room ?? '').trim() || '—');
-  const time = (l: LessonReminder) => `<b>${escapeHtml(l.startTime)}</b> — <b>${escapeHtml(l.endTime)}</b>`;
-
-  if (lessons.length === 1) {
-    const [l] = lessons;
-    const lines = [
-      `🔔 Нагадування про пару через ${minutesLeft} хвилин!`,
-      '',
-      `📚 Дисципліна: <b>${escapeHtml(l.subjectName)}</b>`,
-      `📝 Тип: <b>${escapeHtml(LESSON_TYPE_LABEL[l.lessonType])}</b>`,
-      `👨‍🏫 Викладач: ${teachers(l)}`,
-      `⏰ Час: ${time(l)}`,
-      `📍 Місце: <b>${room(l)}</b>`,
-    ];
-    if (l.link) lines.push(`🔗 Приєднатися до зустрічі: ${formatReminderLink(l.link)}`);
-    return lines.join('\n');
-  }
-
   const sorted = [...lessons].sort((a, b) => a.subjectName.localeCompare(b.subjectName, 'uk'));
-  const sameTime = sorted.every((l) => l.startTime === sorted[0].startTime && l.endTime === sorted[0].endTime);
-  const header = [`🔔 Через ${minutesLeft} хвилин пари (${sorted.length}):`];
-  if (sameTime) header.push(`⏰ ${time(sorted[0])}`);
-
-  const blocks = sorted.map((l, i) => {
-    const lines = [
-      `<b>${i + 1}. ${escapeHtml(l.subjectName)}</b> · ${escapeHtml(LESSON_TYPE_LABEL[l.lessonType])}`,
-      `👨‍🏫 ${teachers(l)} · 📍 ${room(l)}`,
-    ];
-    if (!sameTime) lines.push(`⏰ ${time(l)}`);
-    if (l.link) lines.push(`🔗 ${formatReminderLink(l.link)}`);
-    return lines.join('\n');
-  });
-
-  let text = header.join('\n');
-  for (let i = 0; i < blocks.length; i++) {
-    if (text.length + blocks[i].length + 2 > MAX_REMINDER_CHARS) return `${text}\n\n…і ще ${blocks.length - i}`;
-    text += `\n\n${blocks[i]}`;
+  const soon = `через ${span(minutesLeft)}`;
+  let text = `🔔 <b>${sorted.length === 1 ? `Пара ${soon}` : `${pairs(sorted.length)} ${soon}`}</b>\n`;
+  for (const [i, l] of sorted.entries()) {
+    const block = quote(
+      `<b>${escapeHtml(l.subjectName)}</b>`,
+      `🕒 ${escapeHtml(l.startTime)} – ${escapeHtml(l.endTime)} · ${escapeHtml(LESSON_TYPE_LABEL[l.lessonType])}`,
+      l.room?.trim() && `📍 ${escapeHtml(l.room.trim())}`,
+      l.teacherNames.length > 0 && `👤 ${escapeHtml(l.teacherNames.join(', '))}`,
+      l.link && `🔗 ${formatReminderLink(l.link)}`,
+    );
+    if (text.length + block.length + 1 > MAX_REMINDER_CHARS) return `${text}\n…і ще ${sorted.length - i}`;
+    text += `\n${block}`;
   }
   return text;
 }
@@ -301,43 +282,46 @@ export function buildMorningDigestText(
   deadlines: DigestDeadline[],
 ): string | null {
   if (lessons.length === 0 && deadlines.length === 0) return null;
-  const prefix = (groupName?: string) => (groupName ? `<i>${escapeHtml(groupName)}</i> · ` : '');
-  const date = today.toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'long' });
+  const dots = (...parts: Array<string | false | undefined>) => parts.filter(Boolean).join(' · ');
+  const group = (name?: string) => name && `<i>${escapeHtml(name)}</i>`;
+  const date = today.toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long' });
 
-  const headers = ['📚 <b>Пари</b>', '⏳ <b>Дедлайни сьогодні</b>'];
-
-  const lines = [`☀️ Доброго ранку! Сьогодні ${escapeHtml(date)}`];
+  // A section is a quote block; an item in it takes two lines, what matters first.
+  const sections: Array<[title: string, items: string[]]> = [];
   if (lessons.length) {
-    lines.push('', headers[0]);
-    for (const l of [...lessons].sort((a, b) => a.startTime.localeCompare(b.startTime))) {
-      const parts = [
-        `<b>${escapeHtml(l.startTime)}–${escapeHtml(l.endTime)}</b>`,
-        `${prefix(l.groupName)}${escapeHtml(l.subjectName)}`,
-        escapeHtml(LESSON_TYPE_LABEL[l.lessonType]),
-      ];
-      if (l.room?.trim()) parts.push(`📍 ${escapeHtml(l.room.trim())}`);
-      lines.push(parts.join(' · '));
-    }
+    const items = [...lessons]
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      .map(
+        (l) =>
+          `${dots(`<b>${escapeHtml(l.startTime)} – ${escapeHtml(l.endTime)}</b>`, escapeHtml(LESSON_TYPE_LABEL[l.lessonType]), l.room?.trim() && escapeHtml(l.room.trim()))}\n` +
+          dots(group(l.groupName), escapeHtml(l.subjectName)),
+      );
+    sections.push(['📚 <b>Пари</b>', items]);
   }
   if (deadlines.length) {
-    lines.push('', headers[1]);
-    for (const d of [...deadlines].sort((a, b) => a.deadline.getTime() - b.deadline.getTime())) {
-      const parts = [`• ${prefix(d.groupName)}<b>${escapeHtml(d.title)}</b>`];
-      if (d.subjectName) parts.push(escapeHtml(d.subjectName));
-      const hh = d.deadline.getHours();
-      const mm = d.deadline.getMinutes();
-      // 23:59 is the "end of day" default — only a real cut-off time is worth showing.
-      if (hh !== 23 || mm !== 59) parts.push(`до ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
-      lines.push(parts.join(' · '));
-    }
+    const items = [...deadlines]
+      .sort((a, b) => a.deadline.getTime() - b.deadline.getTime())
+      .map((d) => {
+        const hh = d.deadline.getHours();
+        const mm = d.deadline.getMinutes();
+        // 23:59 is the "end of day" default — only a real cut-off time is worth showing.
+        const until = (hh !== 23 || mm !== 59) && `до ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+        const about = dots(group(d.groupName), d.subjectName && escapeHtml(d.subjectName));
+        return dots(`<b>${escapeHtml(d.title)}</b>`, until) + (about && `\n${about}`);
+      });
+    sections.push(['⏳ <b>Дедлайни сьогодні</b>', items]);
   }
 
-  let text = lines[0];
-  for (let i = 1; i < lines.length; i++) {
-    if (text.length + lines[i].length + 1 > MAX_REMINDER_CHARS) {
-      return `${text}\n…і ще ${lines.slice(i).filter((x) => x && !headers.includes(x)).length}`;
+  let text = `☀️ <b>Доброго ранку!</b> Сьогодні ${escapeHtml(date)}`;
+  let cut = 0;
+  for (const [title, items] of sections) {
+    // Whole items only, so that a block always closes; once one does not fit, the rest are counted.
+    let body = '';
+    for (const item of items) {
+      if (cut || text.length + title.length + body.length + item.length + 40 > MAX_REMINDER_CHARS) cut++;
+      else body += (body && '\n\n') + item;
     }
-    text += `\n${lines[i]}`;
+    if (body) text += `\n\n${title}\n<blockquote>${body}</blockquote>`;
   }
-  return text;
+  return cut ? `${text}\n…і ще ${cut}` : text;
 }

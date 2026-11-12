@@ -156,9 +156,9 @@ describe('SchedulerService.tickLessonReminders', () => {
     await svc.tickLessonReminders();
     const sent = dms();
     expect([...sent.keys()].sort()).toEqual([1, 2]); // C never opted in, T only teaches the group
-    expect(sent.get(1)).toContain('пари (4)');
+    expect(sent.get(1)).toContain('4 пари через 10 хв');
     expect(sent.get(1)).toContain('Вибіркова');
-    expect(sent.get(2)).toContain('пари (3)');
+    expect(sent.get(2)).toContain('3 пари через 10 хв');
     expect(sent.get(2)).not.toContain('Вибіркова');
   });
 
@@ -291,13 +291,13 @@ describe('SchedulerService.tickMorningDigest', () => {
     const a = sent.get(1)!;
     expect(a).toContain('ОС');
     expect(a).not.toContain('Вибіркова'); // A didn't pick the elective
-    expect(a).toContain('• <b>Лаба 1</b> · Операційні системи');
+    expect(a).toContain('<b>Лаба 1</b>\nОпераційні системи');
     expect(a).not.toContain('ІП-31'); // single group → no prefix
 
     const m = sent.get(3)!;
     expect(m.indexOf('Вибіркова')).toBeLessThan(m.indexOf('ОС')); // start-time order
     expect(m).toContain('<i>ІП-31</i> · ОС');
-    expect(m).toContain('<i>ІП-32</i> · <b>Есе</b>');
+    expect(m).toContain('<b>Есе</b>\n<i>ІП-32</i>');
   });
 
   it("includes only the groups where the user's digest is on", async () => {
@@ -344,7 +344,7 @@ describe('SchedulerService.tickDeadlineReminders', () => {
       {
         sendDm: async (userId: string, _g: string, _k: string, text: string) => {
           const u = members.find((m) => String(m._id) === userId)!;
-          sent.push(`${u.telegramId}: ${text.replace(/^⏳ Завтра дедлайн: <b>(.*)<\/b>$/, '$1')}`);
+          sent.push(`${u.telegramId}: ${text.match(/^⏳ <b>Завтра дедлайн<\/b>\n\n<blockquote><b>(.*)<\/b>/)![1]}`);
         },
       } as never,
       {} as never,

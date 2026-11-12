@@ -15,7 +15,8 @@ import { User, UserDocument } from '../users/user.schema';
 import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { SupportTicket, SupportTicketDocument } from './support-ticket.schema';
 import { renderCard } from './cards/render';
-import { Card, CardLesson, dayCard, leftCard, nowCard } from './cards/templates';
+import { Card, CardLesson, dayCard, leftCard, nowCard, span } from './cards/templates';
+import { quote } from '../../common/telegram-html';
 import { Role, ROLE_LEVEL } from '@fice/shared';
 
 /** How long a group member's auto-onboarding result is trusted (see recentMembers). */
@@ -1526,38 +1527,36 @@ interface LessonSlim {
   meetingUrl?: string;
 }
 
+/** «⏭️ Далі о 12:20 — Бази даних · 18-205»: the lesson after this one, in a line. */
+const nextLine = (next: LessonSlim, when?: string): string =>
+  `⏭️ Далі о <b>${next.startTime}</b> — ${[escapeHtml(next.subjectName), next.room && escapeHtml(next.room), when].filter(Boolean).join(' · ')}`;
+
+// Every answer below is laid out as the notifications are: a headline that says what this is and for whom,
+// then a quote block for each lesson (common/telegram-html).
+
 function formatNow(
   groupName: string,
   running: Array<{ lesson: LessonSlim; link?: { label: string; url: string } }>,
   next: LessonSlim | null,
   weekType: 1 | 2,
 ): string {
-  const week = weekType === 1 ? 'I тиждень' : 'II тиждень';
-  const lines: string[] = [`<b>${escapeHtml(groupName)}</b> · ${week}`];
-
+  const context = `${escapeHtml(groupName)} · ${weekType === 1 ? 'I' : 'II'} тиждень`;
   // A Set: two rows of one subject with the same room and link read as one lesson.
-  const blocks = running.map(
-    ({ lesson, link }) =>
-      `\n🟢 <b>Зараз:</b> ${escapeHtml(lesson.subjectName)}` +
-      `\n    ${lesson.startTime} — ${lesson.endTime}` +
-      (lesson.room ? ` · ${escapeHtml(lesson.room)}` : '') +
-      (link ? `\n    🔗 <a href="${escapeHtmlAttr(link.url)}">${escapeHtml(link.label)}</a>` : ''),
-  );
-  lines.push(...new Set(blocks));
-
-  if (next) {
-    lines.push(
-      `\n⏳ <b>Наступна:</b> ${escapeHtml(next.subjectName)}` +
-        `\n    ${next.startTime} — ${next.endTime}` +
-        (next.room ? ` · ${escapeHtml(next.room)}` : ''),
-    );
-  }
-
-  if (!running.length && !next) {
-    lines.push('\nСьогодні пар більше немає 🎉');
-  }
-
-  return lines.join('');
+  const blocks = [
+    ...new Set(
+      running.map(({ lesson, link }) =>
+        quote(
+          `<b>${escapeHtml(lesson.subjectName)}</b>`,
+          `🕒 ${lesson.startTime} – ${lesson.endTime}`,
+          lesson.room && `📍 ${escapeHtml(lesson.room)}`,
+          link && `🔗 <a href="${escapeHtmlAttr(link.url)}">${escapeHtml(link.label)}</a>`,
+        ),
+      ),
+    ),
+  ];
+  if (blocks.length) return [`🟢 <b>Зараз</b> · ${context}`, '', ...blocks, ...(next ? [nextLine(next)] : [])].join('\n');
+  if (next) return `☕ <b>Зараз пари немає</b> · ${context}\n\n${nextLine(next)}`;
+  return `🎉 <b>На сьогодні все</b> · ${context}\n\nСьогодні пар більше немає.`;
 }
 
 function formatLeft(
@@ -1565,28 +1564,20 @@ function formatLeft(
   current: LessonSlim | null,
   next: LessonSlim | null,
 ): string {
-  if (!current) {
-    if (!next) {
-      return `<b>${escapeHtml(groupName)}</b>\nСьогодні пар більше немає 🎉`;
-    }
-    const [h, m] = next.startTime.split(':').map(Number);
-    const now = new Date();
-    const diff = h * 60 + m - (now.getHours() * 60 + now.getMinutes());
+  const group = escapeHtml(groupName);
+  const now = new Date();
+  const minutesTo = (hhmm: string): number => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return Math.max(0, h * 60 + m - (now.getHours() * 60 + now.getMinutes()));
+  };
+  if (current) {
     return (
-      `<b>${escapeHtml(groupName)}</b>\n` +
-      `Зараз пари немає.\n` +
-      `⏳ Наступна: <b>${escapeHtml(next.subjectName)}</b> — через ${diff} хв (о ${next.startTime})`
+      `⏳ <b>До кінця пари ${minutesTo(current.endTime)} хв</b> · ${group}\n\n` +
+      quote(`<b>${escapeHtml(current.subjectName)}</b>`, `🕒 до ${current.endTime}`)
     );
   }
-
-  const [eH, eM] = current.endTime.split(':').map(Number);
-  const now = new Date();
-  const left = eH * 60 + eM - (now.getHours() * 60 + now.getMinutes());
-  return (
-    `<b>${escapeHtml(groupName)}</b>\n` +
-    `🟢 <b>${escapeHtml(current.subjectName)}</b>\n` +
-    `До кінця: <b>${left} хв</b> (до ${current.endTime})`
-  );
+  if (next) return `☕ <b>Зараз пари немає</b> · ${group}\n\n${nextLine(next, `через ${span(minutesTo(next.startTime))}`)}`;
+  return `🎉 <b>На сьогодні все</b> · ${group}\n\nСьогодні пар більше немає.`;
 }
 
 function formatDaySchedule(
@@ -1595,34 +1586,13 @@ function formatDaySchedule(
   weekType: 1 | 2,
   lessons: Array<Record<string, unknown>>,
 ): string {
-  const week = weekType === 1 ? 'I тиждень' : 'II тиждень';
-  const header = `📅 <b>${escapeHtml(groupName)}</b> · ${dayLabel} · ${week}`;
+  const context = `${escapeHtml(groupName)} · ${weekType === 1 ? 'I' : 'II'} тиждень`;
+  if (dayLabel === 'Неділя') return `🎉 <b>Неділя — вихідний</b> · ${context}`;
+  if (lessons.length === 0) return `🎉 <b>${dayLabel} — пар немає</b> · ${context}`;
 
-  if (dayLabel === 'Неділя') {
-    return `${header}\n\nНеділя — вихідний 🎉`;
-  }
-
-  if (lessons.length === 0) {
-    return `${header}\n\nПар немає 🎉`;
-  }
-
-  const NUMBERS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣'];
-  const lines: string[] = [header, ''];
-
-  lessons.forEach((l, idx) => {
-    const lesson = l as {
-      lessonNumber: number;
-      subjectName: string;
-      startTime: string;
-      endTime: string;
-      room?: string;
-    };
-    const num = NUMBERS[idx] ?? `${idx + 1}.`;
-    let line = `${num} <b>${escapeHtml(lesson.subjectName)}</b>`;
-    line += `\n    ${lesson.startTime} — ${lesson.endTime}`;
-    if (lesson.room) line += ` · ${escapeHtml(lesson.room)}`;
-    lines.push(line);
-  });
-
-  return lines.join('\n');
+  // The whole day in one block, a lesson in two lines: when and where, then what.
+  const items = (lessons as Array<{ subjectName: string; startTime: string; endTime: string; room?: string }>).map(
+    (l) => `<b>${l.startTime} – ${l.endTime}</b>${l.room ? ` · ${escapeHtml(l.room)}` : ''}\n${escapeHtml(l.subjectName)}`,
+  );
+  return `📅 <b>${dayLabel}</b> · ${context}\n\n<blockquote>${items.join('\n\n')}</blockquote>`;
 }

@@ -31,14 +31,18 @@ describe('buildMorningDigestText', () => {
       ),
     ).toBe(
       [
-        '☀️ Доброго ранку! Сьогодні вт, 27 жовтня',
+        '☀️ <b>Доброго ранку!</b> Сьогодні вівторок, 27 жовтня',
         '',
         '📚 <b>Пари</b>',
-        '<b>08:30–10:05</b> · Фізика · Лабораторна',
-        '<b>10:25–12:00</b> · Операційні системи · Лекція · 📍 18-511',
+        '<blockquote><b>08:30 – 10:05</b> · Лабораторна',
+        'Фізика',
+        '',
+        '<b>10:25 – 12:00</b> · Лекція · 18-511',
+        'Операційні системи</blockquote>',
         '',
         '⏳ <b>Дедлайни сьогодні</b>',
-        '• <b>Лаба 3</b> · Бази даних',
+        '<blockquote><b>Лаба 3</b>',
+        'Бази даних</blockquote>',
       ].join('\n'),
     );
   });
@@ -49,16 +53,16 @@ describe('buildMorningDigestText', () => {
       [lesson({ groupName: 'ІП-31' }), lesson({ groupName: 'ІП-32', subjectName: 'Англійська', startTime: '12:20' })],
       [deadline({ groupName: 'ІП-32' })],
     )!;
-    expect(text).toContain('<b>10:25–12:00</b> · <i>ІП-31</i> · Операційні системи');
-    expect(text).toContain('· <i>ІП-32</i> · Англійська');
-    expect(text).toContain('• <i>ІП-32</i> · <b>Лаба 3</b>');
+    expect(text).toContain('<b>10:25 – 12:00</b> · Лекція · 18-511\n<i>ІП-31</i> · Операційні системи');
+    expect(text).toContain('\n<i>ІП-32</i> · Англійська');
+    expect(text).toContain('<b>Лаба 3</b>\n<i>ІП-32</i> · Бази даних');
   });
 
   it('shows the deadline time only when it is not the 23:59 default', () => {
     const text = buildMorningDigestText(TODAY, [], [deadline(), deadline({ title: 'Есе', deadline: new Date(2026, 9, 27, 18, 0) })])!;
     expect(text).not.toContain('📚');
-    expect(text).toContain('• <b>Есе</b> · Бази даних · до 18:00');
-    expect(text.endsWith('• <b>Лаба 3</b> · Бази даних')).toBe(true);
+    expect(text).toContain('<b>Есе</b> · до 18:00\nБази даних');
+    expect(text.endsWith('<b>Лаба 3</b>\nБази даних</blockquote>')).toBe(true);
     expect(text.indexOf('Есе')).toBeLessThan(text.indexOf('Лаба 3')); // earlier cut-off first
   });
 
@@ -69,11 +73,20 @@ describe('buildMorningDigestText', () => {
     expect(text).toContain('<b>&lt;b&gt;x&lt;/b&gt;</b>');
   });
 
-  it('stays under the Telegram limit and says how many were cut', () => {
+  it('stays under the Telegram limit, closes every block and says how many were cut', () => {
     const many = Array.from({ length: 80 }, (_, i) => deadline({ title: `${'Дуже довга назва завдання '.repeat(4)}${i}` }));
     const text = buildMorningDigestText(TODAY, [lesson()], many)!;
     expect(text.length).toBeLessThan(4096);
+    const cut = Number(text.match(/<\/blockquote>\n…і ще (\d+)$/)![1]);
+    expect(text.match(/<b>Дуже довга/g)!.length + cut).toBe(80);
+    expect(text.match(/<blockquote>/g)).toHaveLength(text.match(/<\/blockquote>/g)!.length);
+  });
+
+  it('counts a whole section that did not fit', () => {
+    const many = Array.from({ length: 80 }, (_, i) => lesson({ subjectName: `${'Дуже довга назва дисципліни '.repeat(4)}${i}` }));
+    const text = buildMorningDigestText(TODAY, many, [deadline(), deadline()])!;
+    expect(text).not.toContain('⏳');
     const cut = Number(text.match(/…і ще (\d+)$/)![1]);
-    expect(text.split('\n').filter((l) => l.startsWith('• ')).length + cut).toBe(80);
+    expect(text.match(/<b>10:25/g)!.length + cut).toBe(82);
   });
 });

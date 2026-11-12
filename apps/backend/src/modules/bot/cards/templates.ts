@@ -241,13 +241,13 @@ const toMin = (hhmm: string): number => {
 };
 const minuteOfDay = (d: Date): number => d.getHours() * 60 + d.getMinutes();
 /** 15 → «15 хв», 125 → «2 год 5 хв». */
-const span = (mins: number): string => (mins < 60 ? `${mins} хв` : `${Math.floor(mins / 60)} год${mins % 60 ? ` ${mins % 60} хв` : ''}`);
+export const span = (mins: number): string => (mins < 60 ? `${mins} хв` : `${Math.floor(mins / 60)} год${mins % 60 ? ` ${mins % 60} хв` : ''}`);
 const plural = (n: number, one: string, few: string, many: string): string => {
   const m10 = n % 10;
   const m100 = n % 100;
   return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
 };
-const pairs = (n: number): string => `${n} ${plural(n, 'пара', 'пари', 'пар')}`;
+export const pairs = (n: number): string => `${n} ${plural(n, 'пара', 'пари', 'пар')}`;
 const uk = (d: Date, opts: Intl.DateTimeFormatOptions): string => d.toLocaleDateString('uk-UA', opts);
 const hhmm = (d: Date): string => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 /** «🔥 Олена Бондар» → «ОБ»: the first letter of the first two words that have one. */

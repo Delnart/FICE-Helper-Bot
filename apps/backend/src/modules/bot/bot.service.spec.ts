@@ -57,6 +57,25 @@ describe('BotService /today and /tomorrow', () => {
     expect(text).not.toContain('Іншої середи');
   });
 
+  it('lays the day out as a headline and one quote block, a lesson in two lines', async () => {
+    const day = [
+      { ...lesson('Операційні системи', 3), room: '18-511' },
+      { ...lesson('C++ <STL>', 3), lessonNumber: 3, startTime: '12:20', endTime: '13:55' },
+    ];
+    expect(await ask('supergroup', 'today', day)).toBe(
+      [
+        '📅 <b>Середа</b> · ІП-55 · I тиждень',
+        '',
+        '<blockquote><b>10:25 – 12:00</b> · 18-511',
+        'Операційні системи',
+        '',
+        '<b>12:20 – 13:55</b>',
+        'C++ &lt;STL&gt;</blockquote>',
+      ].join('\n'),
+    );
+    expect(await ask('private', 'today', [])).toBe('🎉 <b>Середа — пар немає</b> · ІП-55 · I тиждень');
+  });
+
   it.each(['private', 'supergroup'] as const)('%s: /tomorrow checks the next calendar day across a month end', async (chat) => {
     const text = await ask(chat, 'tomorrow');
     expect(text).toContain('Цього четверга');
@@ -115,7 +134,7 @@ describe('BotService /now', () => {
   it.each(['private', 'supergroup'] as const)('%s: links the current lesson, escaped for HTML', async (chat) => {
     const text = await now(chat, [ZOOM]);
     expect(text).toContain('🔗 <a href="https://zoom.us/j/1?pwd=a&amp;b=c">Zoom &lt;лекції&gt;</a>');
-    expect(text.indexOf('🔗')).toBeLessThan(text.indexOf('Наступна'));
+    expect(text.indexOf('🔗')).toBeLessThan(text.indexOf('Далі'));
     expect(text.match(/🔗/g)).toHaveLength(1);
   });
 
@@ -137,50 +156,52 @@ describe('BotService /now', () => {
 
   it.each(CHATS)('%s: a failed link lookup costs only that link', async (chat) => {
     const text = await now(chat, [ZOOM], 'now', [ONS, { ...LAB, type: 'broken' }]);
-    expect(text).toContain('<b>Зараз:</b> БД &lt;лаб&gt;');
+    expect(text).toContain('<blockquote><b>БД &lt;лаб&gt;</b>');
     expect(text.match(/🔗/g)).toHaveLength(1);
-    expect(text).toContain('Наступна');
+    expect(text).toContain('Далі');
   });
 
   it.each(CHATS)('%s: shows every lesson in progress with its own link, the next one after them', async (chat) => {
     const text = await now(chat, [ZOOM, MEET], 'now', [ONS, LAB]);
     expect(text.split('\n')).toEqual([
-      '<b>ІП-55</b> · I тиждень',
-      '🟢 <b>Зараз:</b> ОНС',
-      '    10:25 — 12:00 · 18-101',
-      '    🔗 <a href="https://zoom.us/j/1?pwd=a&amp;b=c">Zoom &lt;лекції&gt;</a>',
-      '🟢 <b>Зараз:</b> БД &lt;лаб&gt;',
-      '    10:25 — 12:00 · 18-202',
-      '    🔗 <a href="https://meet.google.com/abc">Meet</a>',
-      '⏳ <b>Наступна:</b> БД',
-      '    12:20 — 13:55',
+      '🟢 <b>Зараз</b> · ІП-55 · I тиждень',
+      '',
+      '<blockquote><b>ОНС</b>',
+      '🕒 10:25 – 12:00',
+      '📍 18-101',
+      '🔗 <a href="https://zoom.us/j/1?pwd=a&amp;b=c">Zoom &lt;лекції&gt;</a></blockquote>',
+      '<blockquote><b>БД &lt;лаб&gt;</b>',
+      '🕒 10:25 – 12:00',
+      '📍 18-202',
+      '🔗 <a href="https://meet.google.com/abc">Meet</a></blockquote>',
+      '⏭️ Далі о <b>12:20</b> — БД',
     ]);
   });
 
   it.each(CHATS)('%s: a lesson with no link still gets its block', async (chat) => {
     const text = await now(chat, [MEET], 'now', [ONS, LAB]);
-    expect(text.match(/🟢/g)).toHaveLength(2);
+    expect(text.match(/<blockquote>/g)).toHaveLength(2);
     expect(text.match(/🔗/g)).toHaveLength(1);
     expect(text).toContain('Meet');
   });
 
   it.each(CHATS)('%s: identical rows collapse to one block', async (chat) => {
     const text = await now(chat, [ZOOM], 'now', [ONS, { ...ONS, teacherNames: ['Інший'] }]);
-    expect(text.match(/🟢/g)).toHaveLength(1);
+    expect(text.match(/<blockquote>/g)).toHaveLength(1);
     expect(text.match(/🔗/g)).toHaveLength(1);
   });
 
   it('rows of one subject in different rooms stay two blocks', async () => {
     const text = await now('private', [ZOOM], 'now', [ONS, { ...ONS, room: '18-303' }]);
-    expect(text.match(/🟢/g)).toHaveLength(2);
+    expect(text.match(/<blockquote>/g)).toHaveLength(2);
   });
 
   it.each(CHATS)('%s: says the day is over only with nothing running and nothing next', async (chat) => {
     expect(await now(chat, [], 'now', [], null)).toContain('Сьогодні пар більше немає');
     expect(await now(chat, [], 'now', [ONS], null)).not.toContain('Сьогодні пар більше немає');
     const onlyNext = await now(chat, [], 'now', []);
-    expect(onlyNext).toContain('Наступна');
-    expect(onlyNext).not.toContain('Зараз');
+    expect(onlyNext).toBe('☕ <b>Зараз пари немає</b> · ІП-55 · I тиждень\n\n⏭️ Далі о <b>12:20</b> — БД');
+    expect(onlyNext).not.toContain('🟢');
     expect(onlyNext).not.toContain('Сьогодні пар більше немає');
   });
 
@@ -198,7 +219,15 @@ describe('BotService /now', () => {
     jest.setSystemTime(new Date(2026, 9, 28, 11, 0, 0));
     const text = await now('supergroup', [ZOOM], 'left', [ONS, LAB]);
     jest.useRealTimers();
-    expect(text).toBe('<b>ІП-55</b>\n🟢 <b>ОНС</b>\nДо кінця: <b>60 хв</b> (до 12:00)');
+    expect(text).toBe('⏳ <b>До кінця пари 60 хв</b> · ІП-55\n\n<blockquote><b>ОНС</b>\n🕒 до 12:00</blockquote>');
+  });
+
+  it('/left in a break says when the next lesson starts', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date(2026, 9, 28, 10, 15, 0));
+    const text = await now('private', [], 'left', [], { ...NEXT, room: '18-205' });
+    jest.useRealTimers();
+    expect(text).toBe('☕ <b>Зараз пари немає</b> · ІП-55\n\n⏭️ Далі о <b>12:20</b> — БД · 18-205 · через 2 год 5 хв');
   });
 });
 

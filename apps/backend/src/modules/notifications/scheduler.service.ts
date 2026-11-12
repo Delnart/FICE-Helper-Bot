@@ -17,6 +17,7 @@ import { AcademicGroup, AcademicGroupDocument } from '../groups/group.schema';
 import { User, UserDocument } from '../users/user.schema';
 import { CampusService } from '../campus/campus.service';
 import { Card, deadlineCard, digestCard, lessonReminderCard } from '../bot/cards/templates';
+import { quote } from '../../common/telegram-html';
 import { pickLessonLink, Subject, SubjectDocument } from '../subjects/subject.schema';
 import { LessonReminderMark, LessonReminderMarkDocument } from './lesson-reminder-mark.schema';
 import {
@@ -335,14 +336,20 @@ export class SchedulerService {
         .lean()
         .exec();
       const doneIds = new Set(doneRows.map((r) => String(r.userId)));
-      const card = deadlineCard(groupName.get(String(h.groupId)), h.title, h.deadline!, subjectName.get(String(h.subjectId)));
+      const subject = subjectName.get(String(h.subjectId));
+      const card = deadlineCard(groupName.get(String(h.groupId)), h.title, h.deadline!, subject);
+      // 23:59 is the "end of day" default: only a real cut-off time is worth showing.
+      const until = h.deadline!.toTimeString().slice(0, 5);
+      const text =
+        `⏳ <b>Завтра дедлайн</b>\n\n` +
+        quote(`<b>${escapeHtml(h.title)}</b>`, [subject && escapeHtml(subject), until !== '23:59' && `до ${until}`].filter(Boolean).join(' · '));
       for (const u of members) {
         if (doneIds.has(String(u._id))) continue;
         await this.notifications.sendDm(
           String(u._id),
           String(h.groupId),
           'deadlineTomorrow',
-          `⏳ Завтра дедлайн: <b>${escapeHtml(h.title)}</b>`,
+          text,
           card,
         );
       }
