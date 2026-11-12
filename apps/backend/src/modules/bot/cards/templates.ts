@@ -2,10 +2,10 @@ import { Logger } from '@nestjs/common';
 import type { CardNode } from './render';
 
 /**
- * Picture cards for the bot's messages, in the Mini App's «Campus Signal» look: Unbounded digits,
- * Onest text, night / paper / violet / lime grounds. 640px wide, as tall as the content.
- * Each builder takes the same data as the text it replaces and returns the picture: the bot sends it
- * alone, without a caption.
+ * Picture cards for the bot's messages, in the look of the Mini App's dark theme («Campus Signal»):
+ * Unbounded digits, Onest text, a night ground with lime and violet for what matters. 640px wide, as
+ * tall as the content. Each builder takes the same data as the text it illustrates and returns the
+ * picture: the bot sends it with that text as the caption.
  *
  * Preview every card as a PNG: `CARDS_OUT=some/dir npx jest cards` (see cards.spec.ts).
  */
@@ -45,20 +45,17 @@ export interface CardDeadline {
 
 type Kid = CardNode | string | number | false | null | undefined | Kid[];
 type Style = Record<string, string | number>;
-type Theme = 'night' | 'paper' | 'violet' | 'sun';
 
-// ── Design tokens (apps/frontend/src/styles/globals.css) and the few shared pieces ────────────────
+// ── Design tokens (`:root.dark` in apps/frontend/src/styles/globals.css) and the few shared pieces ─
 const NIGHT = '#0E1120';
 const LIME = '#C9F55B';
 const VIOLET = '#5B4DFF';
+/** A line on a soft panel, the outline of what is empty or over. */
+const LINE = '#2A3050';
 const UNBOUNDED = "Unbounded, 'Unbounded Cyr'";
 
 const CSS = `
-.card{display:flex;flex-direction:column;box-sizing:border-box;width:640px;padding:40px;font-family:Onest,'Onest Cyr';font-size:24px;font-weight:500;line-height:1.3;word-break:break-word;position:relative;overflow:hidden}
-.night{background:${NIGHT};color:#F4F5FB}
-.paper{background:#F3F4F9;color:${NIGHT}}
-.violet{background:${VIOLET};color:#FFFFFF}
-.sun{background:${LIME};color:${NIGHT}}
+.card{display:flex;flex-direction:column;box-sizing:border-box;width:640px;padding:40px;background:${NIGHT};color:#F4F5FB;font-family:Onest,'Onest Cyr';font-size:24px;font-weight:500;line-height:1.3;word-break:break-word;position:relative;overflow:hidden}
 .row{display:flex;align-items:center}
 .col{display:flex;flex-direction:column}
 .between{justify-content:space-between}
@@ -69,31 +66,26 @@ const CSS = `
 .eyebrow{font-size:22px;font-weight:700;line-height:1.2;letter-spacing:0.08em;text-transform:uppercase;white-space:nowrap}
 .small{font-size:22px;line-height:1.25}
 .muted{color:#A4A9C4}
-.dim{color:#4F5670}
+.faded{color:#8A90AC}
 .olive{color:#3A4620}
 .head{height:52px;flex-shrink:0;position:relative;z-index:1}
 .label{margin-left:14px;font-weight:700;line-height:1.2;white-space:nowrap}
 .chip{display:flex;align-items:center;gap:10px;box-sizing:border-box;height:44px;padding:0 18px;border-radius:999px;font-size:22px;font-weight:700;line-height:1;white-space:nowrap;flex-shrink:0}
 .dot{width:10px;height:10px;border-radius:999px;background:currentColor;flex-shrink:0}
-.gchip{font-weight:600}
-.night .gchip{background:#1A1E33}
-.paper .gchip{background:#FFFFFF;border:1.5px solid #E1E4EE}
-.violet .gchip{background:#4A3DE6}
-.sun .gchip{background:${NIGHT};color:#F4F5FB}
+.gchip{background:#1A1E33;font-weight:600}
 .dark{background:${NIGHT};color:${LIME}}
 .lime{background:${LIME};color:${NIGHT}}
-.ok{background:#DDF5E6;color:#107A45}
-.bad{background:#FDE3E6;color:#B81D30}
-.warn{background:#FFF0D6;color:#7A4700}
+.ok{background:#153626;color:#4CCB85}
+.bad{background:#3F1A20;color:#FF6B7A}
+.warn{background:#3A2C12;color:#F2B64A}
 .panel{display:flex;flex-direction:column;flex-shrink:0;padding:28px 32px 30px;border-radius:36px}
 .soft{background:#1A1E33}
 .tile{display:flex;align-items:center;justify-content:center;flex-shrink:0;background:#262552;color:#ADA5FF}
 .tag{display:flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-radius:999px;background:#1A1E33;font-size:22px;font-weight:600;line-height:1;white-space:nowrap}
 .online{background:#262552;color:#ADA5FF}
-.white{box-sizing:border-box;background:#FFFFFF;border:1.5px solid #E1E4EE}
 .center{display:flex;flex-direction:column;align-items:center;justify-content:center}
 .bar{display:flex;flex-shrink:0;border-radius:999px;overflow:hidden}
-.avatar{display:flex;align-items:center;justify-content:center;flex-shrink:0;border-radius:999px;background:#ECEAFF;color:#4A3DE6;font-family:${UNBOUNDED};font-weight:600;line-height:1}
+.avatar{display:flex;align-items:center;justify-content:center;flex-shrink:0;border-radius:999px;background:#262552;color:#ADA5FF;font-family:${UNBOUNDED};font-weight:600;line-height:1}
 .slot{box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0}
 `;
 
@@ -188,8 +180,8 @@ const subjectTile = (name: string, size: number): CardNode =>
     icon(SUBJECT_ICON.find(([re]) => re.test(name))?.[1] ?? 'book', size / 2, 1.9),
   );
 
-/** Brand mark: the letter F whose middle bar is a lime "signal". On violet the tile turns night. */
-const logo = (onViolet: boolean): CardNode => ({
+/** Brand mark: the letter F whose middle bar is a lime "signal". */
+const LOGO: CardNode = {
   type: 'svg',
   props: {
     width: 52,
@@ -197,22 +189,25 @@ const logo = (onViolet: boolean): CardNode => ({
     viewBox: '0 0 512 512',
     style: { flexShrink: 0 },
     children: [
-      { type: 'rect', props: { width: 512, height: 512, rx: 142, fill: onViolet ? NIGHT : VIOLET } },
+      { type: 'rect', props: { width: 512, height: 512, rx: 142, fill: VIOLET } },
       { type: 'rect', props: { x: 138, y: 144, width: 52, height: 224, rx: 26, fill: '#FFFFFF' } },
       { type: 'rect', props: { x: 138, y: 144, width: 236, height: 52, rx: 26, fill: '#FFFFFF' } },
       { type: 'rect', props: { x: 206, y: 250, width: 168, height: 52, rx: 26, fill: LIME } },
     ],
   },
-});
+};
 
-/** Every card: the mark and what the card is on the left, the group on the right. */
-const card = (theme: Theme, label: string, chip: string | undefined, ...kids: Kid[]): CardNode =>
+/** Every card: the night ground, the mark and what the card is on the left, the group on the right. */
+const card = (label: string, chip: string | undefined, ...kids: Kid[]): CardNode =>
   h(
-    `div.card.${theme}`,
+    'div.card',
     h('style', CSS),
-    h('div.row.between.head', h('div.row', logo(theme === 'violet'), h('div.label', label)), chip && h('div.chip.gchip', chip)),
+    h('div.row.between.head', h('div.row', LOGO, h('div.label', label)), chip && h('div.chip.gchip', chip)),
     kids,
   );
+/** The pale disc behind the top right corner of a card that has no lessons to show. */
+const disc = (top: number): CardNode =>
+  hs('div', { position: 'absolute', left: 450, top, width: 300, height: 300, borderRadius: 999, background: '#151A2C' });
 
 const dotChip = (cls: string, text: string): CardNode => h(`div.chip.${cls}`, h('div.dot'), text);
 const big = (size: number, lineHeight: number, extra: Style = {}): Style => ({
@@ -275,10 +270,10 @@ const linkButtons = (lessons: Array<{ subjectName: string; link?: CardLink }>): 
 /** Calendar leaf: the day big, the month under it. */
 const leaf = (d: Date): CardNode =>
   hs(
-    'div.white.center',
+    'div.soft.center',
     { width: 112, height: 112, borderRadius: 28, gap: 2, flexShrink: 0 },
     hs('div.num', { fontSize: 44, lineHeight: '46px' }, d.getDate()),
-    hs('div.eyebrow', { color: '#4A3DE6' }, uk(d, { month: 'short' }).slice(0, 3)),
+    hs('div.eyebrow', { color: '#ADA5FF' }, uk(d, { month: 'short' }).slice(0, 3)),
   );
 
 const logger = new Logger('Cards');
@@ -313,7 +308,6 @@ export const lessonReminderCard = safe(function lessonReminderCard(
     const teachers = first.teacherNames?.join(', ');
     return {
       tree: card(
-        'night',
         'Нагадування',
         group,
         hs(
@@ -372,7 +366,6 @@ export const lessonReminderCard = safe(function lessonReminderCard(
   const shown = sorted.slice(0, 6);
   return {
     tree: card(
-      'night',
       'Нагадування',
       group,
       hs(
@@ -432,7 +425,6 @@ export const lessonReminderCard = safe(function lessonReminderCard(
 /** The block for «nothing is on, the next lesson is…», shared by /now and /left. */
 function breakCard(chip: string, next: CardLesson, now: Date): CardNode {
   return card(
-    'night',
     'Зараз',
     chip,
     hs('div.num', { marginTop: 36, fontSize: 38, lineHeight: '46px', letterSpacing: '-0.01em', whiteSpace: 'normal' }, 'Зараз пари немає'),
@@ -468,21 +460,16 @@ function breakCard(chip: string, next: CardLesson, now: Date): CardNode {
 /** «Сьогодні пар більше немає», shared by /now and /left. */
 function dayDoneCard(chip: string): CardNode {
   return card(
-    'sun',
     'Сьогодні',
     chip,
-    hs('div', { position: 'absolute', left: 450, top: -20, width: 300, height: 300, borderRadius: 999, background: '#B8E64A' }),
-    hs(
-      'div.center',
-      { marginTop: 36, width: 96, height: 96, borderRadius: 999, background: NIGHT, color: LIME, position: 'relative' },
-      icon('check', 48, 2.6),
-    ),
+    disc(-20),
+    hs('div.center.lime', { marginTop: 36, width: 96, height: 96, borderRadius: 999, position: 'relative' }, icon('check', 48, 2.6)),
     hs(
       'div.num',
       { marginTop: 26, fontSize: 60, lineHeight: '64px', letterSpacing: '-0.02em', whiteSpace: 'normal', position: 'relative' },
       'На сьогодні все',
     ),
-    hs('div.olive', { marginTop: 12, fontSize: 26, fontWeight: 600, position: 'relative' }, 'Сьогодні пар більше немає'),
+    hs('div.muted', { marginTop: 12, fontSize: 26, fontWeight: 600, position: 'relative' }, 'Сьогодні пар більше немає'),
   );
 }
 
@@ -504,7 +491,6 @@ export const nowCard = safe(function nowCard(
   ];
   return {
     tree: card(
-      'night',
       'Зараз',
       chip,
       unique.slice(0, 3).map(({ lesson: l, link }, i) => {
@@ -560,7 +546,6 @@ export const leftCard = safe(function leftCard(group: string, current: CardLesso
   const left = Math.max(0, end - minuteOfDay(now));
   return {
     tree: card(
-      'night',
       'До кінця пари',
       group,
       hs(
@@ -604,13 +589,12 @@ export const leftCard = safe(function leftCard(group: string, current: CardLesso
 function dayFreeCard(label: string, chip: string, weekday: string, date: Date): CardNode {
   const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate() - ((date.getDay() + 6) % 7));
   return card(
-    'sun',
     label,
     chip,
-    hs('div', { position: 'absolute', left: 450, top: -60, width: 300, height: 300, borderRadius: 999, background: '#B8E64A' }),
+    disc(-60),
     hs('div.num', { marginTop: 36, fontSize: 64, lineHeight: '68px', letterSpacing: '-0.02em', position: 'relative' }, weekday),
     hs(
-      'div.olive',
+      'div.muted',
       { marginTop: 8, fontSize: 28, fontWeight: 600, position: 'relative' },
       date.getDay() === 0 ? 'Вихідний — пар немає' : 'Пар немає',
     ),
@@ -621,9 +605,9 @@ function dayFreeCard(label: string, chip: string, weekday: string, date: Date): 
         const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
         const on = d.getDate() === date.getDate();
         return hs(
-          'div.center.grow',
-          { height: 84, borderRadius: 22, gap: 4, background: on ? NIGHT : '#B8E64A', color: on ? LIME : NIGHT },
-          hs('div.eyebrow', { letterSpacing: '0.04em', ...(on ? {} : { color: '#3A4620' }) }, uk(d, { weekday: 'short' })),
+          `div.center.grow.${on ? 'lime' : 'soft'}`,
+          { height: 84, borderRadius: 22, gap: 4 },
+          hs(`div.eyebrow${on ? '' : '.muted'}`, { letterSpacing: '0.04em' }, uk(d, { weekday: 'short' })),
           hs('div.num', { fontSize: 24, lineHeight: '28px' }, d.getDate()),
         );
       }),
@@ -660,7 +644,6 @@ export const dayCard = safe(function dayCard(
 
   return {
     tree: card(
-      'paper',
       label,
       group,
       hs(
@@ -670,7 +653,7 @@ export const dayCard = safe(function dayCard(
           'div.col',
           { gap: 8 },
           hs('div.num', { fontSize: 60, lineHeight: '64px', letterSpacing: '-0.02em' }, weekday),
-          hs('div.dim', { fontSize: 26 }, `${weekType === 1 ? 'I' : 'II'} тиждень · ${pairs(lessons.length)}`),
+          hs('div.muted', { fontSize: 26 }, `${weekType === 1 ? 'I' : 'II'} тиждень · ${pairs(lessons.length)}`),
         ),
         leaf(date),
       ),
@@ -679,10 +662,11 @@ export const dayCard = safe(function dayCard(
         { marginTop: 28, gap: 10 },
         lessons.map((l) => {
           const meta = dots(typeOf(l), room(l));
+          // Over: an outline. On: the lime block, as in /now. Ahead: a soft panel.
           if (at >= toMin(l.endTime)) {
             return hs(
-              'div.row.dim',
-              { gap: 18, padding: '18px 22px', borderRadius: 24, background: '#EBEDF5' },
+              'div.row.faded',
+              { gap: 18, padding: '16px 20px', borderRadius: 24, border: `2px solid ${LINE}` },
               times(l),
               hs('div.col.grow', { gap: 4 }, name(l), meta && h('div.small.cut', meta)),
               icon('check', 28, 2.2),
@@ -692,28 +676,28 @@ export const dayCard = safe(function dayCard(
             const start = toMin(l.startTime);
             const end = toMin(l.endTime);
             return hs(
-              'div.col',
-              { gap: 16, padding: '20px 22px 22px', borderRadius: 24, background: NIGHT, color: '#F4F5FB' },
+              'div.col.lime',
+              { gap: 16, padding: '20px 22px 22px', borderRadius: 24 },
               hs(
                 'div.row',
                 { gap: 18 },
-                times(l, LIME, '#A4A9C4'),
+                times(l, undefined, '#3A4620'),
                 hs(
                   'div.col.grow',
                   null,
-                  hs('div.row.eyebrow', { gap: 10, color: LIME }, h('div.dot'), `зараз · ще ${span(end - at)}`),
+                  hs('div.row.eyebrow', { gap: 10 }, h('div.dot'), `зараз · ще ${span(end - at)}`),
                   name(l, { marginTop: 6 }),
-                  meta && hs('div.small.muted.cut', { marginTop: 4 }, meta),
+                  meta && hs('div.small.olive.cut', { marginTop: 4 }, meta),
                 ),
               ),
-              bar(((at - start) / Math.max(1, end - start)) * 100, 8, '#262B45', LIME),
+              bar(((at - start) / Math.max(1, end - start)) * 100, 8, '#A9CF4F', NIGHT),
             );
           }
           return hs(
-            'div.row.white',
+            'div.row.soft',
             { gap: 18, padding: '18px 22px', borderRadius: 24 },
-            times(l, undefined, '#6B7290'),
-            hs('div.col.grow', { gap: 4 }, name(l), meta && h('div.small.dim.cut', meta)),
+            times(l, undefined, '#A4A9C4'),
+            hs('div.col.grow', { gap: 4 }, name(l), meta && h('div.small.muted.cut', meta)),
           );
         }),
       ),
@@ -726,18 +710,17 @@ export const digestCard = safe(function digestCard(today: Date, lessons: CardLes
   const byStart = [...lessons].sort((a, b) => a.startTime.localeCompare(b.startTime));
   const byTime = [...deadlines].sort((a, b) => a.deadline.getTime() - b.deadline.getTime());
   const section = (title: string, rows: CardNode[], total: number): Kid => [
-    hs('div.eyebrow.dim', { marginTop: 22 }, title),
+    hs('div.eyebrow.muted', { marginTop: 22 }, title),
     hs(
-      'div.col.white',
+      'div.col.soft',
       { marginTop: 12, padding: '6px 22px', borderRadius: 28 },
-      rows.map((r, i) => hs('div.col', i ? { borderTop: '1.5px solid #EBEDF5' } : null, r)),
-      total > rows.length && hs('div.small.dim', { padding: '12px 0', borderTop: '1.5px solid #EBEDF5' }, `…і ще ${total - rows.length}`),
+      rows.map((r, i) => hs('div.col', i ? { borderTop: `1.5px solid ${LINE}` } : null, r)),
+      total > rows.length && hs('div.small.muted', { padding: '12px 0', borderTop: `1.5px solid ${LINE}` }, `…і ще ${total - rows.length}`),
     ),
   ];
 
   return {
     tree: card(
-      'paper',
       'Ранковий дайджест',
       group,
       hs(
@@ -768,7 +751,7 @@ export const digestCard = safe(function digestCard(today: Date, lessons: CardLes
                 hs('div.cut.grow', { fontWeight: 600, lineHeight: '30px' }, l.subjectName),
                 dots(l.groupName, typeOf(l, true), room(l)) &&
                   hs(
-                    'div.small.dim',
+                    'div.small.muted',
                     { lineHeight: '30px', whiteSpace: 'nowrap', flexShrink: 0 },
                     dots(l.groupName, typeOf(l, true), room(l)),
                   ),
@@ -788,7 +771,7 @@ export const digestCard = safe(function digestCard(today: Date, lessons: CardLes
                 'div.col.grow',
                 { gap: 2 },
                 hs('div.b.cut', { lineHeight: '30px' }, d.title),
-                dots(d.groupName, d.subjectName) && h('div.small.dim.cut', dots(d.groupName, d.subjectName)),
+                dots(d.groupName, d.subjectName) && h('div.small.muted.cut', dots(d.groupName, d.subjectName)),
               ),
               hs('div.chip.warn', { height: 40, padding: '0 14px' }, endOfDay ? 'до кінця дня' : `до ${hhmm(d.deadline)}`),
             );
@@ -806,19 +789,19 @@ const CONFETTI: Array<[x: number, y: number, w: number, h: number, color: string
   [448, 46, 48, 16, '#FFFFFF', -20],
   [104, 150, 78, 22, LIME, -28],
   [60, 236, 24, 24, '#FFFFFF'],
-  [152, 268, 52, 18, NIGHT, 22],
+  [152, 268, 52, 18, VIOLET, 22],
   [190, 122, 18, 18, '#ADA5FF'],
   [452, 136, 56, 18, '#FFFFFF', 34],
   [516, 204, 84, 22, LIME, -16],
-  [446, 262, 22, 22, NIGHT],
+  [446, 262, 22, 22, VIOLET],
   [568, 292, 44, 16, '#ADA5FF', 40],
   [44, 372, 64, 20, '#ADA5FF', -38],
   [96, 446, 20, 20, LIME],
   [40, 506, 72, 20, '#FFFFFF', 18],
-  [524, 448, 66, 20, NIGHT, -24],
+  [524, 448, 66, 20, VIOLET, -24],
   [574, 514, 18, 18, LIME],
   [112, 566, 84, 22, LIME, 14],
-  [216, 598, 20, 20, NIGHT],
+  [216, 598, 20, 20, VIOLET],
   [318, 604, 44, 16, '#ADA5FF', 8],
   [440, 582, 60, 18, '#FFFFFF', -30],
   [524, 574, 24, 24, '#ADA5FF'],
@@ -831,7 +814,6 @@ export const birthdayCard = safe(function birthdayCard(group: string, fullName: 
   // Unbounded is wide: «Олександра» is the longest word that still fits at full size.
   const size = longest <= 10 ? 50 : longest <= 13 ? 40 : 32;
   const tree = card(
-    'violet',
     'День народження',
     group,
     CONFETTI.map(([x, y, w, hh, color, rotate]) =>
@@ -857,7 +839,7 @@ export const birthdayCard = safe(function birthdayCard(group: string, fullName: 
           width: 168,
           height: 168,
           borderRadius: 999,
-          background: NIGHT,
+          background: '#1A1E33',
           border: `6px solid ${LIME}`,
           color: LIME,
           fontSize: 48,
@@ -869,7 +851,7 @@ export const birthdayCard = safe(function birthdayCard(group: string, fullName: 
             { type: 'img', props: { src: avatar, width: 156, height: 156, style: { borderRadius: 999, objectFit: 'cover' } } }
           : initials(fullName),
       ),
-      hs('div.eyebrow', { marginTop: 28 }, 'Сьогодні день народження'),
+      hs('div.eyebrow.muted', { marginTop: 28 }, 'Сьогодні день народження'),
       hs(
         'div.col',
         { marginTop: 12, alignItems: 'center' },
@@ -895,7 +877,6 @@ export const deadlineCard = safe(function deadlineCard(
   const endOfDay = deadline.getHours() === 23 && deadline.getMinutes() === 59;
   return {
     tree: card(
-      'paper',
       'Дедлайн',
       group,
       hs(
@@ -906,17 +887,17 @@ export const deadlineCard = safe(function deadlineCard(
           { alignItems: 'flex-start' },
           dotChip('warn', `завтра · ${endOfDay ? 'до кінця дня' : `до ${hhmm(deadline)}`}`),
           hs('div.b', { marginTop: 18, fontSize: 38, lineHeight: 1.15, letterSpacing: '-0.01em', lineClamp: 3 }, title),
-          subjectName && hs('div.dim.cut', { marginTop: 10, maxWidth: '100%' }, subjectName),
+          subjectName && hs('div.muted.cut', { marginTop: 10, maxWidth: '100%' }, subjectName),
         ),
         hs(
-          'div.col.white',
+          'div.col.soft',
           { width: 140, height: 164, borderRadius: 28, overflow: 'hidden', flexShrink: 0 },
-          hs('div.center.eyebrow', { height: 44, background: '#F2B64A', flexShrink: 0 }, uk(deadline, { weekday: 'short' })),
+          hs('div.center.eyebrow', { height: 44, background: '#F2B64A', color: NIGHT, flexShrink: 0 }, uk(deadline, { weekday: 'short' })),
           hs(
             'div.center.grow',
             { gap: 2 },
             hs('div.num', { fontSize: 60, lineHeight: '64px', letterSpacing: '-0.02em' }, deadline.getDate()),
-            hs('div.small.dim', { fontWeight: 600 }, uk(deadline, { day: 'numeric', month: 'long' }).replace(/^\d+\s*/, '')),
+            hs('div.small.muted', { fontWeight: 600 }, uk(deadline, { day: 'numeric', month: 'long' }).replace(/^\d+\s*/, '')),
           ),
         ),
       ),
@@ -942,27 +923,26 @@ export const announcementCard = safe(function announcementCard(
   if (title.length > 80 || lines > 12 || /https?:\/\/|[a-z0-9-]+\.[a-z]{2,}|@\w/i.test(`${title}\n${body}`)) return undefined;
   return {
     tree: card(
-      'violet',
       'Оголошення',
       group,
       hs(
-        'div.col',
-        { marginTop: 28, padding: '32px 32px 28px', borderRadius: 36, background: '#FFFFFF', color: NIGHT },
+        'div.col.soft',
+        { marginTop: 28, padding: '32px 32px 28px', borderRadius: 36 },
         hs('div.b', { fontSize: 36, lineHeight: 1.15, letterSpacing: '-0.01em' }, title),
-        hs('div.dim', { marginTop: 16, lineHeight: 1.45, whiteSpace: 'pre-wrap' }, body),
+        hs('div.muted', { marginTop: 16, lineHeight: 1.45, whiteSpace: 'pre-wrap' }, body),
         hs(
           'div.row.between.small',
-          { marginTop: 24, paddingTop: 20, borderTop: '1.5px solid #EBEDF5', gap: 12 },
+          { marginTop: 24, paddingTop: 20, borderTop: `1.5px solid ${LINE}`, gap: 12 },
           author
             ? hs(
                 'div.row.grow',
                 { gap: 12 },
                 hs('div.avatar', { width: 48, height: 48, fontSize: 16 }, initials(author.name)),
                 hs('div.b.cut', null, author.name),
-                author.role && hs('div.dim', { whiteSpace: 'nowrap', flexShrink: 0 }, `· ${author.role}`),
+                author.role && hs('div.muted', { whiteSpace: 'nowrap', flexShrink: 0 }, `· ${author.role}`),
               )
             : h('div.grow'),
-          hs('div.dim', { whiteSpace: 'nowrap', flexShrink: 0 }, uk(date, { day: 'numeric', month: 'long' })),
+          hs('div.muted', { whiteSpace: 'nowrap', flexShrink: 0 }, uk(date, { day: 'numeric', month: 'long' })),
         ),
       ),
     ),
@@ -984,7 +964,6 @@ export const queueSoonCard = safe(function queueSoonCard(group: string, title: s
   const minutes = Math.max(1, Math.round((opensAt.getTime() - now.getTime()) / 60_000));
   return {
     tree: card(
-      'night',
       'Черга',
       group,
       hs('div.eyebrow.muted', { marginTop: 28 }, 'Відкриється через'),
@@ -1005,7 +984,7 @@ export const queueSoonCard = safe(function queueSoonCard(group: string, title: s
         ),
       ),
       hs('div.b', { marginTop: 22, fontSize: 34, lineHeight: 1.15, letterSpacing: '-0.01em', lineClamp: 2 }, title),
-      slotStrip(60, { borderRadius: 18, border: '2px solid #2A3050' }, { fontSize: 20, fontWeight: 500, color: '#A4A9C4' }),
+      slotStrip(60, { borderRadius: 18, border: `2px solid ${LINE}` }, { fontSize: 20, fontWeight: 500, color: '#A4A9C4' }),
     ),
   };
 });
@@ -1014,17 +993,16 @@ export const queueSoonCard = safe(function queueSoonCard(group: string, title: s
 export const queueOpenCard = safe(function queueOpenCard(group: string | undefined, title: string, slotsCount: number): Card {
   return {
     tree: card(
-      'violet',
       'Черга',
       group,
       hs('div.row', { marginTop: 34 }, dotChip('lime', 'відкрита')),
       hs('div.b', { marginTop: 18, fontSize: 40, lineHeight: 1.15, letterSpacing: '-0.01em', lineClamp: 2 }, title),
       hs(
-        'div',
-        { marginTop: 10, color: '#F0EEFF' },
+        'div.muted',
+        { marginTop: 10 },
         `${slotsCount} ${plural(slotsCount, 'місце', 'місця', 'місць')} · обирайте своє у FICE Helper`,
       ),
-      slotStrip(68, { borderRadius: 22, background: '#4A3DE6' }, { fontSize: 22 }),
+      slotStrip(68, { borderRadius: 22, background: VIOLET }, { fontSize: 22 }),
     ),
   };
 });
@@ -1047,7 +1025,6 @@ export const queueNextCard = safe(function queueNextCard(
 ): Card {
   return {
     tree: card(
-      'night',
       'Черга',
       undefined,
       hs(
@@ -1100,7 +1077,7 @@ export const queueNextCard = safe(function queueNextCard(
               height: 96,
               borderRadius: 24,
               gap: 2,
-              ...(mine ? { background: LIME, color: NIGHT } : label ? { background: '#1A1E33' } : { border: '2px solid #2A3050' }),
+              ...(mine ? { background: LIME, color: NIGHT } : label ? { background: '#1A1E33' } : { border: `2px solid ${LINE}` }),
               ...(active ? { border: `2px solid ${LIME}` } : {}),
               ...(mine || active ? {} : { color: '#A4A9C4' }),
             },
@@ -1115,8 +1092,8 @@ export const queueNextCard = safe(function queueNextCard(
 
 /** A place in a queue as a big tile; two of them make a swap. */
 const PLACE = {
-  white: { cls: '.white', caption: '#4F5670', number: NIGHT },
-  grey: { cls: '', style: { background: '#EBEDF5' }, caption: '#4F5670', number: '#4F5670' },
+  soft: { cls: '.soft', caption: '#A4A9C4', number: '#F4F5FB' },
+  grey: { cls: '', style: { border: `2px solid ${LINE}` }, caption: '#8A90AC', number: '#8A90AC' },
   violet: { cls: '', style: { background: VIOLET }, caption: '#FFFFFF', number: LIME },
   lime: { cls: '', style: { background: LIME }, caption: '#3A4620', number: NIGHT },
 } satisfies Record<string, { cls: string; style?: Style; caption: string; number: string }>;
@@ -1134,10 +1111,11 @@ function places(left: Place, middle: CardNode, right: Place): CardNode {
   };
   return hs('div.row', { marginTop: 22, gap: 16 }, tile(left), middle, tile(right));
 }
-const roundIcon = (name: IconName, background: string, color: string): CardNode =>
-  hs('div.center', { width: 64, height: 64, borderRadius: 999, background, color, flexShrink: 0 }, icon(name, 30, 2.3));
+/** `look`: the class that colours it. */
+const roundIcon = (name: IconName, look: string, style: Style = {}): CardNode =>
+  hs(`div.center.${look}`, { width: 64, height: 64, borderRadius: 999, flexShrink: 0, ...style }, icon(name, 30, 2.3));
 const queueLine = (title: string): CardNode =>
-  hs('div.row.dim', { marginTop: 20, gap: 12 }, icon('list', 26), hs('div.cut.grow', { fontWeight: 600 }, title));
+  hs('div.row.muted', { marginTop: 20, gap: 12 }, icon('list', 26), hs('div.cut.grow', { fontWeight: 600 }, title));
 
 /** «Запит на обмін у черзі»: `theirSlot` is the sender's place, `yourSlot` the reader's. */
 export const swapRequestCard = safe(function swapRequestCard(
@@ -1148,7 +1126,6 @@ export const swapRequestCard = safe(function swapRequestCard(
 ): Card {
   return {
     tree: card(
-      'paper',
       'Обмін місцями',
       undefined,
       hs(
@@ -1159,10 +1136,10 @@ export const swapRequestCard = safe(function swapRequestCard(
           'div.col.grow',
           { gap: 2 },
           hs('div.b.cut', { fontSize: 28, lineHeight: 1.2 }, fromName),
-          h('div.small.dim', 'пропонує помінятися місцями'),
+          h('div.small.muted', 'пропонує помінятися місцями'),
         ),
       ),
-      places(['white', 'Ваше місце', yourSlot], roundIcon('swap', NIGHT, LIME), ['violet', 'Пропонують', theirSlot]),
+      places(['soft', 'Ваше місце', yourSlot], roundIcon('swap', 'soft', { color: LIME }), ['violet', 'Пропонують', theirSlot]),
       queueLine(queueTitle),
     ),
   };
@@ -1178,7 +1155,6 @@ export const swapResultCard = safe(function swapResultCard(
 ): Card {
   return {
     tree: card(
-      'paper',
       'Обмін місцями',
       undefined,
       hs(
@@ -1196,10 +1172,10 @@ export const swapResultCard = safe(function swapResultCard(
         { marginTop: 16, fontSize: 38, lineHeight: 1.15, letterSpacing: '-0.01em' },
         accepted ? 'Обмін відбувся' : 'Обмін не відбувся',
       ),
-      hs('div.small.dim.cut', { marginTop: 6 }, dots(otherName, queueTitle)),
+      hs('div.small.muted.cut', { marginTop: 6 }, dots(otherName, queueTitle)),
       accepted
-        ? places(['grey', 'Було', fromSlot], roundIcon('arrowRight', '#107A45', '#FFFFFF'), ['lime', 'Тепер ваше', toSlot])
-        : places(['white', 'Ваше місце', fromSlot], roundIcon('close', '#FDE3E6', '#B81D30'), ['grey', 'Запитували', toSlot]),
+        ? places(['grey', 'Було', fromSlot], roundIcon('arrowRight', 'ok'), ['lime', 'Тепер ваше', toSlot])
+        : places(['soft', 'Ваше місце', fromSlot], roundIcon('close', 'bad'), ['grey', 'Запитували', toSlot]),
     ),
   };
 });
@@ -1211,11 +1187,10 @@ export const teacherRequestCard = safe(function teacherRequestCard(group: string
   const tag = username && name !== `@${username}` ? `@${username}` : undefined;
   return {
     tree: card(
-      'paper',
       'Запит викладача',
       group,
       hs(
-        'div.col.white',
+        'div.col.soft',
         { marginTop: 28, padding: 28, borderRadius: 32 },
         hs(
           'div.row',
@@ -1225,20 +1200,20 @@ export const teacherRequestCard = safe(function teacherRequestCard(group: string
             'div.col.grow',
             { gap: 2 },
             hs('div.b', { fontSize: 28, lineHeight: 1.2, lineClamp: 2 }, name),
-            tag && hs('div.small.cut', { fontWeight: 600, color: '#4A3DE6' }, tag),
+            tag && hs('div.small.cut', { fontWeight: 600, color: '#ADA5FF' }, tag),
           ),
         ),
-        hs('div.dim', { marginTop: 20, lineHeight: 1.35 }, `Хоче приєднатися до групи ${group} як викладач`),
+        hs('div.muted', { marginTop: 20, lineHeight: 1.35 }, `Хоче приєднатися до групи ${group} як викладач`),
         note &&
           hs(
             'div.row',
-            { marginTop: 18, padding: '16px 20px', borderRadius: 20, background: '#F3F4F9', gap: 12, alignItems: 'flex-start' },
-            hs('div', { display: 'flex', marginTop: 3, color: '#4A3DE6' }, icon('chat', 26)),
+            { marginTop: 18, padding: '16px 20px', borderRadius: 20, background: '#262B45', gap: 12, alignItems: 'flex-start' },
+            hs('div', { display: 'flex', marginTop: 3, color: '#ADA5FF' }, icon('chat', 26)),
             hs('div.grow', { lineHeight: 1.35 }, note),
           ),
       ),
       hs(
-        'div.row.small.dim',
+        'div.row.small.muted',
         { marginTop: 20, gap: 10, justifyContent: 'center', fontWeight: 600 },
         icon('arrowDown', 24, 2.2),
         'Рішення — кнопками під карткою',
@@ -1251,7 +1226,6 @@ export const teacherRequestCard = safe(function teacherRequestCard(group: string
 export const teacherDecisionCard = safe(function teacherDecisionCard(group: string, approved: boolean): Card {
   return {
     tree: card(
-      'paper',
       'Доступ до групи',
       group,
       hs(
@@ -1272,21 +1246,14 @@ export const teacherDecisionCard = safe(function teacherDecisionCard(group: stri
             approved ? 'Доступ відкрито' : 'Доступ не надано',
           ),
           hs(
-            'div.dim',
+            'div.muted',
             { marginTop: 10, lineHeight: 1.35 },
             approved ? `Черги та журнал групи ${group} — у FICE Helper` : `Запит на доступ до групи ${group} відхилено`,
           ),
         ),
         hs(
-          'div.center',
-          {
-            width: 128,
-            height: 128,
-            borderRadius: 999,
-            flexShrink: 0,
-            background: approved ? '#DDF5E6' : '#FDE3E6',
-            color: approved ? '#107A45' : '#B81D30',
-          },
+          `div.center.${approved ? 'ok' : 'bad'}`,
+          { width: 128, height: 128, borderRadius: 999, flexShrink: 0 },
           icon(approved ? 'check' : 'close', approved ? 64 : 60, 2.4),
         ),
       ),
