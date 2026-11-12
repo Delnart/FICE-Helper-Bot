@@ -329,7 +329,7 @@ export default function SchedulePage() {
   const groupName = isTeacher ? undefined : membership?.groupName;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Розклад"
         subtitle={
@@ -365,7 +365,7 @@ export default function SchedulePage() {
         <SessionsView query={sessions} />
       ) : (
         <>
-          <section aria-label="Дні тижня" className="flex flex-col gap-2.5">
+          <section aria-label="Дні тижня" className="anim-rise flex flex-col gap-2.5">
             {/* Keyed by week: a new week's strip shows its pill in place instead of sliding it across. */}
             <div key={week} ref={daysRef} className="days" style={slideVars(day - 1)}>
               {WEEKDAYS.map((w, i) => {
@@ -390,7 +390,8 @@ export default function SchedulePage() {
               })}
             </div>
             <div className="flex items-center justify-between gap-2">
-              <span className={cn('chip', now.data && week === currentWeek && 'chip-accent')}>
+              {/* Keyed by week: the chip pops when the week changes under it. */}
+              <span key={week} className={cn('chip anim-pop', now.data && week === currentWeek && 'chip-accent')}>
                 {ROMAN[week]} тиждень
                 {now.data ? (week === currentWeek ? ' · поточний' : ' · наступний') : ''}
               </span>
@@ -406,12 +407,16 @@ export default function SchedulePage() {
           </section>
 
           {/* Swipe left/right here switches the day; the strip above stays the tap / a11y control.
-              Re-keyed per day / week (and once loaded), so the new day's list rises in instead of a hard cut.
+              Re-keyed per day / week (and once loaded), so the new day comes in instead of a hard cut:
+              the lessons one after another (.stagger), a single card (free day, error) as a whole.
               min-h: a free day's short card would leave the blank space below it dead to swipes. */}
           <div ref={swipeRef} className="flex min-h-[60dvh] flex-col gap-4">
-            <div key={`${week}-${day}-${loading}`} className="anim-rise">
+            <div
+              key={`${week}-${day}-${loading}`}
+              className={loading || isError || dayLessons.length === 0 ? 'anim-rise' : undefined}
+            >
               {loading ? (
-                <Loading />
+                <Loading shape="lessons" />
               ) : isError ? (
                 <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити розклад" />
               ) : dayLessons.length === 0 ? (
@@ -421,7 +426,7 @@ export default function SchedulePage() {
                   icon="calendar"
                 />
               ) : (
-                <section aria-label="Пари" className="flex flex-col gap-2.5">
+                <section aria-label="Пари" className="stagger flex flex-col gap-2.5">
                   {dayLessons.map((l, i) => {
                     const prev = dayLessons[i - 1];
                     // Free KPI slots between two lessons ("вікно").
@@ -566,13 +571,18 @@ function LessonRow({
         'relative z-[1]',
         live
           ? cn(
-              '-my-3 -mr-2 inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl',
+              '-my-3 -mr-2 inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl transition-transform active:scale-[0.88]',
               l.isElective ? 'text-now-accent' : 'text-now-muted',
             )
           : cn('icon-btn-plain -my-2.5 -mr-2', l.isElective ? 'text-accent-text' : 'text-ink-3'),
       )}
     >
-      <Icon name="star" size={18} className={l.isElective ? 'fill-current' : undefined} />
+      {/* The star pops when the head's own toggle goes through (never on entry). */}
+      <Icon
+        name="star"
+        size={18}
+        className={cn(l.isElective && 'fill-current', toggleElective.isSuccess && 'anim-pop')}
+      />
     </button>
   ) : null;
   const electiveError = toggleElective.isError ? (
@@ -582,7 +592,7 @@ function LessonRow({
   ) : null;
 
   return (
-    <div className={cn('relative flex gap-3', sameSlot && '-mt-1', past && 'opacity-60')}>
+    <div className={cn('tap-row relative flex gap-3', sameSlot && '-mt-1', past && 'opacity-60')}>
       {/* Whole row opens the subject; buttons/links sit above this overlay. */}
       {l.subjectId ? (
         <Link
@@ -610,7 +620,7 @@ function LessonRow({
           <div className="flex items-center justify-between gap-2">
             <span className="text-[18px] font-bold leading-tight">{l.subjectName}</span>
             <span className="chip flex-shrink-0 gap-1.5 bg-now-accent text-now-accent-ink">
-              <span className="dot bg-current" />
+              <span className="dot dot-live bg-current" />
               ще {live.left} хв
             </span>
           </div>
@@ -720,7 +730,7 @@ function SessionsView({
   const past = all.length - visible.length;
 
   if (query.isLoading) {
-    return <Loading />;
+    return <Loading shape="cards" />;
   }
   if (query.isError) {
     return (
@@ -751,10 +761,10 @@ function SessionsView({
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="stagger flex flex-col gap-5">
       {[...groups.entries()].map(([month, list]) => (
         <Section key={month} title={formatMonthLabel(month)}>
-          <div className="flex flex-col gap-2.5">
+          <div className="stagger flex flex-col gap-2.5">
             {list.map((s) => (
               <SessionCard key={s._id} s={s} />
             ))}
