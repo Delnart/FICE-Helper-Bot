@@ -1,6 +1,7 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { BotService } from './bot.service';
+import { CardsController } from './cards/cards.controller';
 import { SupportTicket, SupportTicketSchema } from './support-ticket.schema';
 import { GroupsModule } from '../groups/groups.module';
 import { UsersModule } from '../users/users.module';
@@ -17,6 +18,7 @@ import { ScheduleApiModule } from '../schedule/schedule.module';
     SheetsModule,
     ScheduleApiModule,
   ],
+  controllers: [CardsController],
   providers: [BotService],
   exports: [BotService],
 })

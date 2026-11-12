@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { GrammyError } from 'grammy';
 import { BotService } from './bot.service';
 import { renderCard } from './cards/render';
@@ -226,71 +227,79 @@ describe('BotService.avatar', () => {
 
 describe('BotService.sendCard', () => {
   const card = { tree: { type: 'div', props: {} } };
-  const setup = (sendPhoto: jest.Mock) => {
-    const svc = new BotService(...(Array(9).fill({}) as ConstructorParameters<typeof BotService>));
-    const sendMessage = jest.fn(async () => undefined);
-    svc['bot'] = { api: { sendPhoto, sendMessage } } as never;
+  const keyOf = (tree: unknown) => createHash('sha1').update(JSON.stringify(tree)).digest('hex');
+  const preview = (tree: unknown = card.tree) => ({
+    url: `https://api.test/api/cards/${keyOf(tree)}.png`,
+    prefer_large_media: true,
+    show_above_text: true,
+  });
+  const setup = (sendMessage: jest.Mock = jest.fn(async () => undefined), api: string | undefined = 'https://api.test/api/') => {
+    const config = { get: (name: string) => (name === 'PUBLIC_API_URL' ? api : undefined) };
+    const svc = new BotService(...([config, ...Array(8).fill({})] as ConstructorParameters<typeof BotService>));
+    svc['bot'] = { api: { sendMessage } } as never;
     return { svc, sendMessage };
   };
   beforeEach(() => (renderCard as jest.Mock).mockClear());
 
-  it('draws and uploads a card once, then reuses its file_id', async () => {
-    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'small' }, { file_id: 'big' }] }));
-    const { svc, sendMessage } = setup(sendPhoto);
+  it('sends the text with the card as its link preview, drawn once for every chat it goes to', async () => {
+    const { svc, sendMessage } = setup();
     await svc.sendCard(1, card, 'текст', { message_thread_id: 7, link_preview_options: { is_disabled: true } });
     await svc.sendCard(2, card, 'текст');
     expect(renderCard).toHaveBeenCalledTimes(1);
-    // The text is the caption: a notification shows it, and it reads where the picture does not load.
-    expect(sendPhoto.mock.calls[0]).toEqual([1, expect.anything(), { caption: 'текст', parse_mode: 'HTML', message_thread_id: 7 }]);
-    expect(sendPhoto.mock.calls[1].slice(0, 2)).toEqual([2, 'big']);
-    expect(sendMessage).not.toHaveBeenCalled();
+    // A text message: out of the chat's media, in the notification, readable where the picture does not load.
+    expect(sendMessage.mock.calls).toEqual([
+      [1, 'текст', { parse_mode: 'HTML', message_thread_id: 7, link_preview_options: preview() }],
+      [2, 'текст', { parse_mode: 'HTML', link_preview_options: preview() }],
+    ]);
+    // What Telegram fetches for the preview.
+    expect(svc.cardPng(keyOf(card.tree))).toEqual(Buffer.from('png'));
+    expect(svc.cardPng('other')).toBeUndefined();
   });
 
-  it('sends the text alone when it is too long for a caption', async () => {
-    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'big' }] }));
-    const { svc, sendMessage } = setup(sendPhoto);
-    // 1024 characters is the limit, and tags do not count.
-    await svc.sendCard(1, card, `<b>${'я'.repeat(1024)}</b>`);
-    expect(sendPhoto).toHaveBeenCalledTimes(1);
-    await svc.sendCard(1, card, 'я'.repeat(1025));
-    expect(sendPhoto).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(1, 'я'.repeat(1025), { parse_mode: 'HTML' });
-    expect(renderCard).toHaveBeenCalledTimes(1);
-  });
-
-  it('puts lesson links under the card as buttons, in place of the keyboard the caller passed', async () => {
-    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'big' }] }));
-    const { svc } = setup(sendPhoto);
+  it('puts lesson links under the message as buttons, in place of the keyboard the caller passed', async () => {
+    const { svc, sendMessage } = setup();
     const links = [{ label: 'Meet', url: 'https://meet.google.com/x' }];
     await svc.sendCard(1, { ...card, links }, 'текст', { reply_markup: { keyboard: [] } });
-    expect(sendPhoto).toHaveBeenCalledWith(1, expect.anything(), {
-      caption: 'текст',
+    expect(sendMessage).toHaveBeenCalledWith(1, 'текст', {
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: [[{ text: 'Meet', url: 'https://meet.google.com/x' }]] },
+      link_preview_options: preview(),
     });
   });
 
-  it('sends the text when the card cannot be drawn', async () => {
+  it('keeps the pictures of the last 100 cards', async () => {
+    const { svc } = setup();
+    const trees = Array.from({ length: 101 }, (_, n) => ({ type: 'div', props: { n } }));
+    for (const tree of trees) await svc.sendCard(1, { tree }, 'текст');
+    expect(svc.cardPng(keyOf(trees[0]))).toBeUndefined();
+    expect(svc.cardPng(keyOf(trees[1]))).toBeDefined();
+    expect(svc.cardPng(keyOf(trees[100]))).toBeDefined();
+  });
+
+  it('sends the text alone when the card cannot be drawn', async () => {
     (renderCard as jest.Mock).mockRejectedValueOnce(new Error('out of memory'));
-    const { svc, sendMessage } = setup(jest.fn());
+    const { svc, sendMessage } = setup();
     await svc.sendCard(1, card, 'текст', { message_thread_id: 7 });
-    expect(sendMessage).toHaveBeenCalledWith(1, 'текст', { parse_mode: 'HTML', message_thread_id: 7 });
+    expect(sendMessage.mock.calls).toEqual([[1, 'текст', { parse_mode: 'HTML', message_thread_id: 7 }]]);
   });
 
-  it('sends the text when a builder gave no card', async () => {
-    const sendPhoto = jest.fn();
-    const { svc, sendMessage } = setup(sendPhoto);
-    await svc.sendCard(1, undefined, 'текст');
-    expect(sendMessage).toHaveBeenCalledWith(1, 'текст', { parse_mode: 'HTML' });
-    expect(sendPhoto).not.toHaveBeenCalled();
+  it('sends the text alone when a builder gave no card, or Telegram has nowhere to fetch one from', async () => {
+    const noCard = setup();
+    await noCard.svc.sendCard(1, undefined, 'текст');
+    expect(noCard.sendMessage.mock.calls).toEqual([[1, 'текст', { parse_mode: 'HTML' }]]);
+    const noAddress = setup(undefined, '');
+    await noAddress.svc.sendCard(1, card, 'текст', { link_preview_options: { is_disabled: true } });
+    expect(noAddress.sendMessage.mock.calls).toEqual([[1, 'текст', { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }]]);
+    expect(renderCard).not.toHaveBeenCalled();
   });
 
-  it('sends the text when Telegram refuses the photo, and draws the card again next time', async () => {
-    const noMedia = new GrammyError('sendPhoto failed', { ok: false, error_code: 400, description: 'Bad Request: not enough rights to send photos to the chat' }, 'sendPhoto', {});
-    const { svc, sendMessage } = setup(jest.fn(async () => Promise.reject(noMedia)));
+  it('sends the text alone when Telegram refuses the message with the preview', async () => {
+    const refused = new GrammyError('sendMessage failed', { ok: false, error_code: 400, description: 'Bad Request: WEBPAGE_CURL_FAILED' }, 'sendMessage', {});
+    const { svc, sendMessage } = setup(jest.fn().mockRejectedValueOnce(refused).mockResolvedValue(undefined));
     await svc.sendCard(1, card, 'текст');
-    await svc.sendCard(1, card, 'текст');
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(renderCard).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls).toEqual([
+      [1, 'текст', { parse_mode: 'HTML', link_preview_options: preview() }],
+      [1, 'текст', { parse_mode: 'HTML' }],
+    ]);
   });
 });

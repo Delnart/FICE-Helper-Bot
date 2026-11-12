@@ -52,6 +52,9 @@ services:
       GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
       PUBLIC_WEB_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
       PUBLIC_MINI_APP_URL: ${PUBLIC_MINI_APP_URL:-https://ficebot.dev}
+      # The API as seen from outside: Telegram fetches the pictures of the bot's messages from it
+      # (BotService.sendCard). Without it the bot sends plain text.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://api.ficebot.dev/api}
       ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
     ports:
       - '3000:3000'

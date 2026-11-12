@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Bot, Context, GrammyError, InputFile, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, Context, GrammyError, InlineKeyboard, Keyboard } from 'grammy';
 import { GroupsService } from '../groups/groups.service';
 import { UsersService } from '../users/users.service';
 import { CampusService } from '../campus/campus.service';
@@ -32,9 +32,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    */
   // ponytail: wholesale clear at 5k entries instead of an LRU — plenty for a few hundred groups.
   private readonly recentMembers = new Map<string, number>();
-  /** Content hash of a card → the Telegram file_id of its upload: a fan-out draws and uploads it once. */
-  // ponytail: wholesale clear at 200 entries, same as recentMembers.
-  private readonly cardFiles = new Map<string, string>();
+  /** Content hash of a card → its PNG, for Telegram to fetch as the link preview: a fan-out draws it once. */
+  // ponytail: the last 100 cards, ~10 MB. Telegram keeps a preview it has fetched; a card that has left
+  // this map is drawn again only when it is sent again.
+  private readonly cardPngs = new Map<string, Buffer>();
 
   constructor(
     private readonly config: ConfigService,
@@ -120,31 +121,42 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Sends a picture card with `text` as its caption, a lesson's link as a button under it. The caption is
-   * what a notification shows, and what there is to read where the picture does not load.
-   * Cards are best effort: if building, drawing or delivering one fails, or the text is too long for a
-   * caption, the text goes out alone, the way it did before cards.
+   * Sends `text` with the card above it as the message's link preview, a lesson's link as a button under
+   * it. A text message, unlike a photo, stays out of the chat's media, shows in a notification and reads
+   * where the picture does not load. Telegram fetches the picture from CardsController, so this takes
+   * PUBLIC_API_URL, the address the API is seen at from outside.
+   * Cards are best effort: without that address, or if building, drawing or delivering one fails, the
+   * text goes out alone, the way it did before cards.
    */
   async sendCard(chatId: number, card: Card | undefined, text: string, extra: Record<string, unknown> = {}): Promise<void> {
     if (!this.bot) return;
-    // A caption holds 1024 characters, tags aside. An entity (&amp;) counts here as longer than it is, which only errs towards the text.
-    if (!card || text.replace(/<[^>]+>/g, '').length > 1024) return this.sendMessage(chatId, text, extra);
+    const api = this.config.get<string>('PUBLIC_API_URL')?.replace(/\/+$/, '');
+    if (!card || !api) return this.sendMessage(chatId, text, extra);
     const key = createHash('sha1').update(JSON.stringify(card.tree)).digest('hex');
-    // A photo has no link preview to switch off.
-    const { link_preview_options: _preview, ...photoExtra } = extra;
     // Link buttons take the place of the caller's own keyboard: a message holds one, and the link is this message's point.
     const buttons = card.links?.length ? { reply_markup: { inline_keyboard: card.links.map((l) => [{ text: l.label, url: l.url }]) } } : {};
     try {
-      const photo = this.cardFiles.get(key) ?? new InputFile(await renderCard(card.tree), 'card.png');
-      const sent = await this.bot.api.sendPhoto(chatId, photo, { caption: text, parse_mode: 'HTML', ...photoExtra, ...buttons });
-      if (this.cardFiles.size >= 200) this.cardFiles.clear();
-      this.cardFiles.set(key, sent.photo[sent.photo.length - 1].file_id);
+      if (!this.cardPngs.has(key)) {
+        this.cardPngs.set(key, await renderCard(card.tree));
+        if (this.cardPngs.size > 100) this.cardPngs.delete(this.cardPngs.keys().next().value as string);
+      }
+      await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'HTML',
+        ...extra,
+        ...buttons,
+        // In place of the caller's own: the card is the preview.
+        link_preview_options: { url: `${api}/cards/${key}.png`, prefer_large_media: true, show_above_text: true },
+      });
     } catch (err) {
-      this.cardFiles.delete(key);
-      // Also when Telegram refused the photo: a chat may allow text but not media.
+      // Also when Telegram refused the message with this preview.
       this.logger.warn(`Card for ${chatId} failed, sending the text: ${(err as Error).message}`);
       await this.sendMessage(chatId, text, extra);
     }
+  }
+
+  /** The picture of a card sent lately, for Telegram to fetch (CardsController). */
+  cardPng(key: string): Buffer | undefined {
+    return this.cardPngs.get(key);
   }
 
   /** A user's Telegram profile photo as a data URI, for a card. Nothing when there is none, it is hidden or it fails to load. */

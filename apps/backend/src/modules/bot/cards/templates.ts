@@ -5,7 +5,7 @@ import type { CardNode } from './render';
  * Picture cards for the bot's messages, in the look of the Mini App's dark theme («Campus Signal»):
  * Unbounded digits, Onest text, a night ground with lime and violet for what matters. 640px wide, as
  * tall as the content. Each builder takes the same data as the text it illustrates and returns the
- * picture: the bot sends it with that text as the caption.
+ * picture: the bot sends the text, and the picture above it as the message's link preview.
  *
  * Preview every card as a PNG: `CARDS_OUT=some/dir npx jest cards` (see cards.spec.ts).
  */

@@ -151,7 +151,7 @@ export class NotificationsService {
       .exec();
   }
 
-  /** `groupId`: the group the DM is about (homework, queue, …) — prefs are per group. `card` goes out with the text as its caption. */
+  /** `groupId`: the group the DM is about (homework, queue, …) — prefs are per group. `card` goes out above the text, as its link preview. */
   async sendDm(userId: string, groupId: string, kind: DmKind, text: string, card?: Card): Promise<void> {
     // Read-only lookup: a missing row / field means the default, so there's no
     // need to create a prefs document per recipient here.

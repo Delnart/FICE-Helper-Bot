@@ -76,16 +76,20 @@ export class TeachersService implements OnModuleInit {
         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
         await ctx.answerCallbackQuery({ text: label });
 
-        // Append outcome text to the original message
+        // Append the outcome to the original message, which keeps its formatting and its card: the
+        // message's own entities and link preview go back in with the new text.
         try {
           const message = ctx.callbackQuery.message;
-          const outcome = `\n\n<b>${label}</b> — ${escapeHtml(from.first_name)}`;
-          // The request is a card now and the outcome becomes its caption; one sent before cards is a plain message.
-          if (message?.photo) {
-            await ctx.editMessageCaption({ caption: (escapeHtml(message.caption ?? '') + outcome).trim(), parse_mode: 'HTML' });
-          } else {
-            await ctx.editMessageText(`${message?.text ?? ''}${outcome}`, { parse_mode: 'HTML' });
-          }
+          // A request sent while cards were photos: the outcome goes into its caption.
+          const photo = !!message?.photo;
+          const before = `${(photo ? message?.caption : message?.text) ?? ''}\n\n`.trimStart();
+          const text = `${before}${label} — ${from.first_name}`;
+          const entities = [
+            ...((photo ? message?.caption_entities : message?.entities) ?? []),
+            { type: 'bold' as const, offset: before.length, length: label.length },
+          ];
+          if (photo) await ctx.editMessageCaption({ caption: text, caption_entities: entities });
+          else await ctx.editMessageText(text, { entities, link_preview_options: message?.link_preview_options });
         } catch {
           /* message might be too old to edit — ignore */
         }
