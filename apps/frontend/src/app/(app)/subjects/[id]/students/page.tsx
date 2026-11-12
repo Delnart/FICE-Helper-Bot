@@ -42,7 +42,7 @@ export default function SubjectStudentsPage() {
   const count = students.data?.length ?? 0;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Список студентів" subtitle={displayName} />
 
       {students.isLoading ? (
@@ -57,7 +57,7 @@ export default function SubjectStudentsPage() {
         <Empty title="У цій групі немає студентів" icon="users" />
       ) : (
         <>
-          <div>
+          <div className="stagger">
             {students.data!.map((s) => {
               const name =
                 s.fullName?.trim() ||

@@ -48,7 +48,7 @@ export default function SubjectHomeworkPage() {
   const newHref = `/homework/new?subjectId=${id}` as Route;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Домашнє завдання"
         subtitle={subject.data ? subject.data.shortName ?? subject.data.name : undefined}
@@ -70,7 +70,7 @@ export default function SubjectHomeworkPage() {
           title="Не вдалося завантажити завдання"
         />
       ) : hw.data && hw.data.length ? (
-        <div>
+        <div className="stagger">
           {hw.data.map((h) => {
             const overdue = !h.done && !!h.deadline && dayjs(h.deadline).isBefore(dayjs());
             const soon = h.done ? null : dueSoon(h.deadline);

@@ -52,7 +52,7 @@ export default function SelectGroupPage() {
         <ErrorState title="Не вдалося завантажити групи" error={me.error} onRetry={() => me.refetch()} />
       ) : memberships.length ? (
         <>
-          <section role="radiogroup" aria-label="Групи" className="flex flex-col gap-2.5">
+          <section role="radiogroup" aria-label="Групи" className="stagger flex flex-col gap-2.5">
             {memberships.map((m) => {
               const on = chosenId === m.groupId;
               const sub = [

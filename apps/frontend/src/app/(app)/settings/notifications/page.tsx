@@ -120,7 +120,7 @@ export default function NotificationsSettingsPage() {
   const onCount = ALL_KEYS.filter((k) => Boolean(data?.[k])).length;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Сповіщення" subtitle="Що бот надсилає вам в особисті" />
 
       {groups.length > 1 && groupId ? (

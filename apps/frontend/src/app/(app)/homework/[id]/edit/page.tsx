@@ -99,7 +99,7 @@ export default function EditHomeworkPage() {
   if (!data && !isError) return <Loading />;
   if (!data || !data.canManage) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Редагування" />
         {data ? (
           <div className="card-flat small text-bad">
@@ -137,7 +137,7 @@ export default function EditHomeworkPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Редагування"
         subtitle={data.subjectName}

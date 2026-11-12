@@ -413,7 +413,7 @@ export default function AttendancePage() {
   // in the same order on every render).
   if (!hasJournalAccess) {
     return (
-      <div className="flex flex-col gap-3.5">
+      <div className="stagger flex flex-col gap-3.5">
         <PageHeader title="Журнал" />
         <Empty
           icon="users"
@@ -426,7 +426,7 @@ export default function AttendancePage() {
 
   if (autoTeacherSubjectFilter && teacherSubjects.isLoading) {
     return (
-      <div className="flex flex-col gap-3.5">
+      <div className="stagger flex flex-col gap-3.5">
         <PageHeader title="Журнал" />
         <Loading label="Підтягуємо ваші дисципліни…" />
       </div>
@@ -463,7 +463,7 @@ export default function AttendancePage() {
   ) : undefined;
 
   return (
-    <div className="flex flex-col gap-3.5">
+    <div className="stagger flex flex-col gap-3.5">
       <PageHeader
         title="Журнал"
         subtitle={[membership?.groupName, rangeLabel, isWeek && data ? `${data.weekType === 1 ? 'I' : 'II'} тиждень` : null]

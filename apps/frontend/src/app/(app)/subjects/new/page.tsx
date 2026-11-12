@@ -79,7 +79,7 @@ export default function NewSubjectPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Нова дисципліна" subtitle="Додайте назву, викладачів та корисні посилання" />
 
       <SubjectBasicsCard

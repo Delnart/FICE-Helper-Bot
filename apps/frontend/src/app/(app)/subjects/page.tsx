@@ -74,7 +74,6 @@ export default function SubjectsPage() {
   const groupName = useActiveMembership()?.groupName;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
-  const [filtered, setFiltered] = useState(false); // a filter was used: the grid may animate
 
   const subjects = useQuery({
     queryKey: ['subjects'],
@@ -169,7 +168,7 @@ export default function SubjectsPage() {
     : groupName;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Дисципліни"
         subtitle={subtitle}
@@ -183,7 +182,7 @@ export default function SubjectsPage() {
       />
 
       {subjects.isLoading ? (
-        <Loading />
+        <Loading shape="grid" />
       ) : subjects.isError ? (
         <ErrorState
           error={subjects.error}
@@ -226,24 +225,18 @@ export default function SubjectsPage() {
             options={FILTERS}
             value={filter}
             aria-label="Фільтр дисциплін"
-            onChange={(f) => {
-              if (f === filter) return;
-              setFilter(f);
-              setFiltered(true);
-            }}
+            onChange={setFilter}
           />
 
           {visible.length ? (
-            // Re-keyed per filter: once a filter is used, the cards rise in with a short stagger
-            // (not on page entry, e.g. Back from a subject). Search keeps the key, so only cards
-            // that newly match animate in.
-            <section key={filter} aria-label="Список дисциплін" className="grid grid-cols-2 gap-2.5">
-              {visible.map(({ s, chips, teacher }, i) => (
+            // Re-keyed per filter: the cards rise in one after another, on entry and on every filter
+            // change. Search keeps the key, so only cards that newly match animate in.
+            <section key={filter} aria-label="Список дисциплін" className="stagger grid grid-cols-2 gap-2.5">
+              {visible.map(({ s, chips, teacher }) => (
                 <Link
                   key={s._id}
                   href={`/subjects/${s._id}`}
-                  className={cn('card-flat flex min-h-[150px] flex-col gap-3 p-3.5', filtered && 'anim-rise')}
-                  style={filtered ? { animationDelay: `${Math.min(i, 8) * 30}ms` } : undefined}
+                  className="card-flat flex min-h-[150px] flex-col gap-3 p-3.5"
                 >
                   <SubjectTile name={s.name} icon={s.icon} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">

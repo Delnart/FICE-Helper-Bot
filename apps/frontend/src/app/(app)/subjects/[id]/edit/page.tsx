@@ -299,7 +299,7 @@ export default function EditSubjectPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Редагування"
         subtitle={[s?.name, groupName].filter(Boolean).join(' · ') || undefined}

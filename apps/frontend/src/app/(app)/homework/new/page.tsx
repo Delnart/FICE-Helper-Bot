@@ -96,7 +96,7 @@ export default function NewHomeworkPage() {
   const subj = subjects.data?.find((s) => s._id === subjectId);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Нове завдання"
         subtitle="Побачить уся група"

@@ -29,14 +29,14 @@ export default function QueuesPage() {
     queryFn: () => api<QueueCard[]>('/queues'),
   });
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Черги" />
       {isLoading ? (
         <Loading />
       ) : isError ? (
         <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити черги" />
       ) : data && data.length ? (
-        <div className="flex flex-col">
+        <div className="stagger flex flex-col">
           {data.map((q) => {
             const status = q.status ?? (q.rules?.isOpen ? 'open' : 'closed');
             return (

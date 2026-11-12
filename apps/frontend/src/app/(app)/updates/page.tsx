@@ -26,9 +26,9 @@ function dateLabel(date: string): string {
 
 export default function UpdatesPage() {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Оновлення" subtitle="Що нового в застосунку й боті" />
-      <div className="flex flex-col gap-2.5">
+      <div className="stagger flex flex-col gap-2.5">
         {RELEASES.map((release, i) => (
           <ReleaseCard key={release.version} release={release} defaultOpen={i === 0} />
         ))}

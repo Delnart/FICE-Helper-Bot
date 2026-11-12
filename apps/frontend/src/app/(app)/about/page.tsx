@@ -25,7 +25,7 @@ export default function AboutPage() {
   const version = process.env.NEXT_PUBLIC_APP_VERSION;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <header className="flex flex-col items-center gap-3 pt-2 text-center">
         <Logo size={72} />
         <div className="flex flex-col items-center gap-1.5">

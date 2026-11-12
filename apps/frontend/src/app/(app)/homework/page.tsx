@@ -230,7 +230,7 @@ export default function HomeworkListPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Завдання"
         subtitle={
@@ -256,7 +256,7 @@ export default function HomeworkListPage() {
       {isError ? (
         <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити завдання" />
       ) : !data ? (
-        <Loading />
+        <Loading shape="cards" />
       ) : !rows.length ? (
         <Empty
           title="Завдань поки немає"
@@ -320,7 +320,7 @@ export default function HomeworkListPage() {
                         <span className="chip chip-bad num">{g.items.length}</span>
                       ) : null}
                     </div>
-                    <div className="flex flex-col gap-2">
+                    <div className="stagger flex flex-col gap-2">
                       {g.items.map((h) => activeCard(h, g.key))}
                     </div>
                   </section>

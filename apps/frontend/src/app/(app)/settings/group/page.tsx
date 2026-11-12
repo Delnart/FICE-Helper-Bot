@@ -94,7 +94,7 @@ export default function GroupSettingsPage() {
 
   if (isError && !data) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Налаштування групи" />
         <ErrorState title="Не вдалося завантажити налаштування" error={error} onRetry={() => refetch()} />
       </div>
@@ -108,7 +108,7 @@ export default function GroupSettingsPage() {
     : [...REMINDER_PRESETS, data.lessonReminderMinutes].sort((a, b) => a - b);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Налаштування групи" subtitle={`${data.name} · доступно старості та адміну`} />
 
       {disabled ? (

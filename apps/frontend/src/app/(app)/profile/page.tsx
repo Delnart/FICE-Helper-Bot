@@ -138,7 +138,7 @@ export default function ProfilePage() {
 
   if (me.isLoading || me.isError) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Профіль" />
         {me.isError ? <ErrorState error={me.error} onRetry={() => me.refetch()} /> : <Loading />}
       </div>
@@ -157,13 +157,13 @@ export default function ProfilePage() {
   const supportBot = me.data?.botUsername;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Профіль" />
 
       {/* The identity card is the entry point to editing ПІБ / birthday. */}
       <button
         type="button"
-        className="card flex w-full items-center gap-3.5 text-left transition-transform active:scale-[0.985]"
+        className="card flex w-full items-center gap-3.5 text-left"
         onClick={openEdit}
         aria-label={`${display || 'Профіль'} — редагувати особисті дані`}
       >

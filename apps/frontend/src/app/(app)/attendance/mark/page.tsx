@@ -342,7 +342,7 @@ export default function MarkAttendancePage() {
     .join(' · ');
 
   return (
-    <div className="flex flex-col gap-3.5">
+    <div className="stagger flex flex-col gap-3.5">
       <PageHeader
         title="Присутність"
         subtitle={subtitle}

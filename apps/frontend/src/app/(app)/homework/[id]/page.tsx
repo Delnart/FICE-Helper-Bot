@@ -96,7 +96,7 @@ export default function HomeworkDetailPage() {
   // Error wins over cached data: a 403 (other group's homework) must not show stale content.
   if (isError || !data) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Завдання" />
         <ErrorState error={error} onRetry={() => refetch()} title="Не вдалося завантажити завдання" />
       </div>
@@ -108,7 +108,7 @@ export default function HomeworkDetailPage() {
   const soon = !!due && !data.done && !overdue && due.diff(dayjs(), 'hour') < 48;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title={data.title}
         action={

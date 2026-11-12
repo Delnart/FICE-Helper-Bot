@@ -140,7 +140,7 @@ export default function ElectivesPage() {
   const enrolledCount = data?.filter((d) => d.electiveStudentIds.includes(userId)).length ?? 0;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title="Вибіркові"
         subtitle={
@@ -182,7 +182,7 @@ export default function ElectivesPage() {
       )}
 
       {!isError && data && data.length > 0 && (
-        <section aria-label="Список вибіркових" className="flex flex-col gap-2.5">
+        <section aria-label="Список вибіркових" className="stagger flex flex-col gap-2.5">
           {data.map((item) => {
             const enrolled = item.electiveStudentIds.includes(userId);
             const targetId = item.sampleLessonId || item._id;

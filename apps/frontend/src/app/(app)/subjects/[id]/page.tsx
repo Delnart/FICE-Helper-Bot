@@ -159,7 +159,7 @@ export default function SubjectDetailPage() {
   const linksHref = `/subjects/${id}/links` as Route;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <header className="flex items-center gap-3.5">
         <SubjectTile name={s.name} icon={s.icon} size="lg" tone="ink" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">

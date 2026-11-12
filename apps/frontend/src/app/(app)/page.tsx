@@ -393,7 +393,7 @@ function TeacherHomePage() {
   const joinUrl = current ? lessonJoinUrl(current) : undefined;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <HomeHeader
         title="Мої дисципліни"
         weekType={lecturerNow.data?.weekType}
@@ -612,7 +612,7 @@ function TeacherJoinSection() {
             <span className="font-semibold">{r.groupName}</span>{' '}
             <span className="muted">· очікує підтвердження старости</span>
           </span>
-          <span className="dot animate-pulse bg-warn" />
+          <span className="dot dot-live bg-warn" />
         </div>
       ))}
 
@@ -882,7 +882,7 @@ function StudentHomePage() {
   const firstName = me.data?.firstName;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <HomeHeader
         title={firstName ? `Привіт, ${vocative(firstName)}` : 'Привіт'}
         weekType={week}
@@ -969,7 +969,7 @@ function StudentHomePage() {
             ) : null
           }
         >
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="stagger grid grid-cols-2 gap-2.5">
             <ManageTile
               href="/attendance"
               icon="list"
@@ -1024,7 +1024,7 @@ function StudentHomePage() {
           </div>
         </Section>
       ) : (
-        <section aria-label="Швидкі дії" className="grid grid-cols-3 gap-2.5">
+        <section aria-label="Швидкі дії" className="stagger grid grid-cols-3 gap-2.5">
           <QuickTile
             href="/homework"
             icon="task"
@@ -1149,7 +1149,7 @@ function StudentHomePage() {
         ) : deadlines.length === 0 ? (
           <Empty icon="task" title="Усе виконано" hint="Невиконаних завдань немає." />
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="stagger flex flex-col gap-2">
             {deadlines.map((h) => {
               const ticking = complete.isPending && complete.variables === h._id;
               return (
@@ -1255,7 +1255,7 @@ function NowCard({
             {lesson.startTime}–{lesson.endTime}
           </div>
           <span className="chip flex-shrink-0 gap-1.5 bg-now-accent text-now-accent-ink">
-            <span className="dot bg-current" />
+            <span className="dot dot-live bg-current" />
             триває ще {left} хв
           </span>
         </div>
@@ -1319,7 +1319,10 @@ function QuickTile({
         <Icon name={icon} size={18} />
       </span>
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="num text-[20px] leading-none">{value}</span>
+        {/* Keyed by value: the number pops in when it replaces the «…» placeholder. */}
+        <span key={value} className="num anim-pop origin-left text-[20px] leading-none">
+          {value}
+        </span>
         <span className="tiny muted truncate">{label}</span>
       </span>
     </Link>

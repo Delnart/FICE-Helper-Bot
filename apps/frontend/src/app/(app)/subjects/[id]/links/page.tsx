@@ -71,7 +71,7 @@ export default function SubjectLinksPage() {
   const links = canEdit ? draft : s?.links ?? [];
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader title="Корисні посилання" subtitle={s ? s.shortName || s.name : undefined} />
 
       {subject.isLoading ? (

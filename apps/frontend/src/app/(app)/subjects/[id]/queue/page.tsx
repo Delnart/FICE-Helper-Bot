@@ -309,7 +309,7 @@ export default function SubjectQueuePage() {
 
   if (queue.isLoading) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Черга" />
         <Loading label="Завантаження черги…" />
       </div>
@@ -319,7 +319,7 @@ export default function SubjectQueuePage() {
     // No data without an error usually means the request never resolved (offline):
     // surface it with a retry rather than spin forever.
     return (
-      <div className="flex flex-col gap-4">
+      <div className="stagger flex flex-col gap-4">
         <PageHeader title="Черга" />
         <ErrorState
           error={queue.error}
@@ -421,7 +421,7 @@ export default function SubjectQueuePage() {
   );
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stagger flex flex-col gap-4">
       <PageHeader
         title={isTeacher ? 'Черга на захист' : 'Черга на здачу'}
         chips={
@@ -669,7 +669,7 @@ export default function SubjectQueuePage() {
           }
         >
           {listError ? <div className="card-flat small text-bad">{listError}</div> : null}
-          <div className="flex flex-col gap-2">
+          <div className="stagger flex flex-col gap-2">
             {visible.map(row)}
             {hidden > 0 ? (
               <button
