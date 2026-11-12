@@ -37,6 +37,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   // ponytail: the last 100 cards, ~10 MB. Telegram keeps a preview it has fetched; a card that has left
   // this map is drawn again only when it is sent again.
   private readonly cardPngs = new Map<string, Buffer>();
+  /** The stickers of the set named in STICKER_SET by their emoji, asked for once. */
+  private stickers?: Promise<Map<string, string>>;
 
   constructor(
     private readonly config: ConfigService,
@@ -127,7 +129,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    * where the picture does not load. Telegram fetches the picture from CardsController, so this takes
    * PUBLIC_API_URL, the address the API is seen at from outside.
    * Cards are best effort: without that address, or if building, drawing or delivering one fails, the
-   * text goes out alone, the way it did before cards.
+   * text goes out alone, the way it did before cards. The sticker a card calls for follows it.
    */
   async sendCard(chatId: number, card: Card | undefined, text: string, extra: Record<string, unknown> = {}): Promise<void> {
     if (!this.bot) return;
@@ -152,6 +154,34 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Also when Telegram refused the message with this preview.
       this.logger.warn(`Card for ${chatId} failed, sending the text: ${(err as Error).message}`);
       await this.sendMessage(chatId, text, extra);
+    }
+    if (card.sticker) await this.sendSticker(chatId, card.sticker, { message_thread_id: extra.message_thread_id });
+  }
+
+  /**
+   * Sends a sticker from the set named in STICKER_SET: the first it has for one of `emoji`. A treat next to
+   * a message, never the message itself: without a set or a sticker for these emoji, or if Telegram
+   * refuses, nothing happens.
+   */
+  async sendSticker(chatId: number, emoji: string[], extra: Record<string, unknown> = {}): Promise<void> {
+    if (!this.bot) return;
+    const name = this.config.get<string>('STICKER_SET');
+    if (!name) return;
+    // One emoji has two spellings, with the variation selector and without.
+    const plain = (e: string) => e.replace(/️/g, '');
+    try {
+      // Reversed, so that of several stickers for an emoji the set's first one stays in the map.
+      this.stickers ??= this.bot.api
+        .getStickerSet(name)
+        .then((set) => new Map([...set.stickers].reverse().map((s) => [plain(s.emoji ?? ''), s.file_id])));
+      const set = await this.stickers;
+      const sticker = emoji.map((e) => set.get(plain(e))).find(Boolean);
+      if (sticker) await this.bot.api.sendSticker(chatId, sticker, extra);
+      else this.logger.warn(`No sticker for ${emoji.join(' ')} in the set ${name}`);
+    } catch (err) {
+      // The set is asked for again next time: Telegram may have been out of reach, or the set not made yet.
+      this.stickers = undefined;
+      this.logger.warn(`Sticker for ${chatId} failed: ${(err as Error).message}`);
     }
   }
 

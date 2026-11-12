@@ -250,6 +250,11 @@ describe('cards', () => {
     });
   });
 
+  it('calls for a sticker after a birthday and after a day with nothing left to attend, and only then', () => {
+    const names = Object.entries(SAMPLES).flatMap(([name, card]) => (card?.sticker ? [name] : []));
+    expect(names.sort()).toEqual(['birthday', 'birthday-long', 'birthday-photo', 'day-free', 'day-sunday', 'left-done', 'now-done']);
+  });
+
   it('gives no card when a builder trips, so the sender falls back to the text', () => {
     const error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     expect(cards.birthdayCard('ІП-31', undefined as never)).toBeUndefined();

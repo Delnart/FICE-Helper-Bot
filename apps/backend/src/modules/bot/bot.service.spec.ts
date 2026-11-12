@@ -322,6 +322,52 @@ describe('BotService.sendCard', () => {
     expect(renderCard).not.toHaveBeenCalled();
   });
 
+  describe('with a sticker', () => {
+    const pack = {
+      stickers: [
+        { emoji: '👍', file_id: 'thumb' },
+        { emoji: '🎉', file_id: 'party' },
+        { emoji: '🎉', file_id: 'party-2' },
+        { emoji: '☀️', file_id: 'sun' },
+      ],
+    };
+    const withSet = (getStickerSet: jest.Mock, set: string | undefined = 'Pack') => {
+      const config = { get: (name: string) => ({ PUBLIC_API_URL: 'https://api.test/api', STICKER_SET: set })[name] };
+      const svc = new BotService(...([config, ...Array(8).fill({})] as ConstructorParameters<typeof BotService>));
+      const sendSticker = jest.fn(async () => undefined);
+      svc['bot'] = { api: { sendMessage: jest.fn(async () => undefined), getStickerSet, sendSticker } } as never;
+      return { svc, sendSticker };
+    };
+
+    it('follows a card that calls for one with the first sticker the set has for its emoji', async () => {
+      const getStickerSet = jest.fn(async () => pack);
+      const { svc, sendSticker } = withSet(getStickerSet);
+      await svc.sendCard(1, { ...card, sticker: ['🎂', '🎉'] }, 'текст', { message_thread_id: 7, reply_markup: {} });
+      // The same emoji spelled without its variation selector.
+      await svc.sendCard(2, { ...card, sticker: ['☀'] }, 'текст');
+      await svc.sendCard(3, { ...card, sticker: ['🦆'] }, 'текст');
+      await svc.sendCard(4, card, 'текст');
+      expect(getStickerSet.mock.calls).toEqual([['Pack']]);
+      expect(sendSticker.mock.calls).toEqual([
+        [1, 'party', { message_thread_id: 7 }],
+        [2, 'sun', {}],
+      ]);
+    });
+
+    it('sends none without a set, and asks again for a set Telegram did not give', async () => {
+      const none = withSet(jest.fn(), '');
+      await none.svc.sendCard(1, { ...card, sticker: ['🎉'] }, 'текст');
+      expect(none.sendSticker).not.toHaveBeenCalled();
+
+      const getStickerSet = jest.fn().mockRejectedValueOnce(new Error('STICKERSET_INVALID')).mockResolvedValue(pack);
+      const { svc, sendSticker } = withSet(getStickerSet);
+      await svc.sendCard(1, { ...card, sticker: ['🎉'] }, 'текст');
+      expect(sendSticker).not.toHaveBeenCalled();
+      await svc.sendCard(1, { ...card, sticker: ['🎉'] }, 'текст');
+      expect(sendSticker).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('sends the text alone when Telegram refuses the message with the preview', async () => {
     const refused = new GrammyError('sendMessage failed', { ok: false, error_code: 400, description: 'Bad Request: WEBPAGE_CURL_FAILED' }, 'sendMessage', {});
     const { svc, sendMessage } = setup(jest.fn().mockRejectedValueOnce(refused).mockResolvedValue(undefined));

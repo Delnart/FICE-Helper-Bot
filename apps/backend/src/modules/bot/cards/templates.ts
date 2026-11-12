@@ -13,6 +13,11 @@ export interface Card {
   tree: CardNode;
   /** Lessons' online links. Text on a picture cannot be clicked, so they go under it as URL buttons. */
   links?: CardLink[];
+  /**
+   * The occasion calls for a sticker after the message: the emoji it may stand for in the bot's sticker
+   * set, the likeliest first (BotService.sendSticker).
+   */
+  sticker?: string[];
 }
 
 export interface CardLink {
@@ -222,6 +227,10 @@ const bar = (pct: number, height: number, track: string, fill: string, style: St
     { height, background: track, ...style },
     hs('div', { width: `${pct}%`, height: '100%', borderRadius: 999, background: fill }),
   );
+
+/** The two occasions that get a sticker: a birthday, and a day with nothing (left) to attend. */
+const BIRTHDAY = ['🎂', '🥳', '🎉', '🎁'];
+const FREE = ['😎', '🥳', '🎉', '😴'];
 
 // ── Words ─────────────────────────────────────────────────────────────────────────────────────────
 const TYPE: Record<string, [full: string, short: string]> = {
@@ -482,7 +491,7 @@ export const nowCard = safe(function nowCard(
   now: Date,
 ): Card {
   const chip = `${group} · ${weekType === 1 ? 'I' : 'II'} тиждень`;
-  if (!running.length) return { tree: next ? breakCard(chip, next, now) : dayDoneCard(chip) };
+  if (!running.length) return next ? { tree: breakCard(chip, next, now) } : { tree: dayDoneCard(chip), sticker: FREE };
 
   const at = minuteOfDay(now);
   // Two rows of one subject with the same room and link read as one lesson, as in the text.
@@ -539,7 +548,7 @@ export const nowCard = safe(function nowCard(
 
 /** /left: minutes to the end of the lesson that is on. */
 export const leftCard = safe(function leftCard(group: string, current: CardLesson | null, next: CardLesson | null, now: Date): Card {
-  if (!current) return { tree: next ? breakCard(group, next, now) : dayDoneCard(group) };
+  if (!current) return next ? { tree: breakCard(group, next, now) } : { tree: dayDoneCard(group), sticker: FREE };
 
   const start = toMin(current.startTime);
   const end = toMin(current.endTime);
@@ -629,7 +638,7 @@ export const dayCard = safe(function dayCard(
   now?: Date,
 ): Card {
   const label = kind === 'today' ? 'Сьогодні' : 'Завтра';
-  if (!lessons.length) return { tree: dayFreeCard(label, group, weekday, date) };
+  if (!lessons.length) return { tree: dayFreeCard(label, group, weekday, date), sticker: FREE };
 
   const at = now ? minuteOfDay(now) : -1;
   const times = (l: CardLesson, startColor?: string, endColor?: string): CardNode =>
@@ -864,7 +873,7 @@ export const birthdayCard = safe(function birthdayCard(group: string, fullName: 
       ),
     ),
   );
-  return { tree };
+  return { tree, sticker: BIRTHDAY };
 });
 
 /** «Завтра дедлайн»: the DM on the eve of a homework deadline. */

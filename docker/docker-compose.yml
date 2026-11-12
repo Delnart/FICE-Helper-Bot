@@ -43,6 +43,9 @@ services:
       # The API as seen from outside: Telegram fetches the pictures of the bot's messages from it
       # (BotService.sendCard). Without it the bot sends plain text.
       PUBLIC_API_URL: ${PUBLIC_API_URL:-https://api.ficebot.dev/api}
+      # The sticker set the bot takes its stickers from, by the emoji of each (BotService.sendSticker):
+      # the name in t.me/addstickers/<name>. Empty: no stickers.
+      STICKER_SET: ${STICKER_SET-UtyaDuck}
       ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
     ports:
       - "3000:3000"
