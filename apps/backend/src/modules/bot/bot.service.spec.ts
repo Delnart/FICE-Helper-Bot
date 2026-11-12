@@ -240,10 +240,22 @@ describe('BotService.sendCard', () => {
     await svc.sendCard(1, card, 'текст', { message_thread_id: 7, link_preview_options: { is_disabled: true } });
     await svc.sendCard(2, card, 'текст');
     expect(renderCard).toHaveBeenCalledTimes(1);
-    // The picture alone: no caption.
-    expect(sendPhoto.mock.calls[0]).toEqual([1, expect.anything(), { message_thread_id: 7 }]);
+    // The text is the caption: a notification shows it, and it reads where the picture does not load.
+    expect(sendPhoto.mock.calls[0]).toEqual([1, expect.anything(), { caption: 'текст', parse_mode: 'HTML', message_thread_id: 7 }]);
     expect(sendPhoto.mock.calls[1].slice(0, 2)).toEqual([2, 'big']);
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends the text alone when it is too long for a caption', async () => {
+    const sendPhoto = jest.fn(async () => ({ photo: [{ file_id: 'big' }] }));
+    const { svc, sendMessage } = setup(sendPhoto);
+    // 1024 characters is the limit, and tags do not count.
+    await svc.sendCard(1, card, `<b>${'я'.repeat(1024)}</b>`);
+    expect(sendPhoto).toHaveBeenCalledTimes(1);
+    await svc.sendCard(1, card, 'я'.repeat(1025));
+    expect(sendPhoto).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(1, 'я'.repeat(1025), { parse_mode: 'HTML' });
+    expect(renderCard).toHaveBeenCalledTimes(1);
   });
 
   it('puts lesson links under the card as buttons, in place of the keyboard the caller passed', async () => {
@@ -252,6 +264,8 @@ describe('BotService.sendCard', () => {
     const links = [{ label: 'Meet', url: 'https://meet.google.com/x' }];
     await svc.sendCard(1, { ...card, links }, 'текст', { reply_markup: { keyboard: [] } });
     expect(sendPhoto).toHaveBeenCalledWith(1, expect.anything(), {
+      caption: 'текст',
+      parse_mode: 'HTML',
       reply_markup: { inline_keyboard: [[{ text: 'Meet', url: 'https://meet.google.com/x' }]] },
     });
   });

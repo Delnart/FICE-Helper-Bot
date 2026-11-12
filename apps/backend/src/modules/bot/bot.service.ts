@@ -120,13 +120,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Sends a picture card in place of `text`: the picture alone, a lesson's link as a button under it.
-   * Cards are best effort: if building, drawing or delivering one fails, the text goes out the way it
-   * did before cards.
+   * Sends a picture card with `text` as its caption, a lesson's link as a button under it. The caption is
+   * what a notification shows, and what there is to read where the picture does not load.
+   * Cards are best effort: if building, drawing or delivering one fails, or the text is too long for a
+   * caption, the text goes out alone, the way it did before cards.
    */
   async sendCard(chatId: number, card: Card | undefined, text: string, extra: Record<string, unknown> = {}): Promise<void> {
     if (!this.bot) return;
-    if (!card) return this.sendMessage(chatId, text, extra);
+    // A caption holds 1024 characters, tags aside. An entity (&amp;) counts here as longer than it is, which only errs towards the text.
+    if (!card || text.replace(/<[^>]+>/g, '').length > 1024) return this.sendMessage(chatId, text, extra);
     const key = createHash('sha1').update(JSON.stringify(card.tree)).digest('hex');
     // A photo has no link preview to switch off.
     const { link_preview_options: _preview, ...photoExtra } = extra;
@@ -134,7 +136,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const buttons = card.links?.length ? { reply_markup: { inline_keyboard: card.links.map((l) => [{ text: l.label, url: l.url }]) } } : {};
     try {
       const photo = this.cardFiles.get(key) ?? new InputFile(await renderCard(card.tree), 'card.png');
-      const sent = await this.bot.api.sendPhoto(chatId, photo, { ...photoExtra, ...buttons });
+      const sent = await this.bot.api.sendPhoto(chatId, photo, { caption: text, parse_mode: 'HTML', ...photoExtra, ...buttons });
       if (this.cardFiles.size >= 200) this.cardFiles.clear();
       this.cardFiles.set(key, sent.photo[sent.photo.length - 1].file_id);
     } catch (err) {
